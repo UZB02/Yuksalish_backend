@@ -13,6 +13,7 @@ import {
 } from '../../models/Rating';
 import { School } from '../../models/School';
 import { Score } from '../../models/Score';
+import { SubjectGrade } from '../../models/SubjectGrade';
 import { Student } from '../../models/Student';
 import { fmtDate } from '../../utils/dates';
 import { clock, todayTashkent } from '../../utils/clock';
@@ -137,12 +138,58 @@ export async function loadDayRows(
   }));
 }
 
+export interface GradeAgg {
+  studentId: string;
+  /** Fan baholari yig'indisi (2–5) */
+  sum: number;
+  count: number;
+  /** Baho berilgan kunlar */
+  dates: string[];
+}
+
+/** Davr ichidagi fan baholari: o'quvchi bo'yicha yig'indi, soni va kunlar (bitta aggregation) */
+export async function loadGradeAggs(
+  schoolId: string,
+  period: { from: string; to: string },
+  studentIds?: Types.ObjectId[],
+): Promise<GradeAgg[]> {
+  const match: Record<string, unknown> = {
+    schoolId: oid(schoolId),
+    isDeleted: false,
+    date: { $gte: period.from, $lte: period.to },
+  };
+  if (studentIds) match.studentId = { $in: studentIds };
+  const rows = await SubjectGrade.aggregate<{
+    _id: Types.ObjectId;
+    sum: number;
+    n: number;
+    dates: string[];
+  }>([
+    { $match: match },
+    {
+      $group: {
+        _id: '$studentId',
+        sum: { $sum: '$value' },
+        n: { $sum: 1 },
+        dates: { $addToSet: '$date' },
+      },
+    },
+  ] as never).allowDiskUse(true);
+  return rows.map((r) => ({
+    studentId: String(r._id),
+    sum: r.sum,
+    count: r.n,
+    dates: r.dates,
+  }));
+}
+
 async function loadAggregates(
   schoolId: string,
   period: { from: string; to: string },
   scoring: Pick<ScoringSettings, 'dailyAggregation'>,
 ): Promise<Map<string, StudentAgg>> {
   const out = new Map<string, StudentAgg>();
+  const dates = new Map<string, Set<string>>();
   for (const r of await loadDayRows(schoolId, period, scoring)) {
     const cur = out.get(r.studentId);
     if (cur) {
@@ -150,7 +197,19 @@ async function loadAggregates(
       cur.scoresCount += r.n;
       cur.sumDays += r.day;
     } else out.set(r.studentId, { daysCount: 1, scoresCount: r.n, sumDays: r.day });
+    dates.set(r.studentId, (dates.get(r.studentId) ?? new Set()).add(r.date));
   }
+  for (const g of await loadGradeAggs(schoolId, period)) {
+    const cur = out.get(g.studentId) ?? { daysCount: 0, scoresCount: 0, sumDays: 0 };
+    cur.gradesCount = g.count;
+    cur.gradesSum = g.sum;
+    const all = dates.get(g.studentId) ?? new Set<string>();
+    for (const d of g.dates) all.add(d);
+    dates.set(g.studentId, all);
+    out.set(g.studentId, cur);
+  }
+  // Faol kunlar: xulq yoki fan bahosi berilgan kunlar birlashmasi
+  for (const [id, agg] of out) agg.activeDays = dates.get(id)?.size ?? agg.daysCount;
   return out;
 }
 

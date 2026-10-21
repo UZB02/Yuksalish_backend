@@ -2,7 +2,8 @@ import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['dist', 'coverage', 'node_modules'] },
+  // deploy/mongo-init.js mongosh muhitida ishlaydi (db, process global), Node kodi emas
+  { ignores: ['dist', 'coverage', 'node_modules', 'deploy'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {

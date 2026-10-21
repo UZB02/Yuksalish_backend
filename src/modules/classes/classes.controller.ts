@@ -26,6 +26,9 @@ export const archive = asyncHandler(async (req, res) => {
 export const unarchive = asyncHandler(async (req, res) => {
   ok(res, await s.setArchived(getCtx(req), sid(req), id(req), false));
 });
+export const setSubjects = asyncHandler(async (req, res) => {
+  ok(res, await s.setSubjects(getCtx(req), sid(req), id(req), req.body.subjects));
+});
 export const setTeachers = asyncHandler(async (req, res) => {
   ok(res, await s.setTeachers(getCtx(req), sid(req), id(req), req.body));
 });

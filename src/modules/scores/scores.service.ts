@@ -124,6 +124,17 @@ async function findStudent(actor: Actor, schoolId: string, studentId: string): P
   return student;
 }
 
+/**
+ * Xulq bahosini o'qituvchilardan faqat sinf rahbari (homeroomTeacherId) qo'ya oladi.
+ * Admin rollari (permission asosida) bu cheklovdan holi.
+ */
+function assertCanGradeConduct(actor: Actor, cls: ClassDoc | null) {
+  if (actor.role !== 'teacher' || !cls) return;
+  if (!cls.homeroomTeacherId || String(cls.homeroomTeacherId) !== actor.id) {
+    throw AppError.forbidden("Xulq bahosini faqat sinf rahbari qo'ya oladi");
+  }
+}
+
 const conflict = () =>
   AppError.conflict("Bu o'quvchiga shu kuni allaqachon baho qo'ygansiz", [
     { path: 'studentId', message: 'Bu kun uchun baho mavjud' },
@@ -151,6 +162,7 @@ export const scoresService = {
       ClassModel.findOne({ _id: student.classId, schoolId }),
     ]);
     assertScorable(student, cls, yearId);
+    assertCanGradeConduct(ctx.actor, cls);
 
     const date = input.date ?? todayTashkent();
     const values: ScoreValues = {
@@ -314,6 +326,7 @@ export const scoresService = {
       loadTypes(schoolId),
     ]);
     if (!cls) throw notFound;
+    assertCanGradeConduct(ctx.actor, cls);
     if (cls.isArchived || !yearId || String(cls.academicYearId) !== yearId) {
       throw AppError.validation('Sinf baholash uchun mavjud emas', [
         { path: 'classId', message: "Faqat faol o'quv yilidagi arxivlanmagan sinf baholanadi" },
@@ -476,6 +489,7 @@ export const scoresService = {
     if (actor.role === 'teacher') filter.teacherIds = actor.id;
     const cls = await ClassModel.findOne(filter);
     if (!cls) throw notFound;
+    assertCanGradeConduct(actor, cls);
 
     const settings = await settingsService.getEffectiveScoring(schoolId);
     const day = date ?? todayTashkent();
@@ -528,7 +542,8 @@ export const scoresService = {
     const yearId = await activeYearId(schoolId);
     if (!yearId) return [];
     const filter: Record<string, unknown> = { schoolId, academicYearId: yearId, isArchived: false };
-    if (actor.role === 'teacher') filter.teacherIds = actor.id;
+    // O'qituvchi: xulq bahosi faqat o'zi sinf rahbari bo'lgan sinflarda
+    if (actor.role === 'teacher') filter.homeroomTeacherId = actor.id;
     const classes = await ClassModel.find(filter).sort({ grade: 1, name: 1 });
     if (!classes.length) return [];
 

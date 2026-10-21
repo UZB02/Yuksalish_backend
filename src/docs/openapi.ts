@@ -4,6 +4,7 @@ import { buildPhase3 } from './openapi.phase3';
 import { buildPhase4 } from './openapi.phase4';
 import { buildPhase5 } from './openapi.phase5';
 import { buildPhase6 } from './openapi.phase6';
+import { buildPhase7 } from './openapi.phase7';
 
 type Obj = Record<string, unknown>;
 
@@ -49,6 +50,7 @@ const phase3 = buildPhase3({ ref, okRes, errors, body, secured, idParam, schoolH
 const phase4 = buildPhase4({ ref, okRes, errors, body, secured, idParam, schoolHeader });
 const phase5 = buildPhase5({ ref, okRes, errors, body, secured, idParam, schoolHeader });
 const phase6 = buildPhase6({ ref, okRes, errors, body, secured, idParam, schoolHeader });
+const phase7 = buildPhase7({ ref, okRes, errors, body, secured, idParam, schoolHeader });
 
 const crudUser = (
   tag: string,
@@ -154,6 +156,7 @@ export const openApiSpec = {
     ...phase4.tags,
     ...phase5.tags,
     ...phase6.tags,
+    ...phase7.tags,
   ],
   components: {
     securitySchemes: { bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' } },
@@ -264,6 +267,7 @@ export const openApiSpec = {
       ...phase4.schemas,
       ...phase5.schemas,
       ...phase6.schemas,
+      ...phase7.schemas,
       AuthResult: {
         type: 'object',
         properties: { accessToken: { type: 'string' }, user: ref('User') },
@@ -391,6 +395,7 @@ export const openApiSpec = {
     ...phase4.paths,
     ...phase5.paths,
     ...phase6.paths,
+    ...phase7.paths,
     '/health': {
       get: {
         tags: ['Health'],

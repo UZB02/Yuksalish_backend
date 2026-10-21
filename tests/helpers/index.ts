@@ -7,6 +7,9 @@ import type { Role } from '../../src/constants/roles';
 import { AcademicYear } from '../../src/models/AcademicYear';
 import { BehaviorType } from '../../src/models/BehaviorType';
 import { Score } from '../../src/models/Score';
+import { ClassSubject } from '../../src/models/ClassSubject';
+import { Subject } from '../../src/models/Subject';
+import { SubjectGrade } from '../../src/models/SubjectGrade';
 import { Setting } from '../../src/models/Setting';
 import { Rating, RatingDailyRank, RatingState } from '../../src/models/Rating';
 import { publicCache } from '../../src/modules/public/public.cache';
@@ -43,6 +46,9 @@ const ALL_MODELS: { init(): Promise<unknown>; deleteMany(f: object): PromiseLike
   RatingDailyRank,
   AttendanceRecord,
   AttendanceStatus,
+  Subject,
+  ClassSubject,
+  SubjectGrade,
 ];
 
 /** Har bir test fayli uchun alohida baza; har testdan oldin tozalanadi */
@@ -156,6 +162,35 @@ export const makeBehaviorType = (
   });
 
 export { Score };
+
+export const makeSubject = (
+  name: string,
+  schoolId: string | null = null,
+  extra: Record<string, unknown> = {},
+) => Subject.create({ schoolId, name, nameKey: nameKeyOf(name), order: 1, ...extra });
+
+export const assignSubject = (
+  schoolId: string,
+  cls: {
+    id: string;
+    academicYearId: mongoose.Types.ObjectId;
+    updateOne: (u: object) => PromiseLike<unknown>;
+  },
+  subjectId: string,
+  teacherId: string,
+) =>
+  Promise.all([
+    ClassSubject.create({
+      schoolId,
+      classId: cls.id,
+      subjectId,
+      teacherId,
+      academicYearId: cls.academicYearId,
+    }),
+    cls.updateOne({ $addToSet: { teacherIds: teacherId } }),
+  ]);
+
+export { SubjectGrade };
 
 export const ADMIN_PERMS = [
   'classes.manage',

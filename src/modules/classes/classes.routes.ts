@@ -8,7 +8,7 @@ import { sheet as attendanceSheet } from '../attendance/attendance.controller';
 import { sheetQuery as attendanceSheetQuery } from '../attendance/attendance.schema';
 import { scoringSheet } from '../scores/scores.controller';
 import { sheetQuery } from '../scores/scores.schema';
-import { createBody, listQuery, teachersBody, updateBody } from './classes.schema';
+import { createBody, listQuery, subjectsBody, teachersBody, updateBody } from './classes.schema';
 
 export const classesRouter = Router();
 
@@ -47,4 +47,5 @@ classesRouter.post('/', ...write, validate({ body: createBody }), c.create);
 classesRouter.patch('/:id', ...write, validate({ body: updateBody }), c.update);
 classesRouter.post('/:id/archive', ...write, c.archive);
 classesRouter.post('/:id/unarchive', ...write, c.unarchive);
+classesRouter.put('/:id/subjects', ...write, validate({ body: subjectsBody }), c.setSubjects);
 classesRouter.put('/:id/teachers', ...write, validate({ body: teachersBody }), c.setTeachers);

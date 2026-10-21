@@ -1,5 +1,8 @@
 import { round2 } from '../../utils/dayScore';
-import type { TieBreak } from '../settings/rating.settings';
+import type { RatingWeights, TieBreak } from '../settings/rating.settings';
+
+/** Fan bahosi (2–5) ni 100 ballik shkalaga o'tkazish koeffitsienti: 5→100, 4→80 */
+export const GRADE_TO_100 = 20;
 
 // ---- Toza hisoblash funksiyalari (DB ga bog'liq emas) ----
 
@@ -10,10 +13,18 @@ export interface StudentInfo {
 }
 
 export interface StudentAgg {
+  /** Xulq bahosi (Score) berilgan kunlar soni */
   daysCount: number;
+  /** Xulq baholari soni */
   scoresCount: number;
   /** Kunlik ballar yig'indisi */
   sumDays: number;
+  /** Fan baholari (2–5) soni */
+  gradesCount?: number;
+  /** Fan baholari (2–5) yig'indisi (xom qiymatlar) */
+  gradesSum?: number;
+  /** Xulq yoki fan bahosi berilgan kunlar soni (birlashma); yo'q bo'lsa daysCount */
+  activeDays?: number;
 }
 
 export interface StudentRow {
@@ -27,6 +38,25 @@ export interface StudentRow {
   /** Davomat jarimasi (ball shkalasida); score allaqachon jarimani hisobga olgan */
   penalty: number;
   rank: number | null;
+}
+
+export const DEFAULT_WEIGHTS: RatingWeights = { conduct: 50, subjects: 50 };
+
+/**
+ * Ikki komponentni ulushlar bo'yicha birlashtiradi. Faqat bittasida ma'lumot bo'lsa — o'sha komponent
+ * o'zi (ulushlar qayta normallashtiriladi); ikkalasi ham bo'sh bo'lsa 0.
+ */
+export function blendComponents(
+  conduct: number | null,
+  subjects: number | null,
+  w: RatingWeights,
+): number {
+  if (conduct === null && subjects === null) return 0;
+  if (subjects === null) return round2(conduct as number);
+  if (conduct === null) return round2(subjects);
+  const total = w.conduct + w.subjects;
+  if (total <= 0) return round2((conduct + subjects) / 2);
+  return round2((conduct * w.conduct + subjects * w.subjects) / total);
 }
 
 /** method=average: kunlik ballar o'rtachasi; sum: yig'indisi (2 xona) */
@@ -57,18 +87,31 @@ function compareStudents(tieBreak: TieBreak[]) {
 export function buildStudentRows(
   students: StudentInfo[],
   aggs: Map<string, StudentAgg>,
-  s: { method: 'average' | 'sum'; minScoresCount: number },
+  s: { method: 'average' | 'sum'; minScoresCount: number; weights?: RatingWeights },
 ): StudentRow[] {
+  const weights = s.weights ?? DEFAULT_WEIGHTS;
   return students.map((st) => {
     const a = aggs.get(st.id);
-    const days = a?.daysCount ?? 0;
+    const conductDays = a?.daysCount ?? 0;
+    const grades = a?.gradesCount ?? 0;
+    const days = a?.activeDays ?? conductDays;
+    // Komponentlar: xulq (0–100) va fan baholari (2–5 → ×20); sum usulida yig'indilar
+    const conduct = a && conductDays > 0 ? scoreOf(a.sumDays, conductDays, s.method) : null;
+    const subjects =
+      a && grades > 0
+        ? round2(
+            s.method === 'sum'
+              ? (a.gradesSum ?? 0) * GRADE_TO_100
+              : ((a.gradesSum ?? 0) / grades) * GRADE_TO_100,
+          )
+        : null;
     return {
       studentId: st.id,
       fullName: st.fullName,
       classId: st.classId,
-      score: a ? scoreOf(a.sumDays, days, s.method) : 0,
+      score: blendComponents(conduct, subjects, weights),
       daysCount: days,
-      scoresCount: a?.scoresCount ?? 0,
+      scoresCount: (a?.scoresCount ?? 0) + grades,
       eligible: days >= s.minScoresCount && days > 0,
       penalty: 0,
       rank: null,

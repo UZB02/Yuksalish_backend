@@ -8,6 +8,12 @@ export const PERIOD_TYPES = ['week', 'month', 'quarter', 'academic_year', 'custo
 export type PeriodType = (typeof PERIOD_TYPES)[number];
 export type TieBreak = 'daysCount' | 'scoresCount' | 'alphabetical';
 
+/** Reyting tarkibi: xulq bahosi (0–100) va fan baholari (2–5, ×20) ulushlari, yig'indisi 100 */
+export interface RatingWeights {
+  conduct: number;
+  subjects: number;
+}
+
 export interface RatingSettings {
   periodType: PeriodType;
   customFrom: string | null;
@@ -18,6 +24,7 @@ export interface RatingSettings {
   /** Teng ballarda tartiblash; 'alphabetical' doim oxirida */
   tieBreak: TieBreak[];
   refreshMode: 'realtime' | 'nightly';
+  weights: RatingWeights;
 }
 
 export const RATING_DEFAULTS: RatingSettings = {
@@ -28,6 +35,7 @@ export const RATING_DEFAULTS: RatingSettings = {
   minScoresCount: 3,
   tieBreak: ['daysCount', 'alphabetical'],
   refreshMode: 'realtime',
+  weights: { conduct: 50, subjects: 50 },
 };
 
 export const ratingValuesSchema = z.object({
@@ -44,6 +52,12 @@ export const ratingValuesSchema = z.object({
     })
     .optional(),
   refreshMode: z.enum(['realtime', 'nightly']).optional(),
+  weights: z
+    .object({
+      conduct: z.number("Ulush butun son bo'lishi kerak").int().min(0).max(100),
+      subjects: z.number("Ulush butun son bo'lishi kerak").int().min(0).max(100),
+    })
+    .optional(),
 });
 
 /** tieBreak: 'alphabetical' doim oxirida */
@@ -67,6 +81,12 @@ export function validateRating(s: RatingSettings): void {
         message: "customTo customFrom dan oldin bo'lmasligi kerak",
       });
     }
+  }
+  if (s.weights.conduct + s.weights.subjects !== 100) {
+    errs.push({
+      path: 'values.weights',
+      message: "Xulq va fan baholari ulushlari yig'indisi 100 bo'lishi kerak",
+    });
   }
   if (errs.length) throw AppError.validation("Sozlamalar noto'g'ri", errs);
 }

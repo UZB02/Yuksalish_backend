@@ -66,7 +66,9 @@ beforeEach(async () => {
     permissions: ADMIN_PERMS,
   });
   await makeUser({ username: 'root', role: 'superadmin' });
-  c5 = await makeClass(school.id, year.id, '5-A', [teacherUser.id]);
+  c5 = await makeClass(school.id, year.id, '5-A', [teacherUser.id], {
+    homeroomTeacherId: teacherUser.id,
+  });
   c6 = await makeClass(school.id, year.id, '6-A');
   s1 = await makeStudent(school.id, c5.id, 'Aliyev Ali');
   s2 = await makeStudent(school.id, c5.id, 'Valiyev Vali');
@@ -545,6 +547,7 @@ describe('Sozlamalar: rating va public', () => {
       minScoresCount: 3,
       tieBreak: ['daysCount', 'alphabetical'],
       refreshMode: 'realtime',
+      weights: { conduct: 50, subjects: 50 },
     });
     const p = await get(rep, '/settings/public');
     expect(p.body.data.effective).toEqual({

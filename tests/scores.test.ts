@@ -77,8 +77,12 @@ beforeEach(async () => {
     permissions: [...ADMIN_PERMS, 'scores.create', 'scores.edit'],
   });
   await makeUser({ username: 'root', role: 'superadmin' });
-  c5 = await makeClass(school.id, year.id, '5-A', [teacher1.id]);
-  c6 = await makeClass(school.id, year.id, '6-A', [teacher2.id]);
+  c5 = await makeClass(school.id, year.id, '5-A', [teacher1.id], {
+    homeroomTeacherId: teacher1.id,
+  });
+  c6 = await makeClass(school.id, year.id, '6-A', [teacher2.id], {
+    homeroomTeacherId: teacher2.id,
+  });
   s1 = await makeStudent(school.id, c5.id, 'Aliyev Ali');
   s2 = await makeStudent(school.id, c5.id, 'Valiyev Vali');
   s3 = await makeStudent(school.id, c5.id, 'Bekov Bek');

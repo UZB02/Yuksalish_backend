@@ -9,6 +9,17 @@ import { User, type UserDoc } from '../../models/User';
 import { classKeyOf, cleanText } from '../../utils/text';
 import { escapeRegex, isDuplicateKeyError, isId, uniq } from '../../utils/helpers';
 import { auditService } from '../audit/audit.service';
+import {
+  loadClassSubjects,
+  pruneAssignments,
+  removeTeacherAssignments,
+  setClassSubjects,
+} from './class-subjects.service';
+
+export interface SubjectAssignmentInput {
+  subjectId: string;
+  teacherId: string;
+}
 
 type AuthActor = Ctx['actor'];
 
@@ -30,7 +41,7 @@ export async function toClassDtos(docs: ClassDoc[], schoolId: string) {
       ...(c.homeroomTeacherId ? [String(c.homeroomTeacherId)] : []),
     ]),
   );
-  const [users, counts] = await Promise.all([
+  const [users, counts, subjectsOf] = await Promise.all([
     User.find({ _id: { $in: userIds } }).select('fullName'),
     Student.aggregate<{ _id: Types.ObjectId; n: number }>([
       {
@@ -43,6 +54,7 @@ export async function toClassDtos(docs: ClassDoc[], schoolId: string) {
       },
       { $group: { _id: '$classId', n: { $sum: 1 } } },
     ]),
+    loadClassSubjects(docs.map((d) => d._id)),
   ]);
   const names = new Map(users.map((u) => [u.id, u.fullName]));
   const countOf = new Map(counts.map((c) => [String(c._id), c.n]));
@@ -60,6 +72,7 @@ export async function toClassDtos(docs: ClassDoc[], schoolId: string) {
       homeroomTeacher: home ? ref(home) : null,
       teacherIds: c.teacherIds.map(String),
       teachers: c.teacherIds.map((t) => ref(String(t))).filter((t) => t !== null),
+      subjects: subjectsOf.get(c.id) ?? [],
       studentsCount: countOf.get(c.id) ?? 0,
       isArchived: c.isArchived,
       createdAt: c.createdAt,
@@ -157,6 +170,7 @@ export const classesService = {
       academicYearId?: string;
       homeroomTeacherId?: string | null;
       teacherIds: string[];
+      subjects?: SubjectAssignmentInput[];
     },
   ) {
     let yearId = input.academicYearId;
@@ -179,7 +193,11 @@ export const classesService = {
     const name = cleanText(input.name);
     await assertNameFree(schoolId, yearId, name);
     const home = input.homeroomTeacherId ?? null;
-    const teacherIds = uniq([...input.teacherIds, ...(home ? [home] : [])]);
+    const teacherIds = uniq([
+      ...input.teacherIds,
+      ...(home ? [home] : []),
+      ...(input.subjects ?? []).map((i) => i.teacherId),
+    ]);
     await assertTeachers(
       schoolId,
       teacherIds,
@@ -210,6 +228,7 @@ export const classesService = {
       after: snapshot(cls),
       ip: ctx.ip,
     });
+    if (input.subjects?.length) await setClassSubjects(ctx, schoolId, cls, input.subjects);
     return (await toClassDtos([cls], schoolId))[0];
   },
 
@@ -223,6 +242,7 @@ export const classesService = {
       section?: string | null;
       homeroomTeacherId?: string | null;
       teacherIds?: string[];
+      subjects?: SubjectAssignmentInput[];
     },
   ) {
     const cls = await findOrFail(schoolId, id);
@@ -236,7 +256,11 @@ export const classesService = {
     if (patch.grade !== undefined) cls.grade = patch.grade;
     if (patch.section !== undefined) cls.section = patch.section;
 
-    if (patch.teacherIds !== undefined || patch.homeroomTeacherId !== undefined) {
+    if (
+      patch.teacherIds !== undefined ||
+      patch.homeroomTeacherId !== undefined ||
+      patch.subjects !== undefined
+    ) {
       const home =
         patch.homeroomTeacherId !== undefined
           ? patch.homeroomTeacherId
@@ -244,12 +268,18 @@ export const classesService = {
             ? String(cls.homeroomTeacherId)
             : null;
       const base = patch.teacherIds ?? cls.teacherIds.map(String);
-      const teacherIds = uniq([...base, ...(home ? [home] : [])]);
+      const teacherIds = uniq([
+        ...base,
+        ...(home ? [home] : []),
+        ...(patch.subjects ?? []).map((i) => i.teacherId),
+      ]);
       await assertTeachers(
         schoolId,
         teacherIds.filter((t) => !before.teacherIds.includes(t)),
       );
       cls.teacherIds = teacherIds.map((t) => new Types.ObjectId(t));
+      // Sinfdan chiqarilgan o'qituvchilarning fan biriktirishlari ham o'chadi
+      await pruneAssignments(cls._id, cls.teacherIds);
       cls.homeroomTeacherId = home ? new Types.ObjectId(home) : null;
     }
     try {
@@ -268,6 +298,14 @@ export const classesService = {
       after: snapshot(cls),
       ip: ctx.ip,
     });
+    if (patch.subjects !== undefined) await setClassSubjects(ctx, schoolId, cls, patch.subjects);
+    return (await toClassDtos([cls], schoolId))[0];
+  },
+
+  /** Sinfning fan-o'qituvchi ro'yxatini to'liq almashtirish */
+  async setSubjects(ctx: Ctx, schoolId: string, id: string, items: SubjectAssignmentInput[]) {
+    const cls = await findOrFail(schoolId, id);
+    await setClassSubjects(ctx, schoolId, cls, items);
     return (await toClassDtos([cls], schoolId))[0];
   },
 
@@ -312,6 +350,7 @@ export const classesService = {
       ? new Types.ObjectId(input.homeroomTeacherId)
       : null;
     await cls.save();
+    await pruneAssignments(cls._id, cls.teacherIds);
     await auditService.log({
       userId: ctx.actor.id,
       schoolId,
@@ -362,6 +401,7 @@ export const classesService = {
         { _id: { $in: removed }, homeroomTeacherId: teacher._id },
         { homeroomTeacherId: null },
       );
+      await removeTeacherAssignments(removed, teacher._id);
     }
     if (wanted.length) {
       await ClassModel.updateMany(

@@ -1,16 +1,49 @@
 import type { Ctx } from '../../core/context';
+import { AcademicYear } from '../../models/AcademicYear';
 import type { UserDoc } from '../../models/User';
+import { ClassModel } from '../../models/Class';
+import { assignmentsOfTeachers } from '../classes/class-subjects.service';
 import { classesService } from '../classes/classes.service';
 import { userManagement, type ListQuery } from '../users/user-management.service';
 import { toUserDto } from '../users/user.dto';
 
+/** {teacherId -> sinf rahbari bo'lgan sinflar} (faol yil, arxivlanmagan) */
+async function homeroomClassesOf(schoolId: string, teacherIds: string[]) {
+  const map = new Map<string, { id: string; name: string }[]>();
+  if (!teacherIds.length) return map;
+  const year = await AcademicYear.findOne({ schoolId, isActive: true }).select('_id');
+  if (!year) return map;
+  const classes = await ClassModel.find({
+    schoolId,
+    academicYearId: year._id,
+    isArchived: false,
+    homeroomTeacherId: { $in: teacherIds },
+  })
+    .sort({ grade: 1, name: 1 })
+    .select('name homeroomTeacherId');
+  for (const c of classes) {
+    const key = String(c.homeroomTeacherId);
+    map.set(key, [...(map.get(key) ?? []), { id: c.id as string, name: c.name }]);
+  }
+  return map;
+}
+
 /** Teacher DTO + faol yil sinflari */
 async function withClasses(schoolId: string, users: UserDoc[]) {
-  const map = await classesService.classesOfTeachers(
-    schoolId,
-    users.map((u) => u.id),
-  );
-  return users.map((u) => ({ ...toUserDto(u), classes: map.get(u.id) ?? [] }));
+  const ids = users.map((u) => u.id as string);
+  const [map, assignments, homerooms] = await Promise.all([
+    classesService.classesOfTeachers(schoolId, ids),
+    assignmentsOfTeachers(schoolId, ids),
+    homeroomClassesOf(schoolId, ids),
+  ]);
+  return users.map((u) => ({
+    ...toUserDto(u),
+    classes: map.get(u.id) ?? [],
+    /** Faol yildagi sinf+fan biriktirishlari */
+    subjectAssignments: assignments.get(u.id) ?? [],
+    /** Sinf rahbari bo'lgan sinflar (xulq bahosi qo'yadi) */
+    homeroomClasses: homerooms.get(u.id) ?? [],
+  }));
 }
 
 // Barcha amallar req.schoolId (tenant) bilan cheklanadi

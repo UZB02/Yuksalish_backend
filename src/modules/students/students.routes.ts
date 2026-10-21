@@ -8,6 +8,8 @@ import { studentSummary as attendanceStudentSummary } from '../attendance/attend
 import { rangeQuery as attendanceRangeQuery } from '../attendance/attendance.schema';
 import { studentSummary } from '../scores/scores.controller';
 import { summaryQuery } from '../scores/scores.schema';
+import { studentSummary as gradeStudentSummary } from '../grades/grades.controller';
+import { summaryQuery as gradeSummaryQuery } from '../grades/grades.schema';
 import {
   confirmBody,
   createBody,
@@ -61,6 +63,19 @@ studentsRouter.get(
   tenant,
   validate({ query: summaryQuery }),
   studentSummary,
+);
+studentsRouter.get(
+  '/:id/grade-summary',
+  requireAnyPermission(
+    'students.view',
+    'scores.create',
+    'grades.create',
+    'grades.edit',
+    'reports.view',
+  ),
+  tenant,
+  validate({ query: gradeSummaryQuery }),
+  gradeStudentSummary,
 );
 studentsRouter.patch('/:id', ...write, validate({ body: updateBody }), c.update);
 studentsRouter.delete('/:id', ...write, c.remove);

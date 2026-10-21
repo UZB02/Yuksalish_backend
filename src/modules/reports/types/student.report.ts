@@ -1,6 +1,8 @@
 import { AttendanceRecord } from '../../../models/AttendanceRecord';
 import { ClassModel } from '../../../models/Class';
 import { Score } from '../../../models/Score';
+import { SubjectGrade } from '../../../models/SubjectGrade';
+import { Subject } from '../../../models/Subject';
 import { Student } from '../../../models/Student';
 import { User } from '../../../models/User';
 import { AppError } from '../../../core/errors';
@@ -15,6 +17,7 @@ import {
   liveRating,
   loadBehavior,
   loadDays,
+  loadGradeStats,
   loadTypeInfo,
   metaOf,
   type ReportCtx,
@@ -38,7 +41,7 @@ export async function buildStudentReport(ctx: ReportCtx, studentId: string) {
   const cls = await ClassModel.findById(st.classId).select('name').lean();
 
   const sid = [st._id];
-  const [dayRows, beh, live, attRecords, scores] = await Promise.all([
+  const [dayRows, beh, live, attRecords, scores, gradeStats, gradeDocs] = await Promise.all([
     loadDays(ctx, sid),
     loadBehavior(ctx, sid),
     liveRating(ctx),
@@ -59,7 +62,24 @@ export async function buildStudentReport(ctx: ReportCtx, studentId: string) {
       .sort({ date: -1, createdAt: -1 })
       .limit(ENTRIES_LIMIT)
       .lean(),
+    loadGradeStats(ctx, sid),
+    SubjectGrade.find({
+      schoolId: ctx.schoolId,
+      studentId: st._id,
+      isDeleted: false,
+      date: { $gte: ctx.from, $lte: ctx.to },
+    })
+      .sort({ date: -1, createdAt: -1 })
+      .limit(ENTRIES_LIMIT)
+      .lean(),
   ]);
+  const gStats = gradeStats.get(String(st._id));
+  const gradeSubjects = gradeDocs.length
+    ? await Subject.find({ _id: { $in: [...new Set(gradeDocs.map((g) => String(g.subjectId)))] } })
+        .select('name')
+        .lean()
+    : [];
+  const gradeSubjectName = new Map(gradeSubjects.map((s) => [String(s._id), s.name]));
   const stats = groupDays(dayRows).get(String(st._id));
   const rt = live.byStudent.get(String(st._id));
   const eligible = !!rt?.eligible;
@@ -74,7 +94,7 @@ export async function buildStudentReport(ctx: ReportCtx, studentId: string) {
     ...beh.map((b) => b.typeId),
     ...scores.map((s) => (s.behaviorTypeId ? String(s.behaviorTypeId) : null)),
   ]);
-  const teacherIds = [...new Set(scores.map((s) => String(s.teacherId)))];
+  const teacherIds = [...new Set([...scores, ...gradeDocs].map((s) => String(s.teacherId)))];
   const teachers = teacherIds.length
     ? await User.find({ _id: { $in: teacherIds } })
         .select('fullName')
@@ -113,6 +133,18 @@ export async function buildStudentReport(ctx: ReportCtx, studentId: string) {
       ratingScore: eligible ? (rt?.score ?? null) : null,
       classRank: eligible && classRank > 0 ? classRank : null,
       ratedStudentsInClass: ratedInClass,
+    },
+    subjectGrades: {
+      average: gStats?.average ?? null,
+      count: gStats?.count ?? 0,
+      bySubject: gStats?.bySubject ?? [],
+      entries: gradeDocs.map((g) => ({
+        date: g.date,
+        value: g.value,
+        subject: { id: String(g.subjectId), name: gradeSubjectName.get(String(g.subjectId)) ?? '' },
+        comment: commentFor(ctx, String(g.teacherId), g.comment),
+        teacher: { id: String(g.teacherId), fullName: tMap.get(String(g.teacherId)) ?? '' },
+      })),
     },
     trend: (stats?.days ?? []).map((d) => ({ date: d.date, dayScore: d.day })),
     behaviorDistribution: distribution(beh, types),
@@ -154,6 +186,8 @@ export function studentLayout(d: StudentReport): ReportLayout {
       { label: 'Min / Maks', value: `${d.score.minScore ?? '—'} / ${d.score.maxScore ?? '—'}` },
       { label: 'Baholangan kunlar', value: d.score.daysCount },
       { label: 'Baholar soni', value: d.score.scoresCount },
+      { label: "Fan baholari o'rtachasi", value: fmtNum(d.subjectGrades.average) },
+      { label: 'Fan baholari soni', value: d.subjectGrades.count },
       { label: "Sinfda o'rin", value: d.score.classRank ?? '—' },
       { label: "Maktabda o'rin", value: d.score.rank ?? '—' },
       { label: 'Reyting bali', value: fmtNum(d.score.ratingScore) },
@@ -195,6 +229,32 @@ export function studentLayout(d: StudentReport): ReportLayout {
           value: e.value,
           behavior: e.behaviorType?.name ?? '',
           color: e.behaviorType?.color ?? null,
+          teacher: e.teacher.fullName,
+          comment: e.comment ?? '',
+        })),
+      },
+      {
+        title: "Fanlar bo'yicha o'rtacha baho",
+        columns: [
+          { header: 'Fan', key: 'name', width: 28 },
+          { header: "O'rtacha", key: 'average', width: 12, type: 'number', align: 'right' },
+          { header: 'Baholar soni', key: 'count', width: 14, type: 'int', align: 'right' },
+        ],
+        rows: d.subjectGrades.bySubject.map((b) => ({ ...b })),
+      },
+      {
+        title: 'Fan baholari',
+        columns: [
+          { header: 'Sana', key: 'date', width: 12, type: 'date' },
+          { header: 'Fan', key: 'subject', width: 24 },
+          { header: 'Baho', key: 'value', width: 7, type: 'int', align: 'right' },
+          { header: "O'qituvchi", key: 'teacher', width: 26 },
+          { header: 'Izoh', key: 'comment', width: 40 },
+        ],
+        rows: d.subjectGrades.entries.map((e) => ({
+          date: e.date,
+          subject: e.subject.name,
+          value: e.value,
           teacher: e.teacher.fullName,
           comment: e.comment ?? '',
         })),

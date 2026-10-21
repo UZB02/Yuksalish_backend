@@ -245,7 +245,13 @@ describe('Excel eksport', () => {
     expect(res.status).toBe(200);
     expect(res.headers['content-disposition']).toContain("filename*=UTF-8''oquvchi-");
     const wb = await readXlsx(body(res));
-    expect(wb.worksheets.map((w) => w.name)).toEqual(['Kunlik ballar', 'Baholar', 'Davomat']);
+    expect(wb.worksheets.map((w) => w.name)).toEqual([
+      'Kunlik ballar',
+      'Baholar',
+      "Fanlar bo'yicha o'rtacha baho",
+      'Fan baholari',
+      'Davomat',
+    ]);
     const entries = wb.worksheets[1];
     expect(entries.getRow(1).values).toEqual([
       undefined,
@@ -260,7 +266,7 @@ describe('Excel eksport', () => {
     expect(entries.getRow(2).getCell(1).value).toBeInstanceOf(Date);
     expect(entries.getRow(2).getCell(1).numFmt).toBe('dd.mm.yyyy');
     expect(String(entries.getRow(2).getCell(5).value)).toBe('Яхши ўқувчи');
-    const att = wb.worksheets[2];
+    const att = wb.worksheets[4];
     expect(att.getRow(2).getCell(2).value).toBe('Keldi');
     expect(wb.worksheets[0].getCell('A1').value).toBe(
       "O'quvchi hisoboti: Қодиров Ғолиб Ҳasanovich".replace('Ҳasanovich', 'Ҳасанович'),

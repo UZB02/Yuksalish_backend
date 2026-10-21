@@ -124,7 +124,11 @@ describe('Ruxsatlar (permissions)', () => {
       .set(bearer(token))
       .send({ permissions: [] });
     expect(cleared.status).toBe(200);
-    expect(cleared.body.data.permissions).toEqual(['scores.create', 'attendance.take']);
+    expect(cleared.body.data.permissions).toEqual([
+      'scores.create',
+      'grades.create',
+      'attendance.take',
+    ]);
     expect(await AuditLog.countDocuments({ action: 'teacher.permissions' })).toBe(2);
   });
 
@@ -191,6 +195,9 @@ describe('Ruxsatlar (permissions)', () => {
       'teachers.manage',
       'scores.create',
       'scores.edit',
+      'grades.create',
+      'grades.edit',
+      'subjects.manage',
       'reports.view',
       'reports.export',
       'audit.view',
@@ -211,7 +218,11 @@ describe('Ruxsatlar (permissions)', () => {
   it("o'qituvchi login javobida scores.create doim bor", async () => {
     await makeUser({ username: 'tch', role: 'teacher', schoolId: school.id });
     const { res } = await login('tch');
-    expect(res.body.data.user.permissions).toEqual(['scores.create', 'attendance.take']);
+    expect(res.body.data.user.permissions).toEqual([
+      'scores.create',
+      'grades.create',
+      'attendance.take',
+    ]);
   });
 });
 

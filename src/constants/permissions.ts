@@ -52,6 +52,24 @@ export const PERMISSION_CATALOG: PermissionDef[] = [
     roles: ['school_admin', 'teacher'],
   },
   {
+    key: 'grades.create',
+    group: 'Fan baholari',
+    label: "Fan bahosi qo'yish",
+    roles: ['school_admin', 'teacher'],
+  },
+  {
+    key: 'grades.edit',
+    group: 'Fan baholari',
+    label: "Fan baholarini tahrirlash va o'chirish",
+    roles: ['school_admin', 'teacher'],
+  },
+  {
+    key: 'subjects.manage',
+    group: 'Fanlar',
+    label: 'Fanlarni boshqarish',
+    roles: ['school_admin'],
+  },
+  {
     key: 'reports.view',
     group: 'Hisobotlar',
     label: "Hisobotlarni ko'rish",
@@ -93,7 +111,7 @@ export const PERMISSION_CATALOG: PermissionDef[] = [
 export const ALL_PERMISSION_KEYS = PERMISSION_CATALOG.map((p) => p.key);
 
 // O'qituvchida doim mavjud asosiy ruxsat
-export const TEACHER_BASE_PERMISSIONS = ['scores.create', 'attendance.take'];
+export const TEACHER_BASE_PERMISSIONS = ['scores.create', 'grades.create', 'attendance.take'];
 
 // Rol uchun berilishi mumkin bo'lgan kalitlar
 export function permissionsForRole(role: Role): string[] {

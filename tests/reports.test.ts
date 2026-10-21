@@ -194,6 +194,8 @@ describe('Sinf hisoboti', () => {
       avgScore: 77.78, // 700 / 9 ta kunlik ball birligi
       daysScored: 4,
       scoresCount: 9,
+      subjectAvg: null,
+      gradesCount: 0,
       attendanceRate: 80, // (s1: 2/3, s2: 2/2) -> 4/5
       penaltyTotal: 0,
     });
@@ -210,6 +212,8 @@ describe('Sinf hisoboti', () => {
       maxScore: 90,
       daysCount: 4,
       scoresCount: 4,
+      subjectAvg: null,
+      gradesCount: 0,
       attendance: {
         present: 1,
         late: 1,
@@ -305,6 +309,8 @@ describe('Sinf hisoboti', () => {
       avgScore: null,
       daysScored: 0,
       scoresCount: 0,
+      subjectAvg: null,
+      gradesCount: 0,
       attendanceRate: null,
       penaltyTotal: 0,
     });

@@ -6,6 +6,8 @@ import { ClassModel, type ClassDoc } from '../../models/Class';
 import { School } from '../../models/School';
 import { Score } from '../../models/Score';
 import { Student } from '../../models/Student';
+import { Subject } from '../../models/Subject';
+import { SubjectGrade } from '../../models/SubjectGrade';
 import type { AuthUser } from '../../types/express';
 import { clock } from '../../utils/clock';
 import { round2 } from '../../utils/dayScore';
@@ -249,6 +251,68 @@ export function distribution(
       return { behaviorTypeId: id, name: t.name, kind: t.kind, color: t.color, count };
     })
     .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+}
+
+export interface GradeStats {
+  count: number;
+  average: number | null;
+  bySubject: { subjectId: string; name: string; count: number; average: number }[];
+}
+
+/** Fan baholari: o'quvchi bo'yicha umumiy va fanlar kesimidagi o'rtacha (2–5), davr ichida */
+export async function loadGradeStats(
+  ctx: ReportCtx,
+  studentIds?: Types.ObjectId[],
+): Promise<Map<string, GradeStats>> {
+  const match: Record<string, unknown> = {
+    schoolId: oid(ctx.schoolId),
+    isDeleted: false,
+    date: { $gte: ctx.from, $lte: ctx.to },
+  };
+  if (studentIds) match.studentId = { $in: studentIds };
+  const rows = await SubjectGrade.aggregate<{
+    _id: { s: Types.ObjectId; sub: Types.ObjectId };
+    sum: number;
+    n: number;
+  }>([
+    { $match: match },
+    {
+      $group: {
+        _id: { s: '$studentId', sub: '$subjectId' },
+        sum: { $sum: '$value' },
+        n: { $sum: 1 },
+      },
+    },
+  ]);
+  const subjects = rows.length
+    ? await Subject.find({ _id: { $in: [...new Set(rows.map((r) => String(r._id.sub)))] } })
+        .select('name')
+        .lean()
+    : [];
+  const names = new Map(subjects.map((s) => [String(s._id), s.name]));
+  const raw = new Map<string, { sum: number; n: number; by: GradeStats['bySubject'] }>();
+  for (const r of rows) {
+    const key = String(r._id.s);
+    const cur = raw.get(key) ?? { sum: 0, n: 0, by: [] };
+    cur.sum += r.sum;
+    cur.n += r.n;
+    cur.by.push({
+      subjectId: String(r._id.sub),
+      name: names.get(String(r._id.sub)) ?? '',
+      count: r.n,
+      average: round2(r.sum / r.n),
+    });
+    raw.set(key, cur);
+  }
+  const out = new Map<string, GradeStats>();
+  for (const [k, v] of raw) {
+    out.set(k, {
+      count: v.n,
+      average: round2(v.sum / v.n),
+      bySubject: v.by.sort((a, b) => a.name.localeCompare(b.name, 'uz')),
+    });
+  }
+  return out;
 }
 
 /** Faol o'quvchilar (sinflar bo'yicha cheklangan bo'lishi mumkin) */

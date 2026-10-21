@@ -10,6 +10,7 @@ import {
   loadBehavior,
   loadClassOrThrow,
   loadDays,
+  loadGradeStats,
   loadStudents,
   loadTypeInfo,
   mean,
@@ -29,12 +30,13 @@ export async function buildClassReport(ctx: ReportCtx, q: { classId: string }) {
   assertRowLimit(students.length);
   const ids = students.map((s) => s._id);
 
-  const [dayRows, att, beh, live, homeroom] = await Promise.all([
+  const [dayRows, att, beh, live, homeroom, grades] = await Promise.all([
     loadDays(ctx, ids),
     loadAttendance(ctx, ids),
     loadBehavior(ctx, ids),
     liveRating(ctx),
     cls.homeroomTeacherId ? User.findById(cls.homeroomTeacherId).select('fullName').lean() : null,
+    loadGradeStats(ctx, ids),
   ]);
   const days = groupDays(dayRows);
   const types = await loadTypeInfo(beh.map((b) => b.typeId));
@@ -59,6 +61,8 @@ export async function buildClassReport(ctx: ReportCtx, q: { classId: string }) {
       maxScore: st?.max ?? null,
       daysCount: st?.days.length ?? 0,
       scoresCount: st?.scoresCount ?? 0,
+      subjectAvg: grades.get(id)?.average ?? null,
+      gradesCount: grades.get(id)?.count ?? 0,
       attendance: {
         present: a.present,
         late: a.late,
@@ -101,6 +105,8 @@ export async function buildClassReport(ctx: ReportCtx, q: { classId: string }) {
       avgScore: mean(dayRows.map((d) => d.day)),
       daysScored: new Set(dayRows.map((d) => d.date)).size,
       scoresCount: dayRows.reduce((s, d) => s + d.n, 0),
+      subjectAvg: mean([...grades.values()].flatMap((g) => Array(g.count).fill(g.average))),
+      gradesCount: [...grades.values()].reduce((s, g) => s + g.count, 0),
       attendanceRate: attTotal.rate,
       penaltyTotal: round2(rows.reduce((s, r) => s + r.penalty, 0)),
     },
@@ -148,6 +154,14 @@ export function classLayout(d: ClassReport): ReportLayout {
           { header: 'Maks', key: 'maxScore', width: 6, type: 'int', align: 'right' },
           { header: 'Kunlar', key: 'daysCount', width: 7, type: 'int', align: 'right' },
           { header: 'Baholar', key: 'scoresCount', width: 8, type: 'int', align: 'right' },
+          {
+            header: "Fan o'rtachasi",
+            key: 'subjectAvg',
+            width: 9,
+            type: 'number',
+            align: 'right',
+            short: 'Fan',
+          },
           { header: 'Keldi', key: 'present', width: 7, type: 'int', align: 'right' },
           {
             header: 'Kechikdi',
