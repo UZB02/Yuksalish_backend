@@ -87,7 +87,7 @@ MongoDB (27017) va API (4000) portlari ochilmaydi va ochilmasligi kerak.
 ## 3. Docker o'rnatish
 
 ```bash
-sudo dnf -y install dnf-plugins-core
+sudo dnf -y install dnf-plugins-core git nano openssl   # openssl: .env parollarini yaratish uchun (minimal AlmaLinux da yo'q)
 sudo dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
 sudo dnf -y install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 sudo systemctl enable --now docker
