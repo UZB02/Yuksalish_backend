@@ -1,0 +1,12 @@
+# Faqat lokal dev: Mongo ni hostga ochadi (auth yo'q). Productionda ISHLATMANG.
+# Ishlatish: docker compose -f docker-compose.dev.yml up -d
+services:
+  mongo:
+    image: mongo:7
+    ports:
+      - '127.0.0.1:27017:27017'
+    volumes:
+      - mongo-dev-data:/data/db
+
+volumes:
+  mongo-dev-data:

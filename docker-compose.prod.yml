@@ -1,0 +1,97 @@
+# Production: mongo (yopiq, parolli) + api + web (Caddy: HTTPS + frontendlar)
+# Papka tuzilmasi (serverda): /opt/yuksalish/{Yuksalish_backend, Yuksalish_Front/admin, Yuksalish-publik}
+# Ishlatish: Yuksalish_backend/ ichida `.env` yarating (deploy/production.env.example dan), so'ng:
+#   docker compose up -d --build        (.env dagi COMPOSE_FILE shu faylni ko'rsatadi)
+# Docker BuildKit kerak (web image ning .dockerignore fayli shunga tayanadi).
+# Batafsil: docs/DEPLOY.md
+name: yuksalish
+
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    # Portlar TASHQARIGA OCHILMAYDI: faqat ichki tarmoqda (api ulanadi)
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:?MONGO_ROOT_USER .env da berilishi kerak}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?MONGO_ROOT_PASSWORD .env da berilishi kerak}
+      MONGO_APP_USER: ${MONGO_APP_USER:?MONGO_APP_USER .env da berilishi kerak}
+      MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD:?MONGO_APP_PASSWORD .env da berilishi kerak}
+    volumes:
+      - mongo-data:/data/db
+      # Faqat bo'sh bazada birinchi ishga tushishda bajariladi
+      - ./deploy/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro,z
+    healthcheck:
+      test: ['CMD', 'mongosh', '--quiet', '--eval', "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  api:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    # Portlar ochilmaydi: tashqaridan faqat Caddy (web) orqali
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      MONGODB_URI: mongodb://${MONGO_APP_USER}:${MONGO_APP_PASSWORD}@mongo:27017/yuksalish?authSource=yuksalish
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?JWT_ACCESS_SECRET .env da berilishi kerak (kamida 32 belgi)}
+      ACCESS_TOKEN_TTL_MINUTES: 15
+      REFRESH_TOKEN_TTL_DAYS: ${REFRESH_TOKEN_TTL_DAYS:-7}
+      CORS_ORIGINS: https://${ADMIN_DOMAIN:?ADMIN_DOMAIN .env da berilishi kerak}
+      PUBLIC_CORS_ORIGINS: https://${PUBLIC_DOMAIN:?PUBLIC_DOMAIN .env da berilishi kerak}
+      # Caddy orqasida: haqiqiy mijoz IP sini X-Forwarded-For dan olish (rate limit uchun shart)
+      TRUST_PROXY: 1
+      ENABLE_DOCS: ${ENABLE_DOCS:-false}
+      JOBS_ENABLED: 'true'
+      RATE_LIMIT_ENABLED: 'true'
+      PUBLIC_RATE_LIMIT_PER_MIN: ${PUBLIC_RATE_LIMIT_PER_MIN:-120}
+      AUDIT_RETENTION_DAYS: ${AUDIT_RETENTION_DAYS:-}
+      # `docker compose exec api node dist/scripts/seed.js` uchun
+      SEED_SUPERADMIN_USERNAME: ${SEED_SUPERADMIN_USERNAME:-}
+      SEED_SUPERADMIN_PASSWORD: ${SEED_SUPERADMIN_PASSWORD:-}
+      SEED_SUPERADMIN_FULLNAME: ${SEED_SUPERADMIN_FULLNAME:-Super Admin}
+    healthcheck:
+      # image da wget/curl yo'q (bookworm-slim) — node bilan tekshiramiz
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:4000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  web:
+    build:
+      # Kontekst: ota papka (/opt/yuksalish) — uchala repo shu yerda yonma-yon turadi
+      context: ..
+      dockerfile: Yuksalish_backend/deploy/web.Dockerfile
+      args:
+        # Admin paneldagi "ochiq reyting havolasi" shu manzilga qaraydi (build vaqtida o'rnatiladi)
+        VITE_PUBLIC_URL: https://${PUBLIC_DOMAIN}
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - '80:80'
+      - '443:443'
+      - '443:443/udp'
+    environment:
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN}
+      ADMIN_DOMAIN: ${ADMIN_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL .env da berilishi kerak (Let's Encrypt uchun)}
+    volumes:
+      - caddy-data:/data # sertifikatlar shu yerda saqlanadi — o'chirmang
+      - caddy-config:/config
+
+volumes:
+  mongo-data:
+  caddy-data:
+  caddy-config:

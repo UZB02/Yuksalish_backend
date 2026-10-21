@@ -1,0 +1,20 @@
+# BuildKit: web.Dockerfile uchun alohida ignore fayli (Dockerfile nomi + ".dockerignore").
+# Build konteksti: /opt/yuksalish (uchala repo ning ota papkasi), shuning uchun yo'llar shu papkaga nisbatan.
+# Keraksiz va maxfiy fayllar build kontekstiga tushmasin.
+**/node_modules
+**/dist
+**/coverage
+**/.git
+**/.env
+**/.env.*
+!**/.env.example
+
+# Backend kodi bu image ga kerak emas (api alohida build qilinadi), faqat Caddyfile kerak
+Yuksalish_backend/*
+!Yuksalish_backend/deploy
+Yuksalish_backend/deploy/*
+!Yuksalish_backend/deploy/Caddyfile
+
+# Hujjatlar
+**/docs
+**/*.md

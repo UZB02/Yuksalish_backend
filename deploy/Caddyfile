@@ -1,0 +1,53 @@
+{
+	# Let's Encrypt sertifikatlari avtomatik olinadi va yangilanadi
+	email {$ACME_EMAIL}
+}
+
+(common) {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+}
+
+# ---- Ochiq reyting (hamma uchun) ----
+{$PUBLIC_DOMAIN} {
+	import common
+
+	# Ochiq domen orqali faqat public API ochiq; login va boshqa endpointlar bu yerdan ishlamaydi
+	handle /api/v1/public/* {
+		reverse_proxy api:4000
+	}
+	handle /api/* {
+		respond "Not found" 404
+	}
+
+	handle {
+		root * /srv/public
+		@assets path /assets/*
+		header @assets Cache-Control "public, max-age=31536000, immutable"
+		try_files {path} /index.html
+		file_server
+	}
+}
+
+# ---- Admin panel ----
+{$ADMIN_DOMAIN} {
+	import common
+
+	handle /api/* {
+		reverse_proxy api:4000
+	}
+
+	handle {
+		root * /srv/admin
+		@assets path /assets/*
+		header @assets Cache-Control "public, max-age=31536000, immutable"
+		try_files {path} /index.html
+		file_server
+	}
+}
