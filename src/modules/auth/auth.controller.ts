@@ -58,6 +58,14 @@ export const me = asyncHandler(async (req, res) => {
   ok(res, await authService.me(getCtx(req).actor.id));
 });
 
+export const setOwnPhoto = asyncHandler(async (req, res) => {
+  ok(res, await authService.setOwnPhoto(getCtx(req), req.file));
+});
+
+export const removeOwnPhoto = asyncHandler(async (req, res) => {
+  ok(res, await authService.removeOwnPhoto(getCtx(req)));
+});
+
 export const changePassword = asyncHandler(async (req, res) => {
   const data = await authService.changePassword(
     getCtx(req),

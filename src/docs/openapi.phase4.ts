@@ -70,7 +70,7 @@ export function buildPhase4(h: DocHelpers) {
     {
       name: 'Public',
       description:
-        "Autentifikatsiyasiz, faqat GET. Izoh, xulq turi, o'qituvchi, telefon, studentCode, tug'ilgan sana, jins, photoUrl va ichki id lar hech qachon chiqmaydi",
+        "Autentifikatsiyasiz, faqat GET. Izoh, xulq turi, o'qituvchi, telefon, studentCode, tug'ilgan sana, jins va ichki id lar hech qachon chiqmaydi. Rasm (photoUrl) faqat showPhotos=true bo'lsa va faqat faol o'quvchilar uchun",
     },
   ];
 
@@ -97,6 +97,10 @@ export function buildPhase4(h: DocHelpers) {
     showScores: bool,
     showMedals: bool,
     showTrend: bool,
+    showPhotos: {
+      ...bool,
+      description: "O'quvchi rasmlarini ochiq sahifa va TV da ko'rsatish (standart false)",
+    },
     title: { type: 'string', nullable: true, maxLength: 80 },
     subtitle: { type: 'string', nullable: true, maxLength: 160 },
     primaryColor: { type: 'string', nullable: true, example: '#16A34A' },
@@ -292,6 +296,7 @@ export function buildPhase4(h: DocHelpers) {
           showScores: bool,
           showMedals: bool,
           showTrend: bool,
+          showPhotos: bool,
           topStudents: intNull,
           autoRefreshSeconds: int,
           tvSlideSeconds: int,

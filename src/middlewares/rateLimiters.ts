@@ -15,6 +15,16 @@ const make = (windowMs: number, limit: number, message: string) =>
 /** Umumiy API: daqiqasiga 300 ta */
 export const apiLimiter = make(60_000, 300, "So'rovlar juda ko'p. Birozdan so'ng urinib ko'ring");
 
+/**
+ * Rasmlar (imzolangan havola): ro'yxatda o'nlab avatar bir vaqtda yuklanadi, shuning uchun
+ * umumiy apiLimiter dan alohida, yuqoriroq chegara (daqiqasiga 1500). Brauzer keshi (1 kun) bor.
+ */
+export const photoLimiter = make(
+  60_000,
+  1500,
+  "So'rovlar juda ko'p. Birozdan so'ng urinib ko'ring",
+);
+
 /** Login/refresh: 15 daqiqada 30 ta */
 export const loginLimiter = make(
   15 * 60_000,

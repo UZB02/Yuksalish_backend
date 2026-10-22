@@ -10,8 +10,9 @@ import { logger } from './core/logger';
 import { openApiSpec } from './docs/openapi';
 import { errorHandler } from './middlewares/errorHandler';
 import { notFound } from './middlewares/notFound';
-import { apiLimiter } from './middlewares/rateLimiters';
+import { apiLimiter, photoLimiter } from './middlewares/rateLimiters';
 import { sanitize } from './middlewares/sanitize';
+import { photosRouter } from './modules/photos/photos.routes';
 import { healthRouter } from './modules/health/health.routes';
 import { apiRouter } from './routes';
 
@@ -38,6 +39,8 @@ export function createApp(): Express {
 
   app.use('/health', healthRouter);
   if (env.ENABLE_DOCS) app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(openApiSpec));
+  // Rasmlar apiLimiter dan oldin: o'z (yuqoriroq) limiti bilan
+  app.use('/api/v1/photos', photoLimiter, photosRouter);
   app.use('/api/v1', apiLimiter, apiRouter);
 
   app.use(notFound);

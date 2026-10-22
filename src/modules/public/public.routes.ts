@@ -79,3 +79,23 @@ publicRouter.get(
     respond(req, res, () => publicService.students(slug(req), req.query as never)),
   ),
 );
+
+// Rasm: binar javob, shuning uchun publicCache dan o'tmaydi; ETag = mazmun xeshi
+publicRouter.get(
+  '/:slug/photos/:photoId',
+  asyncHandler(async (req, res) => {
+    const photo = await publicService.photo(slug(req), String(req.params.photoId));
+    const etag = `"${photo.hash}"`;
+    res.set({
+      'Content-Type': photo.contentType,
+      ETag: etag,
+      'Cache-Control': 'public, max-age=3600',
+    });
+    if (req.headers['if-none-match'] === etag) {
+      res.status(304).end();
+      return;
+    }
+    res.set('Content-Length', String(photo.data.length));
+    res.status(200).end(photo.data);
+  }),
+);

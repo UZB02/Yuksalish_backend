@@ -560,6 +560,7 @@ describe('Sozlamalar: rating va public', () => {
       showScores: true,
       showMedals: true,
       showTrend: true,
+      showPhotos: false,
       title: null,
       subtitle: null,
       primaryColor: null,

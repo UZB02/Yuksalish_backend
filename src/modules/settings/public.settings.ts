@@ -14,6 +14,8 @@ export interface PublicSettings {
   showScores: boolean;
   showMedals: boolean;
   showTrend: boolean;
+  /** O'quvchi rasmlarini ochiq reyting va TV rejimida ko'rsatish (standart: yo'q) */
+  showPhotos: boolean;
   title: string | null;
   subtitle: string | null;
   primaryColor: string | null;
@@ -33,6 +35,7 @@ export const PUBLIC_DEFAULTS: PublicSettings = {
   showScores: true,
   showMedals: true,
   showTrend: true,
+  showPhotos: false,
   title: null,
   subtitle: null,
   primaryColor: null,
@@ -51,6 +54,7 @@ export const publicValuesSchema = z.object({
   showScores: z.boolean().optional(),
   showMedals: z.boolean().optional(),
   showTrend: z.boolean().optional(),
+  showPhotos: z.boolean().optional(),
   title: z
     .string()
     .trim()

@@ -9,6 +9,8 @@ import { escapeRegex, isDuplicateKeyError, isId } from '../../utils/helpers';
 import { cleanText, nameKeyOf } from '../../utils/text';
 import { auditService } from '../audit/audit.service';
 import { allowedClassIds } from '../classes/classes.service';
+import { photosService } from '../photos/photos.service';
+import { photoUrl } from '../photos/photos.url';
 import { ratingEvents } from '../ratings/ratings.events';
 import type { ExportStudent } from './students.excel';
 
@@ -30,6 +32,8 @@ export async function toStudentDtos(docs: StudentDoc[], schoolId: string) {
     class: { id: String(s.classId), name: names.get(String(s.classId)) ?? '' },
     parentPhone: s.parentPhone ?? null,
     photoUrl: s.photoUrl ?? null,
+    /** Yuklangan rasm: imzolangan havola yoki null */
+    photo: photoUrl(s.photoId),
     status: s.status,
     createdAt: s.createdAt,
   }));
@@ -228,7 +232,10 @@ export const studentsService = {
     const student = await findOrFail(ctx.actor, schoolId, id);
     const before = snapshot(student);
     student.isDeleted = true;
+    student.photoId = null;
     await student.save();
+    // Bolaning rasmi o'chirilgan o'quvchida saqlanmaydi (maxfiylik)
+    await photosService.purgeOwner('student', student.id);
     await auditService.log({
       userId: ctx.actor.id,
       schoolId,
@@ -239,6 +246,35 @@ export const studentsService = {
       ip: ctx.ip,
     });
     void ratingEvents.dataChanged(schoolId);
+  },
+
+  /** Rasm yuklash/almashtirish (students.manage) */
+  async setPhoto(ctx: Ctx, schoolId: string, id: string, file: Express.Multer.File | undefined) {
+    const student = await findOrFail(ctx.actor, schoolId, id);
+    await photosService.set(
+      ctx,
+      {
+        schoolId,
+        ownerType: 'student',
+        owner: student,
+        auditPrefix: 'student',
+        auditEntity: 'student',
+      },
+      file,
+    );
+    return (await toStudentDtos([student], schoolId))[0];
+  },
+
+  async removePhoto(ctx: Ctx, schoolId: string, id: string) {
+    const student = await findOrFail(ctx.actor, schoolId, id);
+    await photosService.clear(ctx, {
+      schoolId,
+      ownerType: 'student',
+      owner: student,
+      auditPrefix: 'student',
+      auditEntity: 'student',
+    });
+    return (await toStudentDtos([student], schoolId))[0];
   },
 
   /** Boshqa sinfga o'tkazish; tarix classHistory ga yoziladi */

@@ -22,6 +22,8 @@ export interface IStudent {
   classId: Types.ObjectId;
   parentPhone: string | null;
   photoUrl: string | null;
+  /** Yuklangan rasm (Photo kolleksiyasi); photoUrl — eski, tashqi havola */
+  photoId: Types.ObjectId | null;
   status: StudentStatus;
   classHistory: IClassHistory[];
   isDeleted: boolean;
@@ -41,6 +43,7 @@ const studentSchema = new Schema<IStudent>(
     classId: { type: Schema.Types.ObjectId, ref: 'Class', required: true },
     parentPhone: { type: String, trim: true, default: null },
     photoUrl: { type: String, trim: true, default: null },
+    photoId: { type: Schema.Types.ObjectId, ref: 'Photo', default: null },
     status: { type: String, enum: STUDENT_STATUSES, default: 'active' },
     classHistory: {
       type: [

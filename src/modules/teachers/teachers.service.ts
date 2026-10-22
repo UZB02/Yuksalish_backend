@@ -5,6 +5,7 @@ import { ClassModel } from '../../models/Class';
 import { assignmentsOfTeachers } from '../classes/class-subjects.service';
 import { classesService } from '../classes/classes.service';
 import { userManagement, type ListQuery } from '../users/user-management.service';
+import { photosService } from '../photos/photos.service';
 import { toUserDto } from '../users/user.dto';
 
 /** {teacherId -> sinf rahbari bo'lgan sinflar} (faol yil, arxivlanmagan) */
@@ -81,6 +82,28 @@ export const teachersService = {
   ) {
     const user = await userManagement.get('teacher', id, { schoolId });
     await userManagement.update(ctx, user, patch);
+    return (await withClasses(schoolId, [user]))[0];
+  },
+
+  async setPhoto(ctx: Ctx, schoolId: string, id: string, file: Express.Multer.File | undefined) {
+    const user = await userManagement.get('teacher', id, { schoolId });
+    await photosService.set(
+      ctx,
+      { schoolId, ownerType: 'user', owner: user, auditPrefix: 'teacher', auditEntity: 'user' },
+      file,
+    );
+    return (await withClasses(schoolId, [user]))[0];
+  },
+
+  async removePhoto(ctx: Ctx, schoolId: string, id: string) {
+    const user = await userManagement.get('teacher', id, { schoolId });
+    await photosService.clear(ctx, {
+      schoolId,
+      ownerType: 'user',
+      owner: user,
+      auditPrefix: 'teacher',
+      auditEntity: 'user',
+    });
     return (await withClasses(schoolId, [user]))[0];
   },
 

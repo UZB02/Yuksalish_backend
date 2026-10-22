@@ -161,6 +161,7 @@ describe('PUBLIC API: maxfiylik va maydonlar', () => {
         'school',
         'showClasses',
         'showMedals',
+        'showPhotos',
         'showScores',
         'showStudents',
         'showTrend',

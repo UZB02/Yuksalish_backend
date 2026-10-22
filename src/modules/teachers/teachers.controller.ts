@@ -24,6 +24,14 @@ export const update = asyncHandler(async (req, res) => {
   ok(res, await teachersService.update(getCtx(req), sid(req), id(req), req.body));
 });
 
+export const setPhoto = asyncHandler(async (req, res) => {
+  ok(res, await teachersService.setPhoto(getCtx(req), sid(req), id(req), req.file));
+});
+
+export const removePhoto = asyncHandler(async (req, res) => {
+  ok(res, await teachersService.removePhoto(getCtx(req), sid(req), id(req)));
+});
+
 export const setPermissions = asyncHandler(async (req, res) => {
   ok(
     res,

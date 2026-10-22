@@ -1,4 +1,6 @@
 # bookworm-slim (glibc): bcrypt tayyor binar fayli ishlaydi; alpine (musl) da native build muammosi bo'lishi mumkin
+# sharp (rasm qayta ishlash): npm ci tayyor linux-x64 glibc binarlarini (@img/sharp-*) o'rnatadi,
+# `npm prune --omit=dev` ularni saqlaydi (sharp — production dependency); qo'shimcha apt paketlari kerak emas
 FROM node:22-bookworm-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./

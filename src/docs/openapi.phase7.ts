@@ -41,6 +41,10 @@ export function buildPhase7(h: DocHelpers) {
 
   const tags = [
     {
+      name: 'Photos',
+      description: "O'quvchi/o'qituvchi rasmlari (MongoDB da, WebP, metadata yo'q)",
+    },
+    {
       name: 'Subjects',
       description:
         "Fanlar (global schoolId=null — superadmin; maktab fanlari — subjects.manage li maktab admini). O'chirish faqat ishlatilmagan fan uchun, aks holda nofaol qilinadi",
@@ -94,6 +98,79 @@ export function buildPhase7(h: DocHelpers) {
     type: 'array',
     items: o({ studentId: str, value: grade, comment: strNull }, ['studentId', 'value']),
   };
+
+  const multipart = {
+    required: true,
+    content: {
+      'multipart/form-data': {
+        schema: o({ photo: { type: 'string', format: 'binary' } }, ['photo']),
+      },
+    },
+  };
+  const photoOp = (summary: string, upload: boolean, secure = true) => ({
+    tags: ['Photos'],
+    summary,
+    security: secure ? secured : [],
+    parameters: [schoolHeader],
+    ...(upload ? { requestBody: multipart } : {}),
+    responses: { '200': { description: 'OK' }, ...errors },
+  });
+  const photoPaths = (): Obj => ({
+    '/students/{id}/photo': {
+      put: {
+        ...photoOp(
+          "O'quvchi rasmini yuklash/almashtirish (students.manage). JPG/PNG/WebP, max 5 MB; server 512x512 WebP ga qayta kodlaydi, EXIF o'chadi",
+          true,
+        ),
+        parameters: [schoolHeader, idParam],
+      },
+      delete: {
+        ...photoOp("O'quvchi rasmini o'chirish", false),
+        parameters: [schoolHeader, idParam],
+      },
+    },
+    '/teachers/{id}/photo': {
+      put: {
+        ...photoOp("O'qituvchi rasmini yuklash/almashtirish (teachers.manage)", true),
+        parameters: [schoolHeader, idParam],
+      },
+      delete: {
+        ...photoOp("O'qituvchi rasmini o'chirish (teachers.manage)", false),
+        parameters: [schoolHeader, idParam],
+      },
+    },
+    '/auth/me/photo': {
+      put: { ...photoOp("O'z rasmini yuklash (o'qituvchi / maktab admini)", true), parameters: [] },
+      delete: { ...photoOp("O'z rasmini o'chirish", false), parameters: [] },
+    },
+    '/photos/{id}': {
+      get: {
+        tags: ['Photos'],
+        summary:
+          'Rasm (image/webp). DTO dagi `photo` havolasi: ?exp=&sig= (HMAC, Bearer shart emas). ETag/304, Cache-Control: private, max-age=86400',
+        security: [],
+        parameters: [
+          idParam,
+          { name: 'exp', in: 'query', required: true, schema: { type: 'integer' } },
+          { name: 'sig', in: 'query', required: true, schema: { type: 'string' } },
+        ],
+        responses: { '200': { description: 'image/webp' }, '304': { description: 'Not Modified' } },
+      },
+    },
+    '/public/{slug}/photos/{photoId}': {
+      get: {
+        tags: ['Public'],
+        summary:
+          "Ochiq o'quvchi rasmi: faqat showPhotos=true va faol o'quvchi uchun, aks holda 404. Cache-Control: public, max-age=3600",
+        security: [],
+        parameters: [
+          { name: 'slug', in: 'path', required: true, schema: { type: 'string' } },
+          { name: 'photoId', in: 'path', required: true, schema: { type: 'string' } },
+        ],
+        responses: { '200': { description: 'image/webp' }, '404': { description: 'NOT_FOUND' } },
+      },
+    },
+  });
 
   const paths: Obj = {
     '/subjects': {
@@ -287,6 +364,8 @@ export function buildPhase7(h: DocHelpers) {
         { params: [...idp, q('from', 'string', 'YYYY-MM-DD'), q('to', 'string', 'YYYY-MM-DD')] },
       ),
     },
+    // --- Rasmlar (o'quvchi / o'qituvchi) ---
+    ...photoPaths(),
   };
 
   return { tags, schemas, paths };

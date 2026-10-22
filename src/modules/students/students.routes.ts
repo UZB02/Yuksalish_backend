@@ -19,6 +19,7 @@ import {
   transferBody,
   updateBody,
 } from './students.schema';
+import { uploadPhoto } from '../photos/photos.upload';
 import { uploadXlsx } from './students.upload';
 
 export const studentsRouter = Router();
@@ -79,4 +80,7 @@ studentsRouter.get(
 );
 studentsRouter.patch('/:id', ...write, validate({ body: updateBody }), c.update);
 studentsRouter.delete('/:id', ...write, c.remove);
+// Rasm: students.manage (superadmin / ruxsatli maktab admini), faqat o'z maktabi
+studentsRouter.put('/:id/photo', ...write, uploadPhoto, c.setPhoto);
+studentsRouter.delete('/:id/photo', ...write, c.removePhoto);
 studentsRouter.post('/:id/transfer', ...write, validate({ body: transferBody }), c.transfer);

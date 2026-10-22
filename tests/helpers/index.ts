@@ -19,6 +19,7 @@ import { AttendanceStatus } from '../../src/models/AttendanceStatus';
 import { AuditLog } from '../../src/models/AuditLog';
 import { ClassModel } from '../../src/models/Class';
 import { ImportSession } from '../../src/models/ImportSession';
+import { Photo } from '../../src/models/Photo';
 import { Student } from '../../src/models/Student';
 import { nameKeyOf } from '../../src/utils/text';
 import { RefreshToken } from '../../src/models/RefreshToken';
@@ -37,6 +38,7 @@ const ALL_MODELS: { init(): Promise<unknown>; deleteMany(f: object): PromiseLike
   AcademicYear,
   ClassModel,
   Student,
+  Photo,
   ImportSession,
   BehaviorType,
   Setting,

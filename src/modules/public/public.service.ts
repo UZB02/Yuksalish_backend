@@ -2,8 +2,10 @@ import crypto from 'crypto';
 import { env } from '../../config/env';
 import { AppError } from '../../core/errors';
 import { buildMeta, skipOf } from '../../core/pagination';
+import { Photo } from '../../models/Photo';
 import { School } from '../../models/School';
-import { escapeRegex } from '../../utils/helpers';
+import { Student } from '../../models/Student';
+import { escapeRegex, isId } from '../../utils/helpers';
 import { rankChange } from '../ratings/rating.calc';
 import {
   findClassRatings,
@@ -17,7 +19,9 @@ import { settingsService } from '../settings/settings.service';
 
 /**
  * PUBLIC javoblarda faqat shu yerda sanalgan maydonlar chiqadi. Hech qachon: izoh, xulq turi,
- * o'qituvchi, telefon, studentCode, tug'ilgan sana, jins, photoUrl, ichki schoolId/userId.
+ * o'qituvchi, telefon, studentCode, tug'ilgan sana, jins, eski photoUrl, ichki schoolId/userId.
+ * Rasm faqat `showPhotos` yoqilganda va faqat faol o'quvchilar uchun, opaque `photoUrl` sifatida chiqadi.
+ * O'qituvchi rasmlari hech qachon chiqmaydi.
  */
 const NOT_FOUND = () => AppError.notFound('Reyting topilmadi');
 
@@ -74,6 +78,7 @@ export const publicService = {
         showScores: settings.showScores,
         showMedals: settings.showMedals,
         showTrend: settings.showTrend,
+        showPhotos: settings.showPhotos,
         topStudents: settings.topStudents,
         autoRefreshSeconds: settings.autoRefreshSeconds,
         tvSlideSeconds: settings.tvSlideSeconds,
@@ -110,7 +115,7 @@ export const publicService = {
     slug: string,
     q: { classId?: string; grade?: number; search?: string; limit: number; page: number },
   ) {
-    const { id, settings } = await resolveSchool(slug);
+    const { school, id, settings } = await resolveSchool(slug);
     if (!settings.showStudents) throw NOT_FOUND();
     const snap = await getSnapshot(id);
     const base = { classId: q.classId, grade: q.grade, includeIneligible: false };
@@ -137,6 +142,12 @@ export const publicService = {
       docs = r.docs;
       total = r.total;
     }
+    const photoOf = settings.showPhotos
+      ? await publicPhotoIds(
+          id,
+          docs.map((d) => String(d.refId)),
+        )
+      : null;
     return {
       data: {
         period: periodOut(snap.period),
@@ -144,6 +155,13 @@ export const publicService = {
         items: docs.map((d) => ({
           rank: d.rank,
           ...(settings.showTrend ? { rankChange: rankChange(d.rank, d.previousRank) } : {}),
+          ...(photoOf
+            ? {
+                photoUrl: photoOf.has(String(d.refId))
+                  ? `/api/v1/public/${school.slug}/photos/${photoOf.get(String(d.refId))}`
+                  : null,
+              }
+            : {}),
           studentKey: studentKey(String(d.refId)),
           fullName: d.name,
           className: d.className,
@@ -152,6 +170,32 @@ export const publicService = {
       },
       meta: buildMeta(q.page, q.limit, total),
     };
+  },
+
+  /**
+   * Ochiq rasm: faqat maktabda public va showStudents va showPhotos yoqilgan bo'lsa hamda rasm
+   * shu maktabning FAOL o'quvchisiga tegishli bo'lsa; aks holda bir xil 404.
+   */
+  async photo(slug: string, photoId: string) {
+    const { id, settings } = await resolveSchool(slug);
+    if (!settings.showPhotos || !settings.showStudents || !isId(photoId)) throw NOT_FOUND();
+    const student = await Student.findOne({
+      schoolId: id,
+      photoId,
+      status: 'active',
+      isDeleted: false,
+    })
+      .select('_id')
+      .lean();
+    if (!student) throw NOT_FOUND();
+    const photo = await Photo.findOne({
+      _id: photoId,
+      schoolId: id,
+      ownerType: 'student',
+      ownerId: student._id,
+    }).select('+data');
+    if (!photo) throw NOT_FOUND();
+    return photo;
   },
 
   /** Umumiy (maktablar) reyting — faqat platformada globalRatingEnabled bo'lsa */
@@ -202,6 +246,23 @@ export const publicService = {
     };
   },
 };
+
+/** {studentId -> photoId} faqat faol, rasmi bor o'quvchilar uchun */
+async function publicPhotoIds(schoolId: string, studentIds: string[]) {
+  const map = new Map<string, string>();
+  if (!studentIds.length) return map;
+  const rows = await Student.find({
+    _id: { $in: studentIds },
+    schoolId,
+    status: 'active',
+    isDeleted: false,
+    photoId: { $ne: null },
+  })
+    .select('photoId')
+    .lean();
+  for (const r of rows) map.set(String(r._id), String(r.photoId));
+  return map;
+}
 
 async function globalEnabled(): Promise<boolean> {
   return (await settingsService.getGlobal<PublicSettings>('public')).globalRatingEnabled;

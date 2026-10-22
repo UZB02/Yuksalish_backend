@@ -8,6 +8,7 @@ export interface IUser {
   passwordHash: string;
   role: Role;
   phone: string | null;
+  photoId: Types.ObjectId | null;
   permissions: string[];
   isActive: boolean;
   lastLoginAt: Date | null;
@@ -27,6 +28,7 @@ const userSchema = new Schema<IUser>(
     passwordHash: { type: String, required: true, select: false },
     role: { type: String, enum: ROLES, required: true },
     phone: { type: String, trim: true, default: null },
+    photoId: { type: Schema.Types.ObjectId, ref: 'Photo', default: null },
     permissions: { type: [String], default: [] },
     isActive: { type: Boolean, default: true },
     lastLoginAt: { type: Date, default: null },

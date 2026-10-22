@@ -5,6 +5,7 @@ import { School } from '../../models/School';
 import { User } from '../../models/User';
 import { comparePassword, dummyCompare, hashPassword } from '../../utils/password';
 import { auditService } from '../audit/audit.service';
+import { photosService } from '../photos/photos.service';
 import { toUserDto } from '../users/user.dto';
 import { refreshTokenService } from './refresh-token.service';
 import { signAccessToken } from './tokens';
@@ -104,6 +105,37 @@ export const authService = {
   async me(userId: string) {
     const user = await User.findById(userId);
     if (!user) throw AppError.unauthorized();
+    return toUserDto(user);
+  },
+
+  /** O'z profil rasmini yuklash/almashtirish (faqat maktab xodimi, faqat o'zi uchun) */
+  async setOwnPhoto(ctx: Ctx, file: Express.Multer.File | undefined) {
+    const user = await User.findById(ctx.actor.id);
+    if (!user || !user.schoolId) throw AppError.forbidden();
+    await photosService.set(
+      ctx,
+      {
+        schoolId: String(user.schoolId),
+        ownerType: 'user',
+        owner: user,
+        auditPrefix: user.role,
+        auditEntity: 'user',
+      },
+      file,
+    );
+    return toUserDto(user);
+  },
+
+  async removeOwnPhoto(ctx: Ctx) {
+    const user = await User.findById(ctx.actor.id);
+    if (!user || !user.schoolId) throw AppError.forbidden();
+    await photosService.clear(ctx, {
+      schoolId: String(user.schoolId),
+      ownerType: 'user',
+      owner: user,
+      auditPrefix: user.role,
+      auditEntity: 'user',
+    });
     return toUserDto(user);
   },
 

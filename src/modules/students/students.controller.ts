@@ -38,6 +38,12 @@ export const remove = asyncHandler(async (req, res) => {
   await s.remove(getCtx(req), sid(req), id(req));
   ok(res, { deleted: true });
 });
+export const setPhoto = asyncHandler(async (req, res) => {
+  ok(res, await s.setPhoto(getCtx(req), sid(req), id(req), req.file));
+});
+export const removePhoto = asyncHandler(async (req, res) => {
+  ok(res, await s.removePhoto(getCtx(req), sid(req), id(req)));
+});
 export const transfer = asyncHandler(async (req, res) => {
   ok(res, await s.transfer(getCtx(req), sid(req), id(req), req.body.classId));
 });

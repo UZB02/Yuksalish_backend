@@ -1,3 +1,4 @@
+import { photoUrl } from '../photos/photos.url';
 import type { Types } from 'mongoose';
 import type { Ctx } from '../../core/context';
 import { AppError, type ErrorCode, type ErrorDetail } from '../../core/errors';
@@ -535,6 +536,7 @@ export const gradesService = {
           studentId: st.id as string,
           fullName: st.fullName,
           studentCode: st.studentCode ?? null,
+          photo: photoUrl(st.photoId),
           grade,
           alreadyGraded: !!grade,
         };

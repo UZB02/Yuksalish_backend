@@ -1,3 +1,4 @@
+import { photoUrl } from '../photos/photos.url';
 import { Types } from 'mongoose';
 import type { Ctx } from '../../core/context';
 import { AppError, type ErrorCode, type ErrorDetail } from '../../core/errors';
@@ -526,6 +527,7 @@ export const scoresService = {
           studentId: st.id as string,
           fullName: st.fullName,
           studentCode: st.studentCode ?? null,
+          photo: photoUrl(st.photoId),
           myScore: mine ? (dtoById.get(mine.id) ?? null) : null,
           dayScore: dailyScore(
             list.map((s) => ({ value: s.value, createdAt: s.createdAt })),

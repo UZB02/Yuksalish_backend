@@ -1,3 +1,4 @@
+import { photoUrl } from '../photos/photos.url';
 import { Types } from 'mongoose';
 import type { Ctx } from '../../core/context';
 import { AppError, type ErrorCode, type ErrorDetail } from '../../core/errors';
@@ -479,6 +480,7 @@ export const attendanceService = {
         studentId: s.id as string,
         fullName: s.fullName,
         studentCode: s.studentCode ?? null,
+        photo: photoUrl(s.photoId),
         record: dtoByStudent.get(s.id) ?? null,
       })),
       summary,
