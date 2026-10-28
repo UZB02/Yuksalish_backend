@@ -335,6 +335,43 @@ export function buildPhase2(h: DocHelpers) {
         },
       ),
     },
+    '/teachers/import/template': {
+      get: op('Teachers import', 'Shablon (xlsx, teachers.manage)', { '200': xlsxRes }),
+    },
+    '/teachers/import/preview': {
+      post: {
+        ...op(
+          'Teachers import',
+          "Oldindan ko'rish (DB ga yozilmaydi). multipart: file (.xlsx, <=5MB, <=500 qator)",
+          { '200': okRes(o({ summary: o({}), rows: { type: 'array', items: o({}) } })) },
+        ),
+        requestBody: {
+          required: true,
+          content: {
+            'multipart/form-data': {
+              schema: o({ file: { type: 'string', format: 'binary' } }, ['file']),
+            },
+          },
+        },
+      },
+    },
+    '/teachers/import/confirm': {
+      post: {
+        ...op(
+          'Teachers import',
+          "Tasdiqlash: o'sha fayl qayta yuboriladi, server qayta tekshirib yaratadi. Javobda yaratilganlarning parollari (saqlanmaydi)",
+          { '200': okRes(o({ summary: o({}), results: { type: 'array', items: o({}) } })) },
+        ),
+        requestBody: {
+          required: true,
+          content: {
+            'multipart/form-data': {
+              schema: o({ file: { type: 'string', format: 'binary' } }, ['file']),
+            },
+          },
+        },
+      },
+    },
     '/dashboard/summary': {
       get: op(
         'Dashboard',

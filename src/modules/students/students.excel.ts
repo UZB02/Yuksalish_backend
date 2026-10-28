@@ -147,7 +147,7 @@ export async function assertSafeXlsx(buffer: Buffer): Promise<void> {
   if (total > MAX_UNCOMPRESSED_BYTES) throw bad('Fayl hajmi juda katta');
 }
 
-function cellRaw(v: ExcelJS.CellValue): RawCell {
+export function cellRaw(v: ExcelJS.CellValue): RawCell {
   if (v === null || v === undefined) return null;
   if (typeof v === 'string' || typeof v === 'number') return v;
   if (v instanceof Date) return v;
