@@ -16,6 +16,8 @@ import {
   makeSchool,
   makeStatus,
   makeStudent,
+  makeSubject,
+  assignSubject,
   makeUser,
   makeYear,
   useTestDb,
@@ -34,6 +36,8 @@ let c5: Doc, c6: Doc;
 let s1: Doc, s2: Doc, s3: Doc, s4: Doc; // s1, s2, s3 — 5-A; s4 — 6-A
 let K: Doc, Ke: Doc, S: Doc, Y: Doc, Eski: Doc;
 let teacher1: Doc;
+let teacher2: Doc, teacher3: Doc;
+let math: Doc, phys: Doc;
 let t1: string,
   t2: string,
   t3: string,
@@ -55,8 +59,8 @@ beforeEach(async () => {
     schoolId: school.id,
     permissions: ['dashboard.view'],
   });
-  const teacher2 = await makeUser({ username: 'teacher2', role: 'teacher', schoolId: school.id });
-  const teacher3 = await makeUser({ username: 'teacher3', role: 'teacher', schoolId: school.id });
+  teacher2 = await makeUser({ username: 'teacher2', role: 'teacher', schoolId: school.id });
+  teacher3 = await makeUser({ username: 'teacher3', role: 'teacher', schoolId: school.id });
   await makeUser({
     username: 'taker',
     role: 'school_admin',
@@ -94,6 +98,8 @@ beforeEach(async () => {
   s2 = await makeStudent(school.id, c5.id, 'Valiyev Vali');
   s3 = await makeStudent(school.id, c5.id, 'Bekov Bek');
   s4 = await makeStudent(school.id, c6.id, 'Cholpon Chol');
+  math = await makeSubject('Matematika');
+  phys = await makeSubject('Fizika');
   K = await makeStatus('Keldi', 'present', { shortName: 'K', order: 1, isDefault: true });
   Ke = await makeStatus('Kechikdi', 'late', { shortName: 'Ke', order: 2, color: '#EAB308' });
   S = await makeStatus("Sababli yo'q", 'absent_excused', { shortName: 'S', order: 3 });
@@ -136,8 +142,10 @@ const rec = (
   status: Doc & { category?: string },
   lessonNo = 0,
   by: Doc = teacher1,
+  subjectId: string | null = null,
 ) =>
   AttendanceRecord.create({
+    subjectId,
     schoolId: school.id,
     studentId: student._id,
     classId: cls._id,
@@ -254,14 +262,20 @@ describe('Davomat olish (bulk) va varaq', () => {
       expect(r.status, JSON.stringify(extra)).toBe(400);
       expect(r.body.error.details.map((d: { path: string }) => d.path)).toContain('lessonNo');
     };
-    await err({});
-    await err({ lessonNo: 0 });
-    await err({ lessonNo: 4 });
+    await err({ subjectId: math.id });
+    await err({ lessonNo: 0, subjectId: math.id });
+    await err({ lessonNo: 4, subjectId: math.id });
     expect(
-      (await mark(t1, c5.id, [it_(s1, K), it_(s2, Ke)], { lessonNo: 1 })).body.data.created,
+      (await mark(t1, c5.id, [it_(s1, K), it_(s2, Ke)], { lessonNo: 1, subjectId: math.id })).body
+        .data.created,
     ).toBe(2);
     expect(
-      (await mark(t1, c5.id, [it_(s1, S, { note: 'x' })], { lessonNo: 2 })).body.data.created,
+      (
+        await mark(t1, c5.id, [it_(s1, S, { note: 'x' })], {
+          lessonNo: 2,
+          subjectId: phys.id,
+        })
+      ).body.data.created,
     ).toBe(1);
 
     const l1 = (await sheet(t1, c5.id)).body.data; // lessonNo default 1
@@ -276,6 +290,123 @@ describe('Davomat olish (bulk) va varaq', () => {
     expect((await sheet(t1, c5.id, '?lessonNo=3')).body.data.summary.marked).toBe(0);
     expect((await sheet(t1, c5.id, '?lessonNo=9')).status).toBe(400);
     expect(await AttendanceRecord.countDocuments({ lessonNo: { $gt: 0 } })).toBe(3);
+  });
+
+  it('dars rejimi: subjectId majburiy; saqlanadi; varaq fan va tanlovlarni qaytaradi; kunlik rejimda rad etiladi', async () => {
+    // kunlik rejim: fan berilmaydi
+    const daily = await mark(t1, c5.id, [it_(s1, K)], { subjectId: math.id });
+    expect(daily.status).toBe(400);
+    expect(daily.body.error.details.map((d: { path: string }) => d.path)).toContain('subjectId');
+    expect((await sheet(t1, c5.id)).body.data).toMatchObject({
+      subjectId: null,
+      subject: null,
+      subjects: [],
+    });
+
+    await setAtt({ mode: 'lesson', lessonsPerDay: 3 });
+    const missing = await mark(t1, c5.id, [it_(s1, K)], { lessonNo: 1 });
+    expect(missing.status).toBe(400);
+    expect(missing.body.error.details.map((d: { path: string }) => d.path)).toContain('subjectId');
+    // begona/yo'q fan
+    const ghost = await mark(t1, c5.id, [it_(s1, K)], { lessonNo: 1, subjectId: new ObjectId() });
+    expect(ghost.status).toBe(400);
+    const foreignSubject = await makeSubject('Begona fan', other.id);
+    expect(
+      (await mark(t1, c5.id, [it_(s1, K)], { lessonNo: 1, subjectId: foreignSubject.id })).status,
+    ).toBe(400);
+    // nofaol fan
+    const dead = await makeSubject('Nofaol fan', null, { isActive: false });
+    expect((await mark(t1, c5.id, [it_(s1, K)], { lessonNo: 1, subjectId: dead.id })).status).toBe(
+      400,
+    );
+
+    // sheet (bo'sh dars): sinfda fan biriktirilmagan -> maktabning faol fanlari
+    const empty = (await sheet(t1, c5.id)).body.data;
+    expect(empty).toMatchObject({ subjectId: null, subject: null });
+    expect(empty.subjects.map((x: { name: string }) => x.name)).toEqual(['Fizika', 'Matematika']);
+
+    const ok = await mark(t1, c5.id, [it_(s1, S, { note: 'x' }), it_(s2, K)], {
+      lessonNo: 1,
+      subjectId: math.id,
+    });
+    expect(ok.body.data).toMatchObject({ created: 2, updated: 0 });
+    const rec1 = await AttendanceRecord.findOne({ studentId: s1.id });
+    expect(String(rec1?.subjectId)).toBe(math.id);
+    const sh = (await sheet(t1, c5.id, '?lessonNo=1')).body.data;
+    expect(sh).toMatchObject({ subjectId: math.id, subject: { id: math.id, name: 'Matematika' } });
+    expect(sh.students[0].record).toMatchObject({
+      subjectId: math.id,
+      subject: { name: 'Matematika' },
+    });
+    expect((await sheet(t1, c5.id, '?lessonNo=2')).body.data.subjectId).toBeNull();
+    const audit = await AuditLog.findOne({ action: 'attendance.bulk' }).sort({ createdAt: -1 });
+    expect(JSON.stringify(audit?.after)).toContain(math.id);
+    // qayta saqlash (xuddi shu fan) — yangilaydi
+    const again = await mark(t1, c5.id, [it_(s1, K)], { lessonNo: 1, subjectId: math.id });
+    expect(again.body.data).toMatchObject({ created: 0, updated: 1 });
+    // history filtri
+    const list = await request(app)
+      .get(`/api/v1/attendance?subjectId=${math.id}`)
+      .set(bearer(admin));
+    expect(list.body.data).toHaveLength(2);
+    expect(list.body.data[0].subject.name).toBe('Matematika');
+    const none_ = await request(app)
+      .get(`/api/v1/attendance?subjectId=${phys.id}`)
+      .set(bearer(admin));
+    expect(none_.body.data).toHaveLength(0);
+  });
+
+  it('dars rejimi: ruxsatlar (biriktirilgan o`qituvchi, boshqa fan o`qituvchisi, sinf rahbari, admin) va bir dars = bir fan (409)', async () => {
+    await setAtt({ mode: 'lesson', lessonsPerDay: 3 });
+    const home = await makeUser({ username: 'home', role: 'teacher', schoolId: school.id });
+    await c5.updateOne({ homeroomTeacherId: home.id, $addToSet: { teacherIds: home.id } });
+    await assignSubject(school.id, c5 as never, math.id, teacher1.id);
+    await assignSubject(school.id, c5 as never, phys.id, teacher3.id);
+    const th = (await login('home')).token;
+    const book = await makeSubject('Adabiyot');
+
+    // t1 faqat Matematika; Fizika -> 403
+    expect((await mark(t1, c5.id, [it_(s1, K)], { lessonNo: 1, subjectId: phys.id })).status).toBe(
+      403,
+    );
+    // sinfga biriktirilmagan fan -> 400
+    const notInClass = await mark(t1, c5.id, [it_(s1, K)], { lessonNo: 1, subjectId: book.id });
+    expect(notInClass.status).toBe(400);
+    expect((await mark(t1, c5.id, [it_(s1, K)], { lessonNo: 1, subjectId: math.id })).status).toBe(
+      200,
+    );
+
+    // tanlov ro'yxati: o'qituvchi — o'zinikilar; sinf rahbari va admin — sinfning barcha fanlari
+    const names = (r: { body: { data: { subjects: { name: string; assigned: boolean }[] } } }) =>
+      r.body.data.subjects.map((x) => x.name);
+    expect(names(await sheet(t1, c5.id, '?lessonNo=2'))).toEqual(['Matematika']);
+    expect(names(await sheet(t3, c5.id, '?lessonNo=2'))).toEqual(['Fizika']);
+    expect(names(await sheet(th, c5.id, '?lessonNo=2'))).toEqual(['Fizika', 'Matematika']);
+    expect(names(await sheet(admin, c5.id, '?lessonNo=2'))).toEqual(['Fizika', 'Matematika']);
+
+    // sinf rahbari (ClassSubject siz) istalgan fanni oladi; admin ham
+    expect((await mark(th, c5.id, [it_(s1, K)], { lessonNo: 2, subjectId: phys.id })).status).toBe(
+      200,
+    );
+    expect(
+      (await mark(admin, c5.id, [it_(s2, K)], { lessonNo: 3, subjectId: math.id })).status,
+    ).toBe(200);
+
+    // bir dars = bir fan: 1-dars Matematika uchun olingan, Fizika bilan 409
+    const clash = await mark(admin, c5.id, [it_(s2, K)], { lessonNo: 1, subjectId: phys.id });
+    expect(clash.status).toBe(409);
+    expect(clash.body.error.message).toBe('Bu dars allaqachon Matematika uchun olingan');
+    // PATCH bilan fanni boshqasiga almashtirish ham 409 (sinfdoshlar yozuvi Matematika)
+    await mark(admin, c5.id, [it_(s2, K)], { lessonNo: 1, subjectId: math.id });
+    const r2 = await AttendanceRecord.findOne({ studentId: s2.id, lessonNo: 1 });
+    expect(
+      (
+        await request(app)
+          .patch(`/api/v1/attendance/${r2?.id}`)
+          .set(bearer(admin))
+          .send({ subjectId: phys.id })
+      ).status,
+    ).toBe(409);
   });
 
   it("element qoidalari: holat, kechikish daqiqasi, izoh majburiyligi, takror, begona o'quvchi (qisman muvaffaqiyat)", async () => {
@@ -686,11 +817,33 @@ describe("Tarix, statistika va o'quvchi profili", () => {
     ).toBe('day'); // yozuvsiz: joriy rejim
   });
 
+  it('attendance-summary: hamma dars yo`qlik -> absent (sababsiz ustun), bir qismi -> partial', async () => {
+    await setAtt({ mode: 'lesson', lessonsPerDay: 4 });
+    await rec(s2, c5, '2026-10-13', S, 1, teacher1, math.id);
+    await rec(s2, c5, '2026-10-13', S, 2, teacher1, phys.id);
+    await rec(s2, c5, '2026-10-12', S, 1, teacher1, math.id);
+    await rec(s2, c5, '2026-10-12', Y, 2, teacher1, phys.id);
+    await rec(s2, c5, '2026-10-09', Y, 1, teacher1, math.id);
+    await rec(s2, c5, '2026-10-09', K, 2, teacher1, phys.id);
+    const r = await request(app)
+      .get(`/api/v1/students/${s2.id}/attendance-summary?from=2026-10-01&to=2026-10-14`)
+      .set(bearer(t1));
+    expect(
+      r.body.data.days.map((x: { date: string; status: string }) => [x.date, x.status]),
+    ).toEqual([
+      ['2026-10-09', 'partial'],
+      ['2026-10-12', 'absent_unexcused'],
+      ['2026-10-13', 'absent_excused'],
+    ]);
+    // foiz darslar bo'yicha o'zgarmaydi: 1 present / 6 birlik
+    expect(r.body.data).toMatchObject({ total: 6, present: 1, rate: 16.67 });
+  });
+
   it('GET /students/:id/attendance-summary: dars rejimida kunning yakuniy kategoriyasi, byStatus, recent', async () => {
     await setAtt({ mode: 'lesson', lessonsPerDay: 4 });
-    await rec(s1, c5, '2026-10-13', K, 1);
+    await rec(s1, c5, '2026-10-13', K, 1, teacher1, math.id);
     await rec(s1, c5, '2026-10-13', Ke, 2);
-    await rec(s1, c5, '2026-10-13', S, 3);
+    await rec(s1, c5, '2026-10-13', S, 3, teacher1, phys.id);
     await rec(s1, c5, '2026-10-14', K, 1);
     await rec(s1, c5, '2026-10-14', K, 2);
     await rec(s1, c5, '2026-10-12', Ke, 1);
@@ -713,20 +866,33 @@ describe("Tarix, statistika va o'quvchi profili", () => {
       rate: 83.33,
     });
     expect(
-      d.days.map((x: { date: string; category: string; lessons: number }) => [
+      d.days.map((x: { date: string; category: string; status: string; lessons: number }) => [
         x.date,
         x.category,
+        x.status,
         x.lessons,
       ]),
     ).toEqual([
-      ['2026-10-12', 'late', 1],
-      ['2026-10-13', 'absent_excused', 3], // eng og'ir
-      ['2026-10-14', 'present', 2],
+      ['2026-10-12', 'late', 'late', 1],
+      ['2026-10-13', 'absent_excused', 'partial', 3], // category — eng og'ir; status — qisman
+      ['2026-10-14', 'present', 'present', 2],
     ]);
     expect(d.days[1].records).toEqual([
-      { lessonNo: 1, statusId: K.id, category: 'present' },
-      { lessonNo: 2, statusId: Ke.id, category: 'late' },
-      { lessonNo: 3, statusId: S.id, category: 'absent_excused' },
+      {
+        lessonNo: 1,
+        subjectId: math.id,
+        subject: { id: math.id, name: 'Matematika' },
+        statusId: K.id,
+        category: 'present',
+      },
+      { lessonNo: 2, subjectId: null, subject: null, statusId: Ke.id, category: 'late' },
+      {
+        lessonNo: 3,
+        subjectId: phys.id,
+        subject: { id: phys.id, name: 'Fizika' },
+        statusId: S.id,
+        category: 'absent_excused',
+      },
     ]);
     expect(d.byStatus.find((x: { statusId: string }) => x.statusId === K.id)).toMatchObject({
       name: 'Keldi',
@@ -806,8 +972,11 @@ describe('Bugungi jarayon va dashboard', () => {
 
   it('today-progress: dars rejimida har dars alohida birlik', async () => {
     await setAtt({ mode: 'lesson', lessonsPerDay: 3 });
-    await mark(t1, c5.id, [it_(s1, K), it_(s2, K), it_(s3, K)], { lessonNo: 1 });
-    await mark(t1, c5.id, [it_(s1, K), it_(s2, K)], { lessonNo: 2 });
+    await mark(t1, c5.id, [it_(s1, K), it_(s2, K), it_(s3, K)], {
+      lessonNo: 1,
+      subjectId: math.id,
+    });
+    await mark(t1, c5.id, [it_(s1, K), it_(s2, K)], { lessonNo: 2, subjectId: math.id });
     const p = (await request(app).get('/api/v1/attendance/today-progress').set(bearer(t1))).body
       .data;
     expect(p).toEqual([
@@ -820,7 +989,7 @@ describe('Bugungi jarayon va dashboard', () => {
         totalStudents: 3,
       },
     ]);
-    await mark(t1, c5.id, [it_(s3, K)], { lessonNo: 2 });
+    await mark(t1, c5.id, [it_(s3, K)], { lessonNo: 2, subjectId: math.id });
     expect(
       (await request(app).get('/api/v1/attendance/today-progress').set(bearer(t1))).body.data[0]
         .markedUnits,
@@ -833,6 +1002,7 @@ describe('Bugungi jarayon va dashboard', () => {
     expect((await summary(admin)).body.data.attendanceToday).toEqual({
       present: 0,
       late: 0,
+      partial: 0,
       absent: 0,
       total: 4,
       unmarkedClasses: 2,
@@ -842,6 +1012,7 @@ describe('Bugungi jarayon va dashboard', () => {
     expect((await summary(admin)).body.data.attendanceToday).toEqual({
       present: 1,
       late: 1,
+      partial: 0,
       absent: 1,
       total: 4,
       unmarkedClasses: 1,
@@ -849,6 +1020,7 @@ describe('Bugungi jarayon va dashboard', () => {
     expect((await summary(t1)).body.data.attendanceToday).toEqual({
       present: 1,
       late: 1,
+      partial: 0,
       absent: 1,
       total: 3,
       unmarkedClasses: 0,
@@ -856,6 +1028,7 @@ describe('Bugungi jarayon va dashboard', () => {
     expect((await summary(root)).body.data.attendanceToday).toEqual({
       present: 1,
       late: 1,
+      partial: 0,
       absent: 1,
       total: 4,
       unmarkedClasses: 1,
@@ -864,13 +1037,22 @@ describe('Bugungi jarayon va dashboard', () => {
       (await summary(root, { 'X-School-Id': school.id })).body.data.attendanceToday.total,
     ).toBe(4);
 
-    // Dars rejimi: o'quvchi bugungi barcha yozuvlaridagi eng og'iri
+    // Dars rejimi: bir qism yozuv yo'qlik, bir qismi bor -> 'qisman'; hamma yozuv yo'qlik -> absent
     await setAtt({ mode: 'lesson', lessonsPerDay: 2 });
-    await mark(t1, c5.id, [it_(s1, Y)], { lessonNo: 1 });
+    await mark(t1, c5.id, [it_(s1, Y)], { lessonNo: 1, subjectId: math.id });
     expect((await summary(admin)).body.data.attendanceToday).toMatchObject({
       present: 0,
       late: 1,
-      absent: 2,
+      partial: 1, // s1: kunlik K + 1-dars Y
+      absent: 1, // s3
+    });
+    await mark(t1, c5.id, [it_(s2, Y), it_(s3, K)], { lessonNo: 2, subjectId: math.id });
+    // s1: K,Y,- (partial); s2: Ke,Y (partial); s3: S,K (partial)
+    expect((await summary(admin)).body.data.attendanceToday).toMatchObject({
+      present: 0,
+      late: 0,
+      partial: 3,
+      absent: 0,
     });
 
     // Dam olish kuni — hisob 0, olinmagan sinf yo'q
@@ -878,6 +1060,7 @@ describe('Bugungi jarayon va dashboard', () => {
     expect((await summary(admin)).body.data.attendanceToday).toEqual({
       present: 0,
       late: 0,
+      partial: 0,
       absent: 0,
       total: 4,
       unmarkedClasses: 0,

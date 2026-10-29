@@ -25,7 +25,7 @@ import {
 import { fmtNum, type ReportLayout } from '../reports.layout';
 import { reportQuery } from '../reports.params';
 import { categoryLabel, fmtDateShort } from '../reports.labels';
-import { worstCategory } from '../../attendance/attendance.stats';
+import { dayStatus, worstCategory } from '../../attendance/attendance.stats';
 import type { AttendanceCategory } from '../../settings/attendance.settings';
 
 export const studentQuery = reportQuery({});
@@ -156,7 +156,11 @@ export async function buildStudentReport(ctx: ReportCtx, studentId: string) {
       absentUnexcused: att.absentUnexcused,
       rate: att.rate,
       penalty: rt?.penalty ?? 0,
-      days: [...byDate.entries()].map(([date, cats]) => ({ date, category: worstCategory(cats) })),
+      days: [...byDate.entries()].map(([date, cats]) => ({
+        date,
+        category: worstCategory(cats),
+        status: dayStatus(cats),
+      })),
     },
     entries: scores.map((s) => {
       const t = s.behaviorTypeId ? types.get(String(s.behaviorTypeId)) : undefined;
@@ -267,7 +271,7 @@ export function studentLayout(d: StudentReport): ReportLayout {
         ],
         rows: d.attendance.days.map((x) => ({
           date: x.date,
-          category: categoryLabel(x.category),
+          category: categoryLabel(x.status),
         })),
       },
     ],

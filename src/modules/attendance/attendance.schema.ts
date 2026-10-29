@@ -19,6 +19,8 @@ export const bulkBody = z.object({
   classId: objectIdSchema,
   date: dateStrSchema.optional(),
   lessonNo: lessonNo.optional(),
+  /** Dars rejimida majburiy (dars qaysi fandan); kunlik rejimda berilmaydi */
+  subjectId: objectIdSchema.optional(),
   items: z
     .array(z.object({ studentId: objectIdSchema, statusId: objectIdSchema, minutesLate, note }))
     .min(1)
@@ -27,6 +29,8 @@ export const bulkBody = z.object({
 
 export const updateBody = z.object({
   statusId: objectIdSchema.optional(),
+  /** Faqat dars yozuvlari uchun: darsning fanini belgilash/almashtirish */
+  subjectId: objectIdSchema.optional(),
   minutesLate,
   note,
 });
@@ -40,6 +44,7 @@ export const listQuery = z.object({
   from: dateStrSchema.optional(),
   to: dateStrSchema.optional(),
   lessonNo: z.coerce.number().int().min(0).max(12).optional(),
+  subjectId: objectIdSchema.optional(),
   sort: z.enum(['date', '-date']).default('-date'),
 });
 

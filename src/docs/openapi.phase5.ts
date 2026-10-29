@@ -101,6 +101,8 @@ export function buildPhase5(h: DocHelpers) {
       academicYearId: str,
       date,
       lessonNo: int,
+      subjectId: strNull,
+      subject: { nullable: true, ...o({ id: str, name: str }) },
       statusId: str,
       status: statusRef,
       minutesLate: intNull,
@@ -205,6 +207,13 @@ export function buildPhase5(h: DocHelpers) {
               date,
               mode: { type: 'string', enum: ['daily', 'lesson'] },
               lessonNo: intNull,
+              subjectId: strNull,
+              subject: { nullable: true, ...o({ id: str, name: str }) },
+              subjects: {
+                type: 'array',
+                items: o({ id: str, name: str, assigned: bool }),
+                description: 'Dars rejimida tanlanadigan fanlar (rolga qarab)',
+              },
               lessonsPerDay: int,
               isWorkingDay: bool,
               settings: ref('AttendanceSettings'),
@@ -234,7 +243,7 @@ export function buildPhase5(h: DocHelpers) {
     '/attendance/bulk': {
       post: op(
         'Attendance',
-        'Ommaviy davomat (UPSERT, max 200, qisman muvaffaqiyat). Kunlik rejimda lessonNo berilmaydi, dars rejimida majburiy',
+        'Ommaviy davomat (UPSERT, max 200, qisman muvaffaqiyat). Kunlik rejimda lessonNo va subjectId berilmaydi, dars rejimida ikkalasi majburiy (fan: sinfga biriktirilgan; o`qituvchi — o`ziga biriktirilgan yoki sinf rahbari; boshqa fan uchun olingan dars — 409)',
         {
           '200': okRes(
             o({
@@ -250,6 +259,7 @@ export function buildPhase5(h: DocHelpers) {
               classId: str,
               date,
               lessonNo: int,
+              subjectId: str,
               items: {
                 type: 'array',
                 items: o({ studentId: str, statusId: str, minutesLate: intNull, note: strNull }, [

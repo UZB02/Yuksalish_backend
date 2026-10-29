@@ -11,6 +11,7 @@ export const CATEGORY_LABEL: Record<string, string> = {
   late: 'Kechikdi',
   absent_excused: "Sababli yo'q",
   absent_unexcused: "Sababsiz yo'q",
+  partial: 'Qisman',
 };
 
 export const STUDENT_STATUS_LABEL: Record<string, string> = {

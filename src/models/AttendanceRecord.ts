@@ -14,6 +14,11 @@ export interface IAttendanceRecord {
   date: string;
   /** Kunlik rejimda 0; dars rejimida 1..lessonsPerDay */
   lessonNo: number;
+  /**
+   * Dars rejimida: dars qaysi fandan bo'lgan (Subject). Kunlik rejimda va eski (fan biriktirilmagan)
+   * dars yozuvlarida null.
+   */
+  subjectId: Types.ObjectId | null;
   statusId: Types.ObjectId;
   /** Holat kategoriyasi (denormalizatsiya; holat kategoriyasi o'zgarmaydi) */
   category: AttendanceCategory;
@@ -35,6 +40,7 @@ const schema = new Schema<IAttendanceRecord>(
     academicYearId: { type: Schema.Types.ObjectId, ref: 'AcademicYear', required: true },
     date: { type: String, required: true },
     lessonNo: { type: Number, default: 0 },
+    subjectId: { type: Schema.Types.ObjectId, ref: 'Subject', default: null },
     statusId: { type: Schema.Types.ObjectId, ref: 'AttendanceStatus', required: true },
     category: { type: String, enum: ATTENDANCE_CATEGORIES, required: true },
     minutesLate: { type: Number, default: null },

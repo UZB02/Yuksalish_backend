@@ -57,8 +57,15 @@ const grade = (s: Doc, subject: Doc, date: string, value: number, extra = {}) =>
     date,
     ...extra,
   });
-const att = (s: Doc, date: string, cat: AttendanceCategory, lessonNo = 0) =>
+const att = (
+  s: Doc,
+  date: string,
+  cat: AttendanceCategory,
+  lessonNo = 0,
+  subjectId: string | null = null,
+) =>
   AttendanceRecord.create({
+    subjectId,
     schoolId: school.id,
     studentId: s.id,
     classId: c5.id,
@@ -193,6 +200,40 @@ describe('Sinf jurnali: setka (GET /journal/subject)', () => {
     expect(d.summary.perDate['2026-10-03']).toEqual({ avg: null, count: 0 });
     expect(d.summary.classAvg).toBe(3.5);
     expect(d.summary.classCount).toBe(4);
+  });
+
+  it('davomat fan bo`yicha: boshqa fan darsidagi yo`qlik ko`rinmaydi, o`z fani va eski yozuv ko`rinadi', async () => {
+    // s1: 10-01 — faqat Fizika darsida yo'q -> Matematika jurnalida ko'rinmaydi
+    await att(s1, '2026-10-01', 'absent_unexcused', 1, phys.id);
+    await att(s1, '2026-10-01', 'present', 2, math.id);
+    // s1: 10-02 — Matematika darsida yo'q (yagona o'z yozuvi) -> N; Fizikada present
+    await att(s1, '2026-10-02', 'absent_unexcused', 1, math.id);
+    await att(s1, '2026-10-02', 'present', 2, phys.id);
+    // s2: 10-03 — Matematikadan ikki dars: biri yo'q, biri bor -> partial
+    await att(s2, '2026-10-03', 'absent_excused', 1, math.id);
+    await att(s2, '2026-10-03', 'present', 2, math.id);
+    // s2: 10-05 — eski (fansiz) dars yozuvi kun darajasida ko'rinadi -> B
+    await att(s2, '2026-10-05', 'absent_excused', 1);
+    // s1: 10-06 — aralash: o'z fani yozuvi bor (present) bo'lsa, shu kundagi eski (fansiz) yozuv hisobga olinmaydi
+    await att(s1, '2026-10-06', 'present', 1, math.id);
+    await att(s1, '2026-10-06', 'absent_unexcused', 2);
+    // s2: 10-07 — kunlik rejim yozuvi (lessonNo 0) barcha fanlarda
+    await att(s2, '2026-10-07', 'absent_unexcused', 0);
+
+    const m = (await get(tm, `subject?${Q(c5.id, math.id)}`)).body.data;
+    expect(m.cells[s1.id]?.['2026-10-01']).toBeUndefined();
+    expect(m.cells[s1.id]['2026-10-02']).toEqual({ absence: 'N' });
+    expect(m.cells[s2.id]['2026-10-03']).toEqual({ absence: 'partial' });
+    expect(m.cells[s2.id]['2026-10-05']).toEqual({ absence: 'B' });
+    expect(m.cells[s1.id]?.['2026-10-06']).toBeUndefined();
+    expect(m.cells[s2.id]['2026-10-07']).toEqual({ absence: 'N' });
+
+    const p = (await get(tp, `subject?${Q(c5.id, phys.id)}`)).body.data;
+    expect(p.cells[s1.id]['2026-10-01']).toEqual({ absence: 'N' });
+    expect(p.cells[s1.id]['2026-10-02']).toBeUndefined();
+    expect(p.cells[s2.id]?.['2026-10-03']).toBeUndefined();
+    expect(p.cells[s2.id]['2026-10-05']).toEqual({ absence: 'B' }); // eski yozuv
+    expect(p.cells[s2.id]['2026-10-07']).toEqual({ absence: 'N' });
   });
 
   it('o`quvchi boshqa sinfga o`tgan: bahosi bo`lsa transferred bilan chiqadi, bo`lmasa yo`q', async () => {

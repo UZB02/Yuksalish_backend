@@ -8,6 +8,7 @@ import { AttendanceRecord, type AttendanceRecordDoc } from '../../models/Attenda
 import { AttendanceStatus, type AttendanceStatusDoc } from '../../models/AttendanceStatus';
 import { ClassModel } from '../../models/Class';
 import { Student } from '../../models/Student';
+import { Subject } from '../../models/Subject';
 import { User } from '../../models/User';
 import { clock, todayTashkent } from '../../utils/clock';
 import { isDuplicateKeyError, isId, uniq } from '../../utils/helpers';
@@ -24,10 +25,16 @@ import {
   checkValues,
   isEditable,
   isWorkingDay,
+  checkSubjectInput,
   resolveLessonNo,
   withinEditWindow,
   type RecordValues,
 } from './attendance.rules';
+import {
+  assertLessonSubject,
+  assertLessonSubjectFree,
+  lessonSubjectOptions,
+} from './attendance.subjects';
 
 type Actor = Ctx['actor'];
 
@@ -56,16 +63,21 @@ export async function toRecordDtos(
   const classIds = uniq(docs.map((d) => String(d.classId)));
   const statusIds = uniq(docs.map((d) => String(d.statusId)));
   const userIds = uniq(docs.flatMap((d) => [String(d.markedBy), String(d.updatedBy)]));
-  const [students, classes, statuses, users] = await Promise.all([
+  const subjectIds = uniq(docs.flatMap((d) => (d.subjectId ? [String(d.subjectId)] : [])));
+  const [students, classes, statuses, users, subjects] = await Promise.all([
     Student.find({ _id: { $in: studentIds } }).select('fullName'),
     ClassModel.find({ _id: { $in: classIds } }).select('name'),
     AttendanceStatus.find({ _id: { $in: statusIds } }),
     User.find({ _id: { $in: userIds } }).select('fullName'),
+    subjectIds.length
+      ? Subject.find({ _id: { $in: subjectIds } }).select('name')
+      : Promise.resolve([]),
   ]);
   const sMap = new Map(students.map((s) => [s.id as string, s.fullName]));
   const cMap = new Map(classes.map((c) => [c.id as string, c.name]));
   const stMap = new Map(statuses.map((s) => [s.id as string, s]));
   const uMap = new Map(users.map((u) => [u.id as string, u.fullName]));
+  const subMap = new Map(subjects.map((s) => [s.id as string, s.name]));
   const now = clock.now();
 
   return docs.map((d) => {
@@ -80,6 +92,10 @@ export async function toRecordDtos(
       academicYearId: String(d.academicYearId),
       date: d.date,
       lessonNo: d.lessonNo,
+      subjectId: d.subjectId ? String(d.subjectId) : null,
+      subject: d.subjectId
+        ? { id: String(d.subjectId), name: subMap.get(String(d.subjectId)) ?? '' }
+        : null,
       statusId: String(d.statusId),
       status: st
         ? {
@@ -106,6 +122,7 @@ const snapshot = (d: AttendanceRecordDoc) => ({
   classId: String(d.classId),
   date: d.date,
   lessonNo: d.lessonNo,
+  subjectId: d.subjectId ? String(d.subjectId) : null,
   statusId: String(d.statusId),
   category: d.category,
   minutesLate: d.minutesLate,
@@ -149,6 +166,7 @@ export const attendanceService = {
       classId: string;
       date?: string;
       lessonNo?: number;
+      subjectId?: string;
       items: {
         studentId: string;
         statusId: string;
@@ -161,8 +179,34 @@ export const attendanceService = {
     const { cls, yearId } = await loadTakeableClass(ctx.actor, schoolId, input.classId);
     const date = input.date ?? todayTashkent();
     const unit = resolveLessonNo(settings, input.lessonNo);
-    throwValidation([...checkDate(settings, date, todayTashkent()), ...unit.errors]);
+    throwValidation([
+      ...checkDate(settings, date, todayTashkent()),
+      ...unit.errors,
+      ...checkSubjectInput(settings, input.subjectId),
+    ]);
     const lessonNo = unit.lessonNo;
+
+    // Dars rejimi: fan, huquq va "bir dars = bir fan" qoidasi
+    let subjectId: string | null = null;
+    if (settings.mode === 'lesson' && input.subjectId) {
+      const used = await AttendanceRecord.distinct('subjectId', {
+        schoolId,
+        classId: cls._id,
+        date,
+        lessonNo,
+        isDeleted: false,
+        subjectId: { $ne: null },
+      });
+      await assertLessonSubject(
+        ctx.actor,
+        schoolId,
+        cls,
+        input.subjectId,
+        used.map((u) => String(u)),
+      );
+      await assertLessonSubjectFree(schoolId, cls._id, date, lessonNo, input.subjectId);
+      subjectId = input.subjectId;
+    }
 
     const [statuses, students] = await Promise.all([
       loadStatuses(schoolId),
@@ -227,6 +271,7 @@ export const attendanceService = {
             continue;
           }
           prev.statusId = new Types.ObjectId(values.statusId);
+          if (subjectId) prev.subjectId = new Types.ObjectId(subjectId);
           prev.category = category;
           prev.minutesLate = values.minutesLate;
           prev.note = values.note;
@@ -241,6 +286,7 @@ export const attendanceService = {
             academicYearId: yearId,
             date,
             lessonNo,
+            subjectId,
             statusId: values.statusId,
             category,
             minutesLate: values.minutesLate,
@@ -266,6 +312,7 @@ export const attendanceService = {
         classId: input.classId,
         date,
         lessonNo,
+        subjectId,
         created,
         updated,
         failed: failed.length,
@@ -304,7 +351,12 @@ export const attendanceService = {
     ctx: Ctx,
     schoolId: string,
     id: string,
-    patch: { statusId?: string; minutesLate?: number | null; note?: string | null },
+    patch: {
+      statusId?: string;
+      subjectId?: string;
+      minutesLate?: number | null;
+      note?: string | null;
+    },
   ) {
     const settings = await getAttendanceSettings(schoolId);
     const doc = await this.loadForChange(ctx, schoolId, id, settings);
@@ -328,6 +380,24 @@ export const attendanceService = {
     );
     throwValidation(errors);
 
+    if (patch.subjectId !== undefined) {
+      if (doc.lessonNo === 0) {
+        throwValidation([{ path: 'subjectId', message: 'Kunlik yozuvga fan biriktirilmaydi' }]);
+      }
+      const cls = await ClassModel.findOne({ _id: doc.classId, schoolId });
+      if (!cls) throw AppError.notFound('Sinf topilmadi');
+      const keep = doc.subjectId ? [String(doc.subjectId)] : [];
+      await assertLessonSubject(ctx.actor, schoolId, cls, patch.subjectId, keep);
+      await assertLessonSubjectFree(
+        schoolId,
+        doc.classId,
+        doc.date,
+        doc.lessonNo,
+        patch.subjectId,
+        doc._id,
+      );
+      doc.subjectId = new Types.ObjectId(patch.subjectId);
+    }
     doc.statusId = new Types.ObjectId(statusId);
     doc.category = category as AttendanceRecordDoc['category'];
     doc.minutesLate = minutesLate;
@@ -378,6 +448,7 @@ export const attendanceService = {
       from?: string;
       to?: string;
       lessonNo?: number;
+      subjectId?: string;
       sort: 'date' | '-date';
       page: number;
       limit: number;
@@ -392,6 +463,7 @@ export const attendanceService = {
     if (q.statusId) filter.statusId = q.statusId;
     if (q.category) filter.category = q.category;
     if (q.lessonNo !== undefined) filter.lessonNo = q.lessonNo;
+    if (q.subjectId) filter.subjectId = q.subjectId;
     if (q.from || q.to) {
       filter.date = { ...(q.from ? { $gte: q.from } : {}), ...(q.to ? { $lte: q.to } : {}) };
     }
@@ -449,6 +521,19 @@ export const attendanceService = {
     const dtos = await toRecordDtos(records, { actor, settings });
     const dtoByStudent = new Map(dtos.map((d) => [d.studentId, d]));
 
+    // Dars rejimi: darsning joriy fani (yozuvlardan) va tanlanadigan fanlar
+    let lessonSubject: { id: string; name: string } | null = null;
+    let subjects: Awaited<ReturnType<typeof lessonSubjectOptions>> = [];
+    if (settings.mode === 'lesson') {
+      lessonSubject = dtos.find((d) => d.subject)?.subject ?? null;
+      subjects = await lessonSubjectOptions(
+        actor,
+        schoolId,
+        cls,
+        lessonSubject ? [lessonSubject.id] : [],
+      );
+    }
+
     const summary = {
       total: students.length,
       marked: 0,
@@ -469,6 +554,9 @@ export const attendanceService = {
       date,
       mode: settings.mode,
       lessonNo: settings.mode === 'lesson' ? unit.lessonNo : null,
+      subjectId: lessonSubject?.id ?? null,
+      subject: lessonSubject,
+      subjects,
       lessonsPerDay: settings.lessonsPerDay,
       isWorkingDay: isWorkingDay(settings, date),
       settings,

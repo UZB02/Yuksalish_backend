@@ -242,7 +242,11 @@ export const journalService = {
       );
     const studentIds = students.map((s) => s.id);
 
-    // Davomat (faqat ko'rsatish uchun)
+    // Davomat (faqat ko'rsatish uchun). Qoidalar (dars yozuvidagi fan bo'yicha):
+    // - kunlik rejim yozuvi (lessonNo 0): barcha fanlar jurnalida ko'rinadi;
+    // - dars yozuvi shu fan uchun: shu fanning kundagi dars yozuvlari bo'yicha hisoblanadi;
+    // - boshqa fan uchun dars yozuvi: e'tiborga olinmaydi;
+    // - eski dars yozuvi (fan yo'q): shu kunda shu fanning o'z yozuvi bo'lmasa, kun darajasida ko'rsatiladi.
     const att = dates.length
       ? await AttendanceRecord.find({
           schoolId,
@@ -250,18 +254,35 @@ export const journalService = {
           isDeleted: false,
           date: { $gte: q.from, $lte: q.to },
         })
-          .select('studentId date category')
+          .select('studentId date category lessonNo subjectId')
           .lean()
       : [];
-    const attByDay = new Map<string, { total: number; unexcused: number; excused: number }>();
+    type Tally = { total: number; unexcused: number; excused: number };
+    const tallyOf = (): Tally => ({ total: 0, unexcused: 0, excused: 0 });
+    const add = (e: Tally, cat: string) => {
+      e.total++;
+      if (cat === 'absent_unexcused') e.unexcused++;
+      else if (cat === 'absent_excused') e.excused++;
+    };
+    const buckets = new Map<string, { daily: Tally; own: Tally; legacy: Tally }>();
+    const subjectKey = String(subject._id);
     for (const r of att) {
       if (!dateSet.has(r.date)) continue;
       const k = `${r.studentId}|${r.date}`;
-      const e = attByDay.get(k) ?? { total: 0, unexcused: 0, excused: 0 };
-      e.total++;
-      if (r.category === 'absent_unexcused') e.unexcused++;
-      else if (r.category === 'absent_excused') e.excused++;
-      attByDay.set(k, e);
+      const b = buckets.get(k) ?? { daily: tallyOf(), own: tallyOf(), legacy: tallyOf() };
+      buckets.set(k, b);
+      if (r.lessonNo === 0) add(b.daily, r.category);
+      else if (!r.subjectId) add(b.legacy, r.category);
+      else if (String(r.subjectId) === subjectKey) add(b.own, r.category);
+    }
+    const attByDay = new Map<string, Tally>();
+    for (const [k, b] of buckets) {
+      const lesson = b.own.total ? b.own : b.legacy;
+      attByDay.set(k, {
+        total: b.daily.total + lesson.total,
+        unexcused: b.daily.unexcused + lesson.unexcused,
+        excused: b.daily.excused + lesson.excused,
+      });
     }
 
     const cells: Record<string, Record<string, JournalCell>> = {};

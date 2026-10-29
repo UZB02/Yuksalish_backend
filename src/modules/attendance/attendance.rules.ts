@@ -71,6 +71,17 @@ export function resolveLessonNo(
   return { lessonNo, errors: [] };
 }
 
+/** Fan: dars rejimida majburiy, kunlik rejimda berilmaydi */
+export function checkSubjectInput(
+  s: AttendanceSettings,
+  subjectId: string | undefined | null,
+): ErrorDetail[] {
+  if (s.mode === 'daily') {
+    return subjectId ? [{ path: 'subjectId', message: 'Kunlik rejimda fan berilmaydi' }] : [];
+  }
+  return subjectId ? [] : [{ path: 'subjectId', message: 'Dars uchun fan tanlanishi shart' }];
+}
+
 export interface RecordValues {
   statusId: string;
   minutesLate: number | null;

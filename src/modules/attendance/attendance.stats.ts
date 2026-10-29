@@ -5,6 +5,7 @@ import { AttendanceRecord } from '../../models/AttendanceRecord';
 import { AttendanceStatus } from '../../models/AttendanceStatus';
 import { ClassModel } from '../../models/Class';
 import { Student } from '../../models/Student';
+import { Subject } from '../../models/Subject';
 import { School } from '../../models/School';
 import { addDaysStr, todayTashkent } from '../../utils/clock';
 import { round2 } from '../../utils/dayScore';
@@ -27,6 +28,21 @@ export const worstCategory = (cats: AttendanceCategory[]): AttendanceCategory =>
     (w, c) => (SEVERITY.indexOf(c) > SEVERITY.indexOf(w) ? c : w),
     'present' as AttendanceCategory,
   );
+
+/**
+ * Kunning yakuniy holati (dars rejimida bir kunda bir nechta yozuv):
+ * - hamma yozuv yo'qlik -> absent_unexcused (kamida bittasi sababsiz bo'lsa) yoki absent_excused;
+ * - yozuvlarning bir qismi yo'qlik -> 'partial' (qisman);
+ * - yo'qlik yo'q -> late (kamida bitta kechikish bo'lsa) yoki present.
+ */
+export type DayStatus = 'present' | 'late' | 'partial' | AttendanceCategory;
+export function dayStatus(cats: AttendanceCategory[]): DayStatus {
+  const absent = cats.filter((c) => c === 'absent_excused' || c === 'absent_unexcused');
+  if (absent.length && absent.length < cats.length) return 'partial';
+  if (absent.length)
+    return absent.includes('absent_unexcused') ? 'absent_unexcused' : 'absent_excused';
+  return cats.includes('late') ? 'late' : 'present';
+}
 
 function resolveRange(q: { from?: string; to?: string }): { from: string; to: string } {
   const to = q.to ?? todayTashkent();
@@ -174,6 +190,15 @@ export const attendanceStats = {
       byStatus.set(String(r.statusId), (byStatus.get(String(r.statusId)) ?? 0) + 1);
       byDate.set(r.date, [...(byDate.get(r.date) ?? []), r]);
     }
+    const lessonSubjectIds = [
+      ...new Set(records.flatMap((r) => (r.subjectId ? [String(r.subjectId)] : []))),
+    ];
+    const subjectDocs = lessonSubjectIds.length
+      ? await Subject.find({ _id: { $in: lessonSubjectIds } })
+          .select('name')
+          .lean()
+      : [];
+    const subjectName = new Map(subjectDocs.map((s) => [String(s._id), s.name]));
     const statusDocs = byStatus.size
       ? await AttendanceStatus.find({ _id: { $in: [...byStatus.keys()] } })
       : [];
@@ -207,10 +232,16 @@ export const attendanceStats = {
         .sort((a, b) => b.count - a.count),
       days: [...byDate.entries()].map(([date, list]) => ({
         date,
+        // category — eng og'ir kategoriya (eski mijozlar uchun); status — kunning yakuniy holati ('partial' bilan)
         category: worstCategory(list.map((r) => r.category)),
+        status: dayStatus(list.map((r) => r.category)),
         lessons: list.length,
         records: list.map((r) => ({
           lessonNo: r.lessonNo,
+          subjectId: r.subjectId ? String(r.subjectId) : null,
+          subject: r.subjectId
+            ? { id: String(r.subjectId), name: subjectName.get(String(r.subjectId)) ?? '' }
+            : null,
           statusId: String(r.statusId),
           category: r.category,
         })),
@@ -289,13 +320,13 @@ export const attendanceStats = {
   },
 
   /**
-   * Dashboard uchun bugungi davomat. Qoida: o'quvchi bugungi yozuvlari ichidagi ENG OG'IR kategoriya bo'yicha
-   * hisoblanadi (present / late / absent = ikkala yo'q turi). total = doiradagi faol o'quvchilar soni.
+   * Dashboard uchun bugungi davomat. Qoida: o'quvchi bugungi yozuvlari bo'yicha bitta guruhga tushadi (dayStatus):
+   * present / late / partial (bir qism dars yo'q, bir qismi bor) / absent (hamma yozuv yo'qlik, ikkala turi). total = doiradagi faol o'quvchilar soni.
    * unmarkedClasses = kamida bitta faol o'quvchisiga bugun hech qanday yozuv yo'q sinflar (faqat ish kunida).
    */
   async dashboardToday(actor: Actor, schoolId: string | undefined) {
     const today = todayTashkent();
-    const result = { present: 0, late: 0, absent: 0, total: 0, unmarkedClasses: 0 };
+    const result = { present: 0, late: 0, partial: 0, absent: 0, total: 0, unmarkedClasses: 0 };
     const schoolIds = schoolId
       ? [schoolId]
       : (await School.find({ isActive: true }).select('_id').lean()).map((s) => String(s._id));
@@ -335,9 +366,10 @@ export const attendanceStats = {
       for (const r of records)
         cats.set(String(r.studentId), [...(cats.get(String(r.studentId)) ?? []), r.category]);
       for (const list of cats.values()) {
-        const w = worstCategory(list);
+        const w = dayStatus(list);
         if (w === 'present') result.present++;
         else if (w === 'late') result.late++;
+        else if (w === 'partial') result.partial++;
         else result.absent++;
       }
       const unmarked = new Set<string>();

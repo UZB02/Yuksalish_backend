@@ -372,9 +372,9 @@ describe("O'quvchi hisoboti", () => {
       penalty: 0,
     });
     expect(d.attendance.days).toEqual([
-      { date: '2026-10-12', category: 'present' },
-      { date: '2026-10-13', category: 'late' },
-      { date: '2026-10-14', category: 'absent_unexcused' },
+      { date: '2026-10-12', category: 'present', status: 'present' },
+      { date: '2026-10-13', category: 'late', status: 'late' },
+      { date: '2026-10-14', category: 'absent_unexcused', status: 'absent_unexcused' },
     ]);
     expect(
       d.behaviorDistribution.map((b: { name: string; count: number }) => [b.name, b.count]),
@@ -403,6 +403,33 @@ describe("O'quvchi hisoboti", () => {
     expect(asT.entries.find((e: { date: string }) => e.date === '2026-10-04').comment).toBeNull();
     expect(JSON.stringify(asT)).not.toContain('maxfiy');
     expect(asT.student).not.toHaveProperty('parentPhone');
+  });
+
+  it('davomat kunlari: bir qism dars yo`qlik -> status partial; hamma dars yo`qlik -> absent', async () => {
+    const lesson = (date: string, category: AttendanceCategory, lessonNo: number) =>
+      AttendanceRecord.create({
+        schoolId: school.id,
+        studentId: s3._id,
+        classId: c5._id,
+        academicYearId: year._id,
+        date,
+        lessonNo,
+        statusId: statuses[category]._id,
+        category,
+        markedBy: t1u._id,
+        updatedBy: t1u._id,
+      });
+    await lesson('2026-10-08', 'absent_excused', 1);
+    await lesson('2026-10-08', 'present', 2);
+    await lesson('2026-10-09', 'absent_excused', 1);
+    await lesson('2026-10-09', 'absent_unexcused', 2);
+    const d = (await get(admin, `/student/${s3.id}?${Q}`)).body.data;
+    expect(d.attendance.days).toEqual([
+      { date: '2026-10-08', category: 'absent_excused', status: 'partial' },
+      { date: '2026-10-09', category: 'absent_unexcused', status: 'absent_unexcused' },
+    ]);
+    // birlik bo'yicha foiz o'zgarmaydi
+    expect(d.attendance).toMatchObject({ total: 4, present: 1, rate: 25 });
   });
 
   it("o'qituvchi faqat o'z sinfi o'quvchisi; tenant izolyatsiya; noto'g'ri id — 404", async () => {
