@@ -207,6 +207,23 @@ export async function resolveClassesRange(
   );
 }
 
+/** Sinfning shu sanadagi darslari va sinfda shu sana uchun amaldagi jadval versiyasi borligi */
+export async function resolveClassDay(
+  schoolId: string,
+  classId: string,
+  date: string,
+): Promise<{ hasVersion: boolean; lessons: ResolvedLesson[] }> {
+  const [slices, settings, overrides] = await Promise.all([
+    loadVersionSlices(schoolId, { classIds: [classId] }, date, date),
+    loadResolverSettings(schoolId),
+    overrideLoader(schoolId, [classId], date, date),
+  ]);
+  return {
+    hasVersion: !!versionOn(slices, classId, date),
+    lessons: applyOverrides(lessonsFromSlices(slices, settings, [classId], [date]), overrides),
+  };
+}
+
 /** Sinfning shu sanadagi barcha darslari */
 export const resolveLessons = (schoolId: string, classId: string, date: string) =>
   resolveClassesRange(schoolId, [classId], date, date);

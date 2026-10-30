@@ -7,6 +7,7 @@ import {
   attendanceValuesSchema,
   normalizeAttendance,
 } from './attendance.settings';
+import { TIMETABLE_DEFAULTS, TIMETABLE_KEY, timetableValuesSchema } from './timetable.settings';
 import {
   PUBLIC_DEFAULTS,
   PUBLIC_KEY,
@@ -59,6 +60,22 @@ export interface WriteBody {
   values: Obj | null;
 }
 
+/** attendance va timetable bir xil yozish ruxsatiga ega */
+const attendanceAccess: Pick<SettingDef, 'writeRoles' | 'guardWrite' | 'detailAccess'> = {
+  // Superadmin (global yoki maktab) va attendance.settings li maktab admini (faqat o'z maktabi)
+  writeRoles: ['superadmin', 'school_admin'],
+  guardWrite: (actor, body) => {
+    if (actor.role === 'superadmin') return body;
+    if (!actor.permissions.includes('attendance.settings')) throw AppError.forbidden();
+    if (body.scope !== 'school')
+      throw AppError.forbidden("Umumiy sozlamani faqat superadmin o'zgartiradi");
+    if (body.schoolId && body.schoolId !== actor.schoolId) throw AppError.forbidden();
+    return { ...body, schoolId: actor.schoolId as string };
+  },
+  detailAccess: (actor) =>
+    actor.role === 'superadmin' || actor.permissions.includes('attendance.settings'),
+};
+
 export const SETTING_DEFS: Record<string, SettingDef> = {
   [SCORING_KEY]: {
     key: SCORING_KEY,
@@ -86,18 +103,14 @@ export const SETTING_DEFS: Record<string, SettingDef> = {
     valuesSchema: attendanceValuesSchema,
     normalize: normalizeAttendance,
     validateMerged: () => undefined,
-    // Superadmin (global yoki maktab) va attendance.settings li maktab admini (faqat o'z maktabi)
-    writeRoles: ['superadmin', 'school_admin'],
-    guardWrite: (actor, body) => {
-      if (actor.role === 'superadmin') return body;
-      if (!actor.permissions.includes('attendance.settings')) throw AppError.forbidden();
-      if (body.scope !== 'school')
-        throw AppError.forbidden("Umumiy sozlamani faqat superadmin o'zgartiradi");
-      if (body.schoolId && body.schoolId !== actor.schoolId) throw AppError.forbidden();
-      return { ...body, schoolId: actor.schoolId as string };
-    },
-    detailAccess: (actor) =>
-      actor.role === 'superadmin' || actor.permissions.includes('attendance.settings'),
+    ...attendanceAccess,
+  },
+  [TIMETABLE_KEY]: {
+    key: TIMETABLE_KEY,
+    defaults: TIMETABLE_DEFAULTS as unknown as Obj,
+    valuesSchema: timetableValuesSchema,
+    validateMerged: () => undefined,
+    ...attendanceAccess,
   },
 };
 

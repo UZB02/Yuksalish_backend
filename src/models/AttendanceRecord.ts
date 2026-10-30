@@ -4,6 +4,9 @@ import {
   type AttendanceCategory,
 } from '../modules/settings/attendance.settings';
 
+export const ATTENDANCE_SOURCES = ['timetable', 'override', 'manual'] as const;
+export type AttendanceSource = (typeof ATTENDANCE_SOURCES)[number];
+
 export interface IAttendanceRecord {
   schoolId: Types.ObjectId;
   studentId: Types.ObjectId;
@@ -12,13 +15,20 @@ export interface IAttendanceRecord {
   academicYearId: Types.ObjectId;
   /** Asia/Tashkent kuni: YYYY-MM-DD */
   date: string;
-  /** Kunlik rejimda 0; dars rejimida 1..lessonsPerDay */
+  /** Kunlik rejimda 0; dars rejimida 1..12 (lessonsPerDay yoki jadvaldagi eng katta dars raqami) */
   lessonNo: number;
   /**
    * Dars rejimida: dars qaysi fandan bo'lgan (Subject). Kunlik rejimda va eski (fan biriktirilmagan)
    * dars yozuvlarida null.
    */
   subjectId: Types.ObjectId | null;
+  /**
+   * Snapshot: dars o'qituvchisi (jadvaldan aniqlangan, qo'lda olinganda o'qituvchi o'zi, aks holda null).
+   * Keyingi jadval o'zgarishlari yozuvni qayta yozmaydi.
+   */
+  teacherId: Types.ObjectId | null;
+  /** Fan/o'qituvchi qayerdan: jadval, almashtirish (override) yoki qo'lda. Kunlik va eski yozuvlarda null */
+  source: AttendanceSource | null;
   statusId: Types.ObjectId;
   /** Holat kategoriyasi (denormalizatsiya; holat kategoriyasi o'zgarmaydi) */
   category: AttendanceCategory;
@@ -41,6 +51,8 @@ const schema = new Schema<IAttendanceRecord>(
     date: { type: String, required: true },
     lessonNo: { type: Number, default: 0 },
     subjectId: { type: Schema.Types.ObjectId, ref: 'Subject', default: null },
+    teacherId: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+    source: { type: String, enum: ATTENDANCE_SOURCES, default: null },
     statusId: { type: Schema.Types.ObjectId, ref: 'AttendanceStatus', required: true },
     category: { type: String, enum: ATTENDANCE_CATEGORIES, required: true },
     minutesLate: { type: Number, default: null },

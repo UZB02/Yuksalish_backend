@@ -4,7 +4,11 @@ import type { Ctx } from '../../core/context';
 import { AppError, type ErrorCode, type ErrorDetail } from '../../core/errors';
 import { buildMeta, skipOf } from '../../core/pagination';
 import { AcademicYear } from '../../models/AcademicYear';
-import { AttendanceRecord, type AttendanceRecordDoc } from '../../models/AttendanceRecord';
+import {
+  AttendanceRecord,
+  type AttendanceRecordDoc,
+  type AttendanceSource,
+} from '../../models/AttendanceRecord';
 import { AttendanceStatus, type AttendanceStatusDoc } from '../../models/AttendanceStatus';
 import { ClassModel } from '../../models/Class';
 import { Student } from '../../models/Student';
@@ -35,6 +39,14 @@ import {
   assertLessonSubjectFree,
   lessonSubjectOptions,
 } from './attendance.subjects';
+import {
+  canAccessClassOn,
+  decideTake,
+  enrichLessons,
+  loadSlotContext,
+  pickLesson,
+  type TakeDecision,
+} from './attendance.lesson';
 
 type Actor = Ctx['actor'];
 
@@ -62,7 +74,13 @@ export async function toRecordDtos(
   const studentIds = uniq(docs.map((d) => String(d.studentId)));
   const classIds = uniq(docs.map((d) => String(d.classId)));
   const statusIds = uniq(docs.map((d) => String(d.statusId)));
-  const userIds = uniq(docs.flatMap((d) => [String(d.markedBy), String(d.updatedBy)]));
+  const userIds = uniq(
+    docs.flatMap((d) => [
+      String(d.markedBy),
+      String(d.updatedBy),
+      ...(d.teacherId ? [String(d.teacherId)] : []),
+    ]),
+  );
   const subjectIds = uniq(docs.flatMap((d) => (d.subjectId ? [String(d.subjectId)] : [])));
   const [students, classes, statuses, users, subjects] = await Promise.all([
     Student.find({ _id: { $in: studentIds } }).select('fullName'),
@@ -96,6 +114,11 @@ export async function toRecordDtos(
       subject: d.subjectId
         ? { id: String(d.subjectId), name: subMap.get(String(d.subjectId)) ?? '' }
         : null,
+      teacherId: d.teacherId ? String(d.teacherId) : null,
+      teacher: d.teacherId
+        ? { id: String(d.teacherId), fullName: uMap.get(String(d.teacherId)) ?? '' }
+        : null,
+      source: d.source ?? null,
       statusId: String(d.statusId),
       status: st
         ? {
@@ -123,6 +146,8 @@ const snapshot = (d: AttendanceRecordDoc) => ({
   date: d.date,
   lessonNo: d.lessonNo,
   subjectId: d.subjectId ? String(d.subjectId) : null,
+  teacherId: d.teacherId ? String(d.teacherId) : null,
+  source: d.source ?? null,
   statusId: String(d.statusId),
   category: d.category,
   minutesLate: d.minutesLate,
@@ -134,16 +159,22 @@ const throwValidation = (details: ErrorDetail[]) => {
 };
 
 /** Faol yildagi arxivlanmagan sinf */
-async function loadTakeableClass(actor: Actor, schoolId: string, classId: string) {
+async function loadTakeableClass(
+  actor: Actor,
+  schoolId: string,
+  classId: string,
+  date: string,
+  settings: AttendanceSettings,
+) {
   const notFound = AppError.notFound('Sinf topilmadi');
   if (!isId(classId)) throw notFound;
-  const scope = await allowedClassIds(actor, schoolId);
-  if (scope && !scope.includes(classId)) throw notFound;
   const [cls, yearId] = await Promise.all([
     ClassModel.findOne({ _id: classId, schoolId }),
     activeYearId(schoolId),
   ]);
   if (!cls) throw notFound;
+  // O'qituvchi: o'z sinflari yoki shu sanada jadvalda darsi bor sinf (sanaga bog'liq vaqtinchalik kirish)
+  if (!(await canAccessClassOn(actor, schoolId, cls, date, settings))) throw notFound;
   if (cls.isArchived || !yearId || String(cls.academicYearId) !== yearId) {
     throw AppError.validation('Sinf davomat uchun mavjud emas', [
       {
@@ -154,6 +185,22 @@ async function loadTakeableClass(actor: Actor, schoolId: string, classId: string
   }
   return { cls, yearId };
 }
+
+const throwDenied = (d: TakeDecision) => {
+  if (d.canTake) return;
+  if (d.denial === 'conflict') throw AppError.conflict(d.reason ?? "Davomat olib bo'lmaydi");
+  throw AppError.forbidden(d.reason ?? "Davomat olishga ruxsat yo'q");
+};
+
+/** Qo'lda olingan dars yozuvi uchun o'qituvchi snapshoti: o'qituvchi o'zi, aks holda null */
+const manualTeacher = (actor: Actor): string | null => (actor.role === 'teacher' ? actor.id : null);
+
+const scheduledSubjectConflict = async (subjectId: string) => {
+  const name = (await Subject.findById(subjectId).select('name').lean())?.name ?? '';
+  return AppError.conflict(
+    `Jadvalga ko'ra bu dars ${name} fanidan; boshqa fan tanlash uchun admin yoki sinf rahbari kerak`,
+  );
+};
 
 // ---------- Servis ----------
 
@@ -176,19 +223,38 @@ export const attendanceService = {
     },
   ) {
     const settings = await getAttendanceSettings(schoolId);
-    const { cls, yearId } = await loadTakeableClass(ctx.actor, schoolId, input.classId);
     const date = input.date ?? todayTashkent();
-    const unit = resolveLessonNo(settings, input.lessonNo);
-    throwValidation([
-      ...checkDate(settings, date, todayTashkent()),
-      ...unit.errors,
-      ...checkSubjectInput(settings, input.subjectId),
-    ]);
+    const { cls, yearId } = await loadTakeableClass(
+      ctx.actor,
+      schoolId,
+      input.classId,
+      date,
+      settings,
+    );
+    const slot = await loadSlotContext(schoolId, input.classId, date, settings);
+    const unit = resolveLessonNo(settings, input.lessonNo, slot.maxNo);
+    throwValidation([...checkDate(settings, date, todayTashkent()), ...unit.errors]);
     const lessonNo = unit.lessonNo;
 
-    // Dars rejimi: fan, huquq va "bir dars = bir fan" qoidasi
+    // Dars rejimi: jadval (agar yoqilgan bo'lsa) bo'yicha kim va qaysi fanga davomat olishi mumkin
+    const lesson = settings.mode === 'lesson' ? pickLesson(slot, lessonNo) : null;
+    const decision = settings.mode === 'lesson' ? decideTake(ctx.actor, cls, slot, lesson) : null;
+    if (decision) throwDenied(decision);
+    const resolved = decision && lesson && !decision.manual ? lesson : null;
+    throwValidation(checkSubjectInput(settings, input.subjectId, !!resolved));
+
+    // Fan, huquq va "bir dars = bir fan" qoidasi
     let subjectId: string | null = null;
-    if (settings.mode === 'lesson' && input.subjectId) {
+    let teacherId: string | null = null;
+    let source: AttendanceSource | null = null;
+    if (resolved && (!input.subjectId || input.subjectId === resolved.subjectId)) {
+      await assertLessonSubjectFree(schoolId, cls._id, date, lessonNo, resolved.subjectId);
+      subjectId = resolved.subjectId;
+      teacherId = resolved.teacherId;
+      source = resolved.source;
+    } else if (settings.mode === 'lesson' && input.subjectId) {
+      if (resolved && !decision?.canOverride)
+        throw await scheduledSubjectConflict(resolved.subjectId);
       const used = await AttendanceRecord.distinct('subjectId', {
         schoolId,
         classId: cls._id,
@@ -206,6 +272,8 @@ export const attendanceService = {
       );
       await assertLessonSubjectFree(schoolId, cls._id, date, lessonNo, input.subjectId);
       subjectId = input.subjectId;
+      teacherId = manualTeacher(ctx.actor);
+      source = 'manual';
     }
 
     const [statuses, students] = await Promise.all([
@@ -271,7 +339,16 @@ export const attendanceService = {
             continue;
           }
           prev.statusId = new Types.ObjectId(values.statusId);
-          if (subjectId) prev.subjectId = new Types.ObjectId(subjectId);
+          if (subjectId && String(prev.subjectId ?? '') !== subjectId) {
+            // Fan o'zgargan: snapshot ham yangilanadi
+            prev.subjectId = new Types.ObjectId(subjectId);
+            prev.teacherId = teacherId ? new Types.ObjectId(teacherId) : null;
+            prev.source = source;
+          } else if (subjectId && !prev.source) {
+            // Eski (snapshotsiz) yozuv
+            prev.teacherId = teacherId ? new Types.ObjectId(teacherId) : null;
+            prev.source = source;
+          }
           prev.category = category;
           prev.minutesLate = values.minutesLate;
           prev.note = values.note;
@@ -287,6 +364,8 @@ export const attendanceService = {
             date,
             lessonNo,
             subjectId,
+            teacherId,
+            source,
             statusId: values.statusId,
             category,
             minutesLate: values.minutesLate,
@@ -313,6 +392,8 @@ export const attendanceService = {
         date,
         lessonNo,
         subjectId,
+        teacherId,
+        source,
         created,
         updated,
         failed: failed.length,
@@ -331,8 +412,10 @@ export const attendanceService = {
       ? await AttendanceRecord.findOne({ _id: id, schoolId, isDeleted: false })
       : null;
     if (!doc) throw notFound;
-    const scope = await allowedClassIds(ctx.actor, schoolId);
-    if (scope && !scope.includes(String(doc.classId))) throw notFound;
+    const docClass = await ClassModel.findOne({ _id: doc.classId, schoolId });
+    if (!docClass || !(await canAccessClassOn(ctx.actor, schoolId, docClass, doc.date, settings))) {
+      throw notFound;
+    }
     if (canEditAny(ctx.actor)) return doc;
     if (String(doc.markedBy) !== ctx.actor.id) {
       throw AppError.forbidden(
@@ -386,8 +469,22 @@ export const attendanceService = {
       }
       const cls = await ClassModel.findOne({ _id: doc.classId, schoolId });
       if (!cls) throw AppError.notFound('Sinf topilmadi');
-      const keep = doc.subjectId ? [String(doc.subjectId)] : [];
-      await assertLessonSubject(ctx.actor, schoolId, cls, patch.subjectId, keep);
+      const slot = await loadSlotContext(schoolId, String(doc.classId), doc.date, settings);
+      const lesson = pickLesson(slot, doc.lessonNo);
+      const decision = decideTake(ctx.actor, cls, slot, lesson);
+      throwDenied(decision);
+      let nextSource: AttendanceSource = 'manual';
+      let nextTeacher = manualTeacher(ctx.actor);
+      const scheduled = lesson && !decision.manual ? lesson : null;
+      if (scheduled && patch.subjectId === scheduled.subjectId) {
+        nextSource = scheduled.source;
+        nextTeacher = scheduled.teacherId;
+      } else {
+        if (scheduled && !decision.canOverride)
+          throw await scheduledSubjectConflict(scheduled.subjectId);
+        const keep = doc.subjectId ? [String(doc.subjectId)] : [];
+        await assertLessonSubject(ctx.actor, schoolId, cls, patch.subjectId, keep);
+      }
       await assertLessonSubjectFree(
         schoolId,
         doc.classId,
@@ -397,6 +494,8 @@ export const attendanceService = {
         doc._id,
       );
       doc.subjectId = new Types.ObjectId(patch.subjectId);
+      doc.teacherId = nextTeacher ? new Types.ObjectId(nextTeacher) : null;
+      doc.source = nextSource;
     }
     doc.statusId = new Types.ObjectId(statusId);
     doc.category = category as AttendanceRecordDoc['category'];
@@ -490,19 +589,23 @@ export const attendanceService = {
   ) {
     const notFound = AppError.notFound('Sinf topilmadi');
     if (!isId(classId)) throw notFound;
-    const filter: Record<string, unknown> = { _id: classId, schoolId };
-    if (actor.role === 'teacher') filter.teacherIds = actor.id;
-    const cls = await ClassModel.findOne(filter);
+    const cls = await ClassModel.findOne({ _id: classId, schoolId });
     if (!cls) throw notFound;
 
     const settings = await getAttendanceSettings(schoolId);
     const date = q.date ?? todayTashkent();
+    if (!(await canAccessClassOn(actor, schoolId, cls, date, settings))) throw notFound;
+    const slot = await loadSlotContext(schoolId, classId, date, settings);
     // Varaqni ko'rishda dars raqami standart 1 (dars rejimida)
     const unit = resolveLessonNo(
       settings,
       settings.mode === 'lesson' ? (q.lessonNo ?? 1) : undefined,
+      slot.maxNo,
     );
     throwValidation(unit.errors);
+    const lesson = settings.mode === 'lesson' ? pickLesson(slot, unit.lessonNo) : null;
+    const decision = settings.mode === 'lesson' ? decideTake(actor, cls, slot, lesson) : null;
+    const lessonDtos = await enrichLessons(slot.lessons, actor);
 
     const [students, statuses] = await Promise.all([
       Student.find({ schoolId, classId: cls._id, isDeleted: false, status: 'active' }).sort({
@@ -558,6 +661,23 @@ export const attendanceService = {
       subject: lessonSubject,
       subjects,
       lessonsPerDay: settings.lessonsPerDay,
+      /** Ruxsat etilgan eng katta dars raqami: max(lessonsPerDay, jadvaldagi eng katta dars) */
+      maxLessonNo: settings.mode === 'lesson' ? slot.maxNo : null,
+      timetable: {
+        enforcement: slot.tt.enforcement,
+        hasTimetable: slot.hasVersion,
+        homeroomCanTakeAnyLesson: slot.tt.homeroomCanTakeAnyLesson,
+      },
+      lesson: lesson
+        ? (lessonDtos.find(
+            (l) => l.lessonNo === lesson.lessonNo && l.groupKey === lesson.groupKey,
+          ) ?? null)
+        : null,
+      lessons: lessonDtos,
+      canTake: decision ? decision.canTake : true,
+      cannotTakeReason: decision?.reason ?? null,
+      /** Jadvaldagi fan o'rniga boshqasini tanlash mumkin (admin / sinf rahbari, suggest) */
+      canOverrideSubject: decision ? decision.canOverride : false,
       isWorkingDay: isWorkingDay(settings, date),
       settings,
       statuses: [...statuses.values()]

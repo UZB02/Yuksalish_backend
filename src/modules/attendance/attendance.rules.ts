@@ -47,9 +47,15 @@ export const isWorkingDay = (
 ): boolean => s.workingWeekdays.includes(isoWeekday(date));
 
 /** Rejimga mos dars raqamini aniqlaydi (xato bo'lsa details bilan) */
+export const HARD_MAX_LESSON_NO = 12;
+
+/**
+ * @param maxNo dars rejimida ruxsat etilgan eng katta raqam: max(lessonsPerDay, jadvaldagi eng katta dars), 12 dan oshmaydi
+ */
 export function resolveLessonNo(
   s: AttendanceSettings,
   lessonNo: number | undefined | null,
+  maxNo: number = s.lessonsPerDay,
 ): { lessonNo: number; errors: ErrorDetail[] } {
   if (s.mode === 'daily') {
     if (lessonNo !== undefined && lessonNo !== null && lessonNo !== 0) {
@@ -60,12 +66,11 @@ export function resolveLessonNo(
     }
     return { lessonNo: 0, errors: [] };
   }
-  if (lessonNo === undefined || lessonNo === null || lessonNo < 1 || lessonNo > s.lessonsPerDay) {
+  const max = Math.min(Math.max(maxNo, s.lessonsPerDay), HARD_MAX_LESSON_NO);
+  if (lessonNo === undefined || lessonNo === null || lessonNo < 1 || lessonNo > max) {
     return {
       lessonNo: 0,
-      errors: [
-        { path: 'lessonNo', message: `Dars raqami 1 dan ${s.lessonsPerDay} gacha bo'lishi kerak` },
-      ],
+      errors: [{ path: 'lessonNo', message: `Dars raqami 1 dan ${max} gacha bo'lishi kerak` }],
     };
   }
   return { lessonNo, errors: [] };
@@ -75,10 +80,13 @@ export function resolveLessonNo(
 export function checkSubjectInput(
   s: AttendanceSettings,
   subjectId: string | undefined | null,
+  /** Jadvaldan aniqlangan dars bor: fan ixtiyoriy */
+  optional = false,
 ): ErrorDetail[] {
   if (s.mode === 'daily') {
     return subjectId ? [{ path: 'subjectId', message: 'Kunlik rejimda fan berilmaydi' }] : [];
   }
+  if (optional) return [];
   return subjectId ? [] : [{ path: 'subjectId', message: 'Dars uchun fan tanlanishi shart' }];
 }
 

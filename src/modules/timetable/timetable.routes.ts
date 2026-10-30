@@ -23,6 +23,7 @@ import {
   weekQuery,
 } from './timetable.schema';
 import { timetableService, type ActivateOpts } from './timetable.service';
+import { myTodayLessons } from './timetable.today';
 
 export const timetableRouter = Router();
 
@@ -49,6 +50,12 @@ timetableRouter.get(
       (req.query as { date?: string }).date,
     );
   }),
+);
+
+// Bugungi darslarim (dashboard va "Mening sinflarim"): har bir dars uchun davomat holati bilan
+timetableRouter.get(
+  '/me/today',
+  read((req) => myTodayLessons(getCtx(req).actor, req.schoolId as string)),
 );
 
 timetableRouter.get(

@@ -13,7 +13,9 @@ import { isId } from '../../utils/helpers';
 import { allowedClassIds } from '../classes/classes.service';
 import type { AttendanceCategory } from '../settings/attendance.settings';
 import { activeYearId, getAttendanceSettings, toRecordDtos } from './attendance.service';
-import { isWorkingDay } from './attendance.rules';
+import { HARD_MAX_LESSON_NO, isWorkingDay } from './attendance.rules';
+import { getTimetableSettings } from './attendance.lesson';
+import { resolveClassesRange } from '../timetable/timetable.resolver';
 
 type Actor = Ctx['actor'];
 
@@ -277,7 +279,34 @@ export const attendanceStats = {
     for (const s of students)
       totalStudents.set(String(s.classId), (totalStudents.get(String(s.classId)) ?? 0) + 1);
 
-    const lessonFilter = settings.mode === 'daily' ? 0 : { $gte: 1, $lte: settings.lessonsPerDay };
+    // Dars rejimi: jadvaldagi dars raqami lessonsPerDay dan katta bo'lsa, sinf uchun shu raqamgacha (12 dan oshmaydi)
+    const highest = new Map<string, number>();
+    if (
+      settings.mode === 'lesson' &&
+      (await getTimetableSettings(schoolId)).enforcement !== 'off'
+    ) {
+      const lessons = await resolveClassesRange(
+        schoolId,
+        classes.map((c) => c.id as string),
+        today,
+        today,
+      );
+      for (const l of lessons)
+        highest.set(l.classId, Math.max(highest.get(l.classId) ?? 0, l.lessonNo));
+    }
+    const unitsOf = (classId: string): number[] =>
+      settings.mode === 'daily'
+        ? [0]
+        : Array.from(
+            {
+              length: Math.min(
+                Math.max(settings.lessonsPerDay, highest.get(classId) ?? 0),
+                HARD_MAX_LESSON_NO,
+              ),
+            },
+            (_, i) => i + 1,
+          );
+    const lessonFilter = settings.mode === 'daily' ? 0 : { $gte: 1, $lte: HARD_MAX_LESSON_NO };
     const records = await AttendanceRecord.find({
       schoolId,
       date: today,
@@ -297,11 +326,8 @@ export const attendanceStats = {
       units.set(r.lessonNo, set);
       marked.set(cid, units);
     }
-    const unitNos =
-      settings.mode === 'daily'
-        ? [0]
-        : Array.from({ length: settings.lessonsPerDay }, (_, i) => i + 1);
     return classes.map((c) => {
+      const unitNos = unitsOf(c.id as string);
       const total = totalStudents.get(c.id) ?? 0;
       const units = marked.get(c.id) ?? new Map<number, Set<string>>();
       const markedUnits =
