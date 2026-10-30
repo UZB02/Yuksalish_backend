@@ -205,6 +205,9 @@ describe('Ruxsatlar (permissions)', () => {
       'attendance.edit',
       'attendance.view',
       'attendance.settings',
+      'timetable.view',
+      'timetable.manage',
+      'timetable.substitute',
     ]);
     expect(res.body.data[0]).toEqual(
       expect.objectContaining({

@@ -106,6 +106,24 @@ export const PERMISSION_CATALOG: PermissionDef[] = [
     label: 'Davomat sozlamalari',
     roles: ['school_admin'],
   },
+  {
+    key: 'timetable.view',
+    group: 'Dars jadvali',
+    label: "Dars jadvalini ko'rish",
+    roles: ['school_admin', 'teacher'],
+  },
+  {
+    key: 'timetable.manage',
+    group: 'Dars jadvali',
+    label: 'Dars jadvalini boshqarish',
+    roles: ['school_admin'],
+  },
+  {
+    key: 'timetable.substitute',
+    group: 'Dars jadvali',
+    label: "O'rinbosar qo'yish va darsni bekor qilish",
+    roles: ['school_admin'],
+  },
 ];
 
 export const ALL_PERMISSION_KEYS = PERMISSION_CATALOG.map((p) => p.key);
