@@ -6,6 +6,7 @@ import { paginationQuery } from '../../core/pagination';
 import { publicLimiter } from '../../middlewares/rateLimiters';
 import { validate } from '../../middlewares/validate';
 import { publicCache } from './public.cache';
+import { sendLogo } from '../branding/branding.send';
 import { publicService } from './public.service';
 
 /** Autentifikatsiyasiz, faqat o'qish. Alohida rate limit, kesh va ETag. */
@@ -43,6 +44,15 @@ const slug = (req: Request) => String(req.params.slug);
 publicRouter.get(
   '/schools',
   asyncHandler((req, res) => respond(req, res, () => publicService.schools())),
+);
+
+// Maktab logosi (PNG): versiyalangan (?v=) so'rovga immutable kesh; publicCache dan o'tmaydi
+publicRouter.get(
+  '/schools/:slug/logo',
+  asyncHandler(async (req, res) => {
+    const { asset, immutable } = await publicService.schoolLogo(slug(req), req.query.v);
+    sendLogo(req, res, asset, immutable);
+  }),
 );
 
 // "global" — zaxiralangan slug (maktab uchun ishlatib bo'lmaydi)

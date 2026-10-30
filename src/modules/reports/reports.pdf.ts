@@ -3,6 +3,7 @@ import path from 'path';
 import PDFDocument from 'pdfkit';
 import { fmtDate, fmtDateTime, fmtPeriod } from './reports.labels';
 import type { Column, ReportLayout, Table } from './reports.layout';
+import { fitLogo } from '../branding/branding.doc';
 
 // ---- Shrift: DejaVu Sans (Unicode: o'zbek lotin/ʻ ʼ + kirill), assets/fonts da ----
 function findFontsDir(): string {
@@ -244,7 +245,7 @@ function drawChart(
 }
 
 /** Hisobotni A4 PDF ga aylantiradi (Unicode shrift, sahifalarga bo'lingan jadvallar, kolontitul) */
-export function renderPdf(layout: ReportLayout): Promise<Buffer> {
+export function renderPdf(layout: ReportLayout, logo?: Buffer | null): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const doc = createDoc({
       size: 'A4',
@@ -268,10 +269,15 @@ export function renderPdf(layout: ReportLayout): Promise<Buffer> {
       const bottom = () => doc.page.height - M - FOOT;
       let y = M;
 
-      // ---- Sarlavha ----
+      // ---- Logo (chap yuqori) va sarlavha ----
+      const logoBox = fitLogo(logo, 34, 90);
+      if (logoBox)
+        doc.image(logoBox.buffer, left, y, { width: logoBox.width, height: logoBox.height });
+      const tx = logoBox ? left + logoBox.width + 8 : left;
+      const tw = width - (tx - left);
       doc.font(FONT_BOLD).fontSize(16).fillColor('#111827');
-      for (const line of wrap(doc, layout.title, width)) {
-        doc.text(line, left, y, { lineBreak: false });
+      for (const line of wrap(doc, layout.title, tw)) {
+        doc.text(line, tx, y, { lineBreak: false });
         y += 20;
       }
       doc.font(FONT).fontSize(9).fillColor('#374151');
@@ -281,8 +287,8 @@ export function renderPdf(layout: ReportLayout): Promise<Buffer> {
         `Yaratilgan: ${fmtDateTime(layout.meta.generatedAt)} (Asia/Tashkent)`,
       ];
       for (const t of info) {
-        for (const ln of wrap(doc, t, width)) {
-          doc.text(ln, left, y, { lineBreak: false });
+        for (const ln of wrap(doc, t, tw)) {
+          doc.text(ln, tx, y, { lineBreak: false });
           y += 12;
         }
       }

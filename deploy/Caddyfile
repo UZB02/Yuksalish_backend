@@ -22,6 +22,14 @@
 	handle /api/v1/public/* {
 		reverse_proxy api:4000
 	}
+	# Brending (platforma nomi, logo, favicon) faqat o'qish uchun ochiq; o'zgartirish faqat admin domenida
+	@brandingRead {
+		path /api/v1/branding /api/v1/branding/*
+		method GET HEAD
+	}
+	handle @brandingRead {
+		reverse_proxy api:4000
+	}
 	handle /api/* {
 		respond "Not found" 404
 	}
@@ -39,14 +47,35 @@
 {$ADMIN_DOMAIN} {
 	import common
 
+	# Chiqishda brauzerning HTTP keshi tozalanadi: signed bola rasmlari (private, max-age=86400)
+	# umumiy kompyuterda keyingi foydalanuvchiga qolib ketmasin. Service worker keshi bu yerda
+	# tegmaydi (u faqat app shell saqlaydi). handle /api/* dan OLDIN turishi shart.
+	handle /api/v1/auth/logout {
+		header Clear-Site-Data `"cache"`
+		reverse_proxy api:4000
+	}
+
 	handle /api/* {
 		reverse_proxy api:4000
 	}
 
 	handle {
 		root * /srv/admin
+
+		# Xeshli fayllar: abadiy kesh
 		@assets path /assets/*
 		header @assets Cache-Control "public, max-age=31536000, immutable"
+
+		# PWA: index.html, SPA fallback, sw.js, workbox-*.js, registerSW.js, manifest, ikonkalar
+		# DOIM qayta tekshiriladi. `header` try_files dan oldin ishlaydi, shuning uchun alohida
+		# nomlar emas, "/assets/ dan boshqa hamma narsa" deb yoziladi (SPA fallback ham shunga kiradi).
+		# sw.js keshlanib qolsa, yangi versiya foydalanuvchilarga yetib bormaydi.
+		@mutable not path /assets/*
+		header @mutable Cache-Control "no-cache"
+
+		@manifest path /manifest.webmanifest
+		header @manifest Content-Type "application/manifest+json; charset=utf-8"
+
 		try_files {path} /index.html
 		file_server
 	}

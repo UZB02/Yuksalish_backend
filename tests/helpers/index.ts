@@ -5,6 +5,7 @@ import { afterAll, beforeAll, beforeEach, inject } from 'vitest';
 import { createApp } from '../../src/app';
 import type { Role } from '../../src/constants/roles';
 import { AcademicYear } from '../../src/models/AcademicYear';
+import { BrandingAsset } from '../../src/models/BrandingAsset';
 import { BehaviorType } from '../../src/models/BehaviorType';
 import { Score } from '../../src/models/Score';
 import { ClassSubject } from '../../src/models/ClassSubject';
@@ -55,6 +56,7 @@ const ALL_MODELS: { init(): Promise<unknown>; deleteMany(f: object): PromiseLike
   SubjectGrade,
   TimetableVersion,
   LessonOverride,
+  BrandingAsset,
 ];
 
 /** Har bir test fayli uchun alohida baza; har testdan oldin tozalanadi */

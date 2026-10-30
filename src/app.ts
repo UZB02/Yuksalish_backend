@@ -29,9 +29,22 @@ export function createApp(): Express {
     credentials: false,
     methods: ['GET', 'HEAD', 'OPTIONS'],
   });
-  app.use((req, res, next) =>
-    req.path.startsWith('/api/v1/public') ? publicCors(req, res, next) : adminCors(req, res, next),
-  );
+  // Branding o'qish (GET/HEAD): admin va ochiq frontendlar ikkalasi ham o'qiy oladi, cookie kerak emas
+  const brandingReadCors = cors({
+    origin: [...new Set([...env.corsOrigins, ...env.publicCorsOrigins])],
+    credentials: false,
+    methods: ['GET', 'HEAD', 'OPTIONS'],
+  });
+  app.use((req, res, next) => {
+    if (req.path.startsWith('/api/v1/public')) return publicCors(req, res, next);
+    if (
+      req.path.startsWith('/api/v1/branding') &&
+      (req.method === 'GET' || req.method === 'HEAD')
+    ) {
+      return brandingReadCors(req, res, next);
+    }
+    return adminCors(req, res, next);
+  });
   if (!env.isTest) app.use(pinoHttp({ logger }));
   app.use(express.json({ limit: '100kb' }));
   app.use(cookieParser());

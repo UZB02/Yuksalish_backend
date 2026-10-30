@@ -6,6 +6,7 @@ import { Photo } from '../../models/Photo';
 import { School } from '../../models/School';
 import { Student } from '../../models/Student';
 import { escapeRegex, isId } from '../../utils/helpers';
+import { brandingService, schoolLogoPath } from '../branding/branding.service';
 import { rankChange } from '../ratings/rating.calc';
 import {
   findClassRatings,
@@ -33,6 +34,10 @@ export const studentKey = (id: string): string =>
     .digest('base64url')
     .slice(0, 22);
 
+/** Versiyalangan yuklangan logo havolasi; bo'lmasa eski qo'lda kiritilgan URL */
+const logoUrlOf = (s: { slug: string; logoUrl?: string | null; logoHash?: string | null }) =>
+  s.logoHash ? schoolLogoPath.public(s.slug, s.logoHash) : (s.logoUrl ?? null);
+
 const periodOut = (p: { type: string; from: string | null; to: string | null; label: string }) => ({
   type: p.type,
   from: p.from,
@@ -53,13 +58,13 @@ async function resolveSchool(slug: string) {
 export const publicService = {
   async schools() {
     const schools = await School.find({ isActive: true })
-      .select('name slug logoUrl')
+      .select('name slug logoUrl logoHash')
       .sort({ name: 1 })
       .lean();
     const out = [];
     for (const s of schools) {
       const p = await settingsService.getEffectivePublic(String(s._id));
-      if (p.enabled) out.push({ name: s.name, slug: s.slug, logoUrl: s.logoUrl ?? null });
+      if (p.enabled) out.push({ name: s.name, slug: s.slug, logoUrl: logoUrlOf(s) });
     }
     return { data: out };
   },
@@ -69,7 +74,7 @@ export const publicService = {
     const snap = await getSnapshot(id);
     return {
       data: {
-        school: { name: school.name, slug: school.slug, logoUrl: school.logoUrl ?? null },
+        school: { name: school.name, slug: school.slug, logoUrl: logoUrlOf(school) },
         title: settings.title,
         subtitle: settings.subtitle,
         primaryColor: settings.primaryColor,
@@ -198,6 +203,15 @@ export const publicService = {
     return photo;
   },
 
+  /** Ochiq maktab logosi: maktab ochiq saytda yoqilgan bo'lsa va logo yuklangan bo'lsa */
+  async schoolLogo(slug: string, v: unknown) {
+    const { school, id } = await resolveSchool(slug);
+    const r = await brandingService.schoolAsset(school.logoHash ?? null, id, v).catch(() => {
+      throw NOT_FOUND();
+    });
+    return r;
+  },
+
   /** Umumiy (maktablar) reyting — faqat platformada globalRatingEnabled bo'lsa */
   async globalRating() {
     const g = await settingsService.getGlobal<PublicSettings>('public');
@@ -206,7 +220,7 @@ export const publicService = {
     const docs = (await findSchoolRatings(snap.calcId)).filter((d) => d.rank !== null);
 
     const schools = await School.find({ _id: { $in: docs.map((d) => d.refId) }, isActive: true })
-      .select('name slug logoUrl')
+      .select('name slug logoUrl logoHash')
       .lean();
     const byId = new Map(schools.map((s) => [String(s._id), s]));
     const included = [];
@@ -238,7 +252,7 @@ export const publicService = {
             : {}),
           schoolName: x.s.name,
           slug: x.s.slug,
-          logoUrl: x.s.logoUrl ?? null,
+          logoUrl: logoUrlOf(x.s),
           ...(g.showScores ? { score: x.d.score } : {}),
           ratedStudents: x.d.ratedStudents,
         })),

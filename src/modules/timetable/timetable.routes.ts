@@ -35,7 +35,13 @@ import {
   weekQuery,
 } from './timetable.schema';
 import { overridesService } from './overrides.service';
-import { exportOverview, fileSlug, renderTimetableExcel, renderTimetablePdf } from './timetable.export';
+import { brandingService } from '../branding/branding.service';
+import {
+  exportOverview,
+  fileSlug,
+  renderTimetableExcel,
+  renderTimetablePdf,
+} from './timetable.export';
 import { timetableExportService, type ExportResult } from './timetable.export.service';
 import { timetableService, type ActivateOpts } from './timetable.service';
 import { myTodayLessons } from './timetable.today';
@@ -81,10 +87,11 @@ async function sendExport(
   params: Record<string, unknown>,
 ) {
   const ctx = getCtx(req);
+  const logo = await brandingService.exportLogo(req.schoolId as string);
   const buf =
     format === 'pdf'
-      ? await renderTimetablePdf(result.docs)
-      : await renderTimetableExcel(result.docs, exportOverview(type));
+      ? await renderTimetablePdf(result.docs, logo)
+      : await renderTimetableExcel(result.docs, exportOverview(type), logo);
   await auditService.log({
     userId: ctx.actor.id,
     schoolId: req.schoolId as string,

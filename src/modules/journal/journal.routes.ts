@@ -14,6 +14,7 @@ import {
   safeFileName,
   type ExportFormat,
 } from '../reports/reports.files';
+import { brandingService } from '../branding/branding.service';
 import { renderJournalExcel, renderJournalPdf } from './journal.export';
 import { gridQuery, type GridQuery } from './journal.schema';
 import { journalService } from './journal.service';
@@ -77,7 +78,11 @@ function exporter(format: ExportFormat): RequestHandler[] {
       const ctx = getCtx(req);
       const q = req.query as unknown as GridQuery;
       const grid = await journalService.grid(ctx.actor, req.schoolId as string, q);
-      const buf = format === 'pdf' ? await renderJournalPdf(grid) : await renderJournalExcel(grid);
+      const logo = await brandingService.exportLogo(req.schoolId as string);
+      const buf =
+        format === 'pdf'
+          ? await renderJournalPdf(grid, logo)
+          : await renderJournalExcel(grid, logo);
       await auditService.log({
         userId: ctx.actor.id,
         schoolId: req.schoolId as string,

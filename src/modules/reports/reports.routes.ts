@@ -17,6 +17,7 @@ import {
   type ExportFormat,
 } from './reports.files';
 import { renderPdf } from './reports.pdf';
+import { brandingService } from '../branding/branding.service';
 import { REPORTS, type ReportDef } from './reports.registry';
 
 export const reportsRouter = Router();
@@ -93,7 +94,8 @@ for (const def of REPORTS) {
       const ctx = getCtx(req);
       const q = req.query as unknown as Record<string, string>;
       const r = await def.run(ctx.actor, schoolOf(def, req), q, idOf(req));
-      const buf = format === 'pdf' ? await renderPdf(r.layout) : await renderExcel(r.layout);
+      const logo = format === 'pdf' ? await brandingService.exportLogo(schoolOf(def, req)) : null;
+      const buf = format === 'pdf' ? await renderPdf(r.layout, logo) : await renderExcel(r.layout);
       await auditService.log({
         userId: ctx.actor.id,
         schoolId: schoolOf(def, req),

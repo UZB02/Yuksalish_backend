@@ -257,6 +257,7 @@ Papkalar `update.sh` boshida o'zgaruvchilar (`ROOT_DIR`, `BACKEND_DIR`, `ADMIN_D
 | `api` ishga tushmaydi, Mongo autentifikatsiya xatosi | `.env` dagi Mongo parollari baza yaratilgandan keyin o'zgartirilgan. Hali ma'lumot bo'lmasa: `docker compose down -v` va qayta `up`. Ma'lumot bor bo'lsa, eski parollarni qaytaring. |
 | Frontend build `out of memory` | Swap qo'shing (1-bo'lim) yoki RAM ni oshiring. |
 | Frontend build `vue-tsc` xatosi | Kodda tip xatosi bor: lokal kompyuterda `npm run build` ni ishga tushirib to'g'rilang. |
+| Admin ilovasi (PWA) da muammo: eski versiya qotib qolgan, offline holat xato | **Kill-switch:** serverdagi `.env` ga `VITE_PWA_KILL=1` yozing va `./deploy/update.sh` ni ishga tushiring. Admin service worker keyingi tashrifda o'zini o'chiradi va keshini tozalaydi. Tuzalgach `VITE_PWA_KILL=0` (yoki qatorni o'chirish) va yana `update.sh`. `sw.js` faylini qo'lda o'chirmang: Caddy fallback sifatida `index.html` qaytaradi va eski worker abadiy qolib ketadi. |
 | Sahifani yangilaganda 404 | Caddy `try_files` bilan SPA fallback qiladi; agar chiqsa, `docker compose logs web` ni ko'ring. |
 
 Foydali buyruqlar (hammasi `/opt/yuksalish/Yuksalish_backend` da): `docker compose ps`, `docker compose logs --tail=100 api`, `docker compose restart api`, `docker stats`.

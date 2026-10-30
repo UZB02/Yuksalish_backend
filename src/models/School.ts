@@ -6,6 +6,8 @@ export interface ISchool {
   address: string | null;
   phone: string | null;
   logoUrl: string | null;
+  /** Yuklangan logo xeshi (BrandingAsset); null = yuklanmagan */
+  logoHash: string | null;
   isActive: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -19,6 +21,7 @@ const schoolSchema = new Schema<ISchool>(
     address: { type: String, trim: true, default: null },
     phone: { type: String, trim: true, default: null },
     logoUrl: { type: String, trim: true, default: null },
+    logoHash: { type: String, default: null },
     isActive: { type: Boolean, default: true },
   },
   { timestamps: true },

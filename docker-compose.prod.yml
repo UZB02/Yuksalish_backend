@@ -75,6 +75,8 @@ services:
       args:
         # Admin paneldagi "ochiq reyting havolasi" shu manzilga qaraydi (build vaqtida o'rnatiladi)
         VITE_PUBLIC_URL: https://${PUBLIC_DOMAIN}
+        # Admin PWA kill-switch: .env ga VITE_PWA_KILL=1 yozib ./deploy/update.sh ni ishga tushiring
+        VITE_PWA_KILL: ${VITE_PWA_KILL:-0}
     restart: unless-stopped
     depends_on:
       api:

@@ -9,9 +9,12 @@ COPY Yuksalish_Front/admin/package.json Yuksalish_Front/admin/package-lock.json 
 RUN npm ci
 COPY Yuksalish_Front/admin/ ./
 ARG VITE_PUBLIC_URL
+# PWA kill-switch: 1 bo'lsa admin service worker o'zini o'chiradi (avariya holati uchun)
+ARG VITE_PWA_KILL=0
 # Vite da process.env dagi VITE_* o'zgaruvchilar .env.production fayldagidan ustun turadi
 ENV VITE_API_BASE_URL=/api/v1 \
-    VITE_PUBLIC_URL=$VITE_PUBLIC_URL
+    VITE_PUBLIC_URL=$VITE_PUBLIC_URL \
+    VITE_PWA_KILL=$VITE_PWA_KILL
 RUN npm run build
 
 FROM node:22-alpine AS publik

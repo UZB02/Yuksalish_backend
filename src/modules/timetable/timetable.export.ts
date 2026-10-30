@@ -2,6 +2,7 @@ import ExcelJS from 'exceljs';
 import { fmtDate, fmtDateTime } from '../reports/reports.labels';
 import { safeText } from '../reports/reports.excel';
 import { createDoc } from '../reports/reports.pdf';
+import { fitLogo, placeExcelLogo } from '../branding/branding.doc';
 
 /**
  * Haftalik dars jadvalini Excel/PDF ga chiqarish (sinf yoki o'qituvchi bo'yicha).
@@ -105,13 +106,21 @@ const linesOf = (list: ExportCell[]) =>
   list.reduce((n, c) => n + 1 + (c.detail ? 1 : 0) + (c.room ? 1 : 0), 0) +
   Math.max(0, list.length - 1);
 
-function writeSheet(ws: ExcelJS.Worksheet, d: TimetableDoc, generated: string) {
+function writeSheet(
+  wb: ExcelJS.Workbook,
+  ws: ExcelJS.Worksheet,
+  d: TimetableDoc,
+  generated: string,
+  logo?: Buffer | null,
+) {
   const lastCol = 1 + d.weekdays.length;
+  // Logo yuqori-chapda (1-3 qatorlar ~58pt); sarlavha matni o'ngga suriladi
+  const indent = placeExcelLogo(wb, ws, logo, 54);
   const banner = (row: number, text: string, font: Partial<ExcelJS.Font>, height?: number) => {
     const r = ws.getRow(row);
     r.getCell(1).value = safeText(text);
     r.getCell(1).font = font;
-    r.getCell(1).alignment = { vertical: 'middle', horizontal: 'left' };
+    r.getCell(1).alignment = { vertical: 'middle', horizontal: 'left', indent };
     if (lastCol > 1) ws.mergeCells(row, 1, row, lastCol);
     if (height) r.height = height;
   };
@@ -202,6 +211,7 @@ export function fileSlug(raw: string): string {
 export async function renderTimetableExcel(
   docs: TimetableDoc[],
   opts: ExcelOptions = {},
+  logo?: Buffer | null,
 ): Promise<Buffer> {
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Yuksalish reyting tizimi';
@@ -216,11 +226,13 @@ export async function renderTimetableExcel(
   for (const d of docs) {
     const name = uniqueSheetName(d.title, used);
     names.push(name);
-    writeSheet(wb.addWorksheet(name), d, generated);
+    writeSheet(wb, wb.addWorksheet(name), d, generated, logo);
   }
 
   if (ovWs && overview) {
     const first = docs[0];
+    const ovIndent = placeExcelLogo(wb, ovWs, logo, 40);
+    for (let r = 1; r <= 3; r++) ovWs.getRow(r).getCell(1).alignment = { indent: ovIndent };
     ovWs.getRow(1).getCell(1).value = safeText(first.schoolName);
     ovWs.getRow(1).getCell(1).font = { bold: true, size: 14 };
     ovWs.getRow(2).getCell(1).value = overview.sheetTitle;
@@ -302,7 +314,7 @@ function blocksOf(list: ExportCell[]): Block[] {
   return out;
 }
 
-export function renderTimetablePdf(docs: TimetableDoc[]): Promise<Buffer> {
+export function renderTimetablePdf(docs: TimetableDoc[], logo?: Buffer | null): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const title = docs.length === 1 ? docTitle(docs[0]) : 'Dars jadvali';
     const doc = createDoc({
@@ -321,6 +333,10 @@ export function renderTimetablePdf(docs: TimetableDoc[]): Promise<Buffer> {
     const pageH = doc.page.height;
     const generated = `${fmtDateTime(new Date().toISOString())} (Asia/Tashkent)`;
     const usableW = pageW - 2 * M;
+    // Logo sarlavhaning chap tomonida (~34pt); matn o'ngga suriladi
+    const logoBox = fitLogo(logo, 34, 90);
+    const textX = logoBox ? M + logoBox.width + 8 : M;
+    const textW = usableW - (textX - M);
 
     const line = (
       t: string,
@@ -351,17 +367,19 @@ export function renderTimetablePdf(docs: TimetableDoc[]): Promise<Buffer> {
       if (pi > 0) doc.addPage();
       let y = M;
 
+      if (logoBox)
+        doc.image(logoBox.buffer, M, y, { width: logoBox.width, height: logoBox.height });
       doc.font('BodyBold').fontSize(13).fillColor('#111827');
-      line(fit(d.schoolName, usableW), M, y, usableW);
+      line(fit(d.schoolName, textW), textX, y, textW);
       y += 18;
       doc
         .font('BodyBold')
         .fontSize(11.5)
         .fillColor(d.draft ? '#B91C1C' : '#111827');
-      line(fit(docTitle(d), usableW), M, y, usableW);
+      line(fit(docTitle(d), textW), textX, y, textW);
       y += 16;
       doc.font('Body').fontSize(8).fillColor('#374151');
-      line(fit(infoLine(d, generated), usableW), M, y, usableW);
+      line(fit(infoLine(d, generated), textW), textX, y, textW);
       y = M + HEADER_H;
 
       const tableBottom = pageH - M - FOOTER_H;

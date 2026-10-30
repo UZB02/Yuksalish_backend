@@ -2,6 +2,7 @@ import ExcelJS from 'exceljs';
 import { fmtDate, fmtDateTime, fmtPeriod } from '../reports/reports.labels';
 import { safeText } from '../reports/reports.excel';
 import { createDoc } from '../reports/reports.pdf';
+import { fitLogo, placeExcelLogo } from '../branding/branding.doc';
 import type { JournalColumn, JournalGrid } from './journal.types';
 
 export const WEEKDAY_SHORT = ['', 'Du', 'Se', 'Cho', 'Pa', 'Ju', 'Sha', 'Ya'];
@@ -55,7 +56,7 @@ const fmtAvg = (v: number | null, digits = 1) => (v === null ? '' : v.toFixed(di
 const THIN = { style: 'thin', color: { argb: 'FFD1D5DB' } } as const;
 const BORDER = { top: THIN, bottom: THIN, left: THIN, right: THIN };
 
-export async function renderJournalExcel(g: JournalGrid): Promise<Buffer> {
+export async function renderJournalExcel(g: JournalGrid, logo?: Buffer | null): Promise<Buffer> {
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Yuksalish reyting tizimi';
   wb.created = new Date();
@@ -79,10 +80,13 @@ export async function renderJournalExcel(g: JournalGrid): Promise<Buffer> {
     ['Davr:', fmtPeriod({ from: g.from, to: g.to })],
     ['Yaratilgan:', `${fmtDateTime(new Date().toISOString())} (Asia/Tashkent)`],
   ];
+  // Logo yuqori-chapda (1-3 qatorlar); ularning yorlig'i o'ngga suriladi, hujayra o'rinlari o'zgarmaydi
+  const indent = placeExcelLogo(wb, ws, logo, 52);
   info.forEach(([a, b], i) => {
     const r = ws.getRow(i + 1);
     r.getCell(1).value = safeText(a);
     r.getCell(1).font = { bold: true, size: i === 0 ? 14 : 11 };
+    if (indent && i < 3) r.getCell(1).alignment = { indent };
     if (b) {
       r.getCell(3).value = safeText(b);
       r.getCell(3).alignment = { horizontal: 'left' };
@@ -266,7 +270,7 @@ export function chunkDates(g: Pick<JournalGrid, 'columns'>): Chunk[] {
   return out;
 }
 
-export function renderJournalPdf(g: JournalGrid): Promise<Buffer> {
+export function renderJournalPdf(g: JournalGrid, logo?: Buffer | null): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const doc = createDoc({
       size: 'A4',
@@ -285,6 +289,8 @@ export function renderJournalPdf(g: JournalGrid): Promise<Buffer> {
 
     const pageH = doc.page.height;
     const bottom = pageH - M - 18;
+    const logoBox = fitLogo(logo, 28, 80);
+    const textX = logoBox ? M + logoBox.width + 8 : M;
     const parts = chunkDates(g);
     const list = parts.length ? parts : [{ label: '', columns: [] as JournalGrid['columns'] }];
 
@@ -309,13 +315,17 @@ export function renderJournalPdf(g: JournalGrid): Promise<Buffer> {
       const header = (first: boolean) => {
         if (!first) doc.addPage();
         y = M;
+        if (logoBox)
+          doc.image(logoBox.buffer, M, y, { width: logoBox.width, height: logoBox.height });
         doc.font('BodyBold').fontSize(12).fillColor('#111827');
-        doc.text(`Sinf jurnali — ${g.class.name}, ${g.subject.name}`, M, y, { lineBreak: false });
+        doc.text(`Sinf jurnali — ${g.class.name}, ${g.subject.name}`, textX, y, {
+          lineBreak: false,
+        });
         y += 17;
         doc.font('Body').fontSize(8).fillColor('#374151');
         doc.text(
           `Maktab: ${g.school.name}   O'qituvchi: ${g.teacher?.fullName ?? '—'}   Davr: ${fmtPeriod({ from: g.from, to: g.to })}`,
-          M,
+          textX,
           y,
           { lineBreak: false },
         );

@@ -4,6 +4,7 @@ import { buildMeta, skipOf } from '../../core/pagination';
 import { School, type SchoolDoc } from '../../models/School';
 import { escapeRegex, isDuplicateKeyError, isId } from '../../utils/helpers';
 import { auditService } from '../audit/audit.service';
+import { schoolLogoPath } from '../branding/branding.service';
 
 export const toSchoolDto = (s: SchoolDoc) => ({
   id: s.id,
@@ -11,7 +12,9 @@ export const toSchoolDto = (s: SchoolDoc) => ({
   slug: s.slug,
   address: s.address ?? null,
   phone: s.phone ?? null,
-  logoUrl: s.logoUrl ?? null,
+  // Yuklangan logo bo'lsa versiyalangan havola, aks holda eski qo'lda kiritilgan URL
+  logoUrl: s.logoHash ? schoolLogoPath.admin(s.id, s.logoHash) : (s.logoUrl ?? null),
+  hasUploadedLogo: !!s.logoHash,
   isActive: s.isActive,
   createdAt: s.createdAt,
 });
