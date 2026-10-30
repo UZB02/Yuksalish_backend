@@ -1,7 +1,7 @@
 import { ClassModel } from '../../models/Class';
 import { ClassSubject } from '../../models/ClassSubject';
 import { Subject } from '../../models/Subject';
-import { TimetableVersion } from '../../models/TimetableVersion';
+import { MAX_LESSON_NO, TimetableVersion } from '../../models/TimetableVersion';
 import { User } from '../../models/User';
 import { addDaysStr } from '../../utils/clock';
 import { uniq } from '../../utils/helpers';
@@ -52,7 +52,7 @@ const overlaps = (aFrom: string, aTo: string | null, bFrom: string, bTo: string 
   aFrom <= (bTo ?? FAR) && bFrom <= (aTo ?? FAR);
 
 export const isOutOfRange = (e: { weekday: number; lessonNo: number }, s: ResolverSettings) =>
-  !s.workingWeekdays.includes(e.weekday) || e.lessonNo < 1 || e.lessonNo > s.lessonsPerDay;
+  !s.workingWeekdays.includes(e.weekday) || e.lessonNo < 1 || e.lessonNo > MAX_LESSON_NO;
 
 /**
  * Sinfda `validFrom` dan boshlanadigan versiyaning taxminiy tugash sanasi:
@@ -163,7 +163,7 @@ export async function analyzeTargets(
           ...base,
           code: 'out_of_range',
           severity: 'warning',
-          message: 'Dars sozlamalardagi hafta kunlari yoki darslar sonidan tashqarida',
+          message: "Dam olish kuniga qo'yilgan dars",
         });
         continue;
       }

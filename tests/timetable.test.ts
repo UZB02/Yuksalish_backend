@@ -178,7 +178,8 @@ describe('CRUD va tekshiruvlar', () => {
     const bad = async (entries: object[], body: object = {}) =>
       (await put(admin, `/versions/${id}`, { entries, ...body })).status;
     expect(await bad([e(7, 1, math.id, t1.id)])).toBe(400); // yakshanba ish kuni emas
-    expect(await bad([e(1, 7, math.id, t1.id)])).toBe(400); // lessonsPerDay=6
+    expect(await bad([e(1, 7, math.id, t1.id)])).toBe(200); // lessonsPerDay=6 dan keyin ham mumkin
+    expect(await bad([e(1, 12, math.id, t1.id)])).toBe(200);
     expect(await bad([e(1, 13, math.id, t1.id)])).toBe(400);
     expect(await bad([e(0, 1, math.id, t1.id)])).toBe(400);
     expect(await bad([e(1, 1, math.id, t1.id), e(1, 1, eng.id, t2.id)])).toBe(400);
@@ -397,24 +398,35 @@ describe("to'qnashuvlar", () => {
       (r.body.data.warnings as { code: string }[]).some((w) => w.code === 'subject_inactive'),
     ).toBe(true);
 
-    // sozlama kichraytirilsa: yozuv saqlanadi, outOfRange belgilanadi
-    await put(admin, `/versions/${d.id}`, { entries: [e(6, 6, eng.id, t1.id)] });
+    // lessonsPerDay kichik bo'lsa ham dars 8 outOfRange emas
+    await put(admin, `/versions/${d.id}`, { entries: [e(6, 8, eng.id, t1.id)] });
     await Setting.create({
       scope: 'school',
       schoolId: school.id,
       key: 'attendance',
       value: { lessonsPerDay: 4 },
     });
+    const ok8 = await g(admin, `/versions/${d.id}`);
+    expect(ok8.body.data.version.entries[0].outOfRange).toBe(false);
+    expect(
+      (ok8.body.data.warnings as { code: string }[]).some((w) => w.code === 'out_of_range'),
+    ).toBe(false);
+
+    // ish kunlari o'zgarsa: yozuv saqlanadi, outOfRange belgilanadi (faqat dam olish kuni)
+    await Setting.updateOne(
+      { schoolId: school.id, key: 'attendance' },
+      { value: { lessonsPerDay: 4, workingWeekdays: [1, 2, 3, 4, 5] } },
+    );
     const out = await g(admin, `/versions/${d.id}`);
     expect(out.body.data.version.entries[0].outOfRange).toBe(true);
     expect(
       (out.body.data.warnings as { code: string }[]).some((w) => w.code === 'out_of_range'),
     ).toBe(true);
     // mavjud (o'zgarmagan) outOfRange yozuvni saqlash mumkin, yangisini qo'shib bo'lmaydi
-    const keep = await put(admin, `/versions/${d.id}`, { entries: [e(6, 6, eng.id, t1.id)] });
+    const keep = await put(admin, `/versions/${d.id}`, { entries: [e(6, 8, eng.id, t1.id)] });
     expect(keep.status).toBe(200);
     const addNew = await put(admin, `/versions/${d.id}`, {
-      entries: [e(6, 6, eng.id, t1.id), e(5, 5, eng.id, t1.id)],
+      entries: [e(6, 8, eng.id, t1.id), e(6, 9, eng.id, t1.id)],
     });
     expect(addNew.status).toBe(400);
   });

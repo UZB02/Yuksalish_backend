@@ -6,6 +6,7 @@ import { ClassModel, type ClassDoc } from '../../models/Class';
 import { ClassSubject } from '../../models/ClassSubject';
 import { Subject } from '../../models/Subject';
 import {
+  MAX_LESSON_NO,
   TimetableVersion,
   type ITimetableEntry,
   type TimetableVersionDoc,
@@ -222,7 +223,7 @@ async function validateEntries(
     if (isOutOfRange(e, settings) && !had.has(k)) {
       errs.push({
         path: `entries.${i}`,
-        message: `Dars sozlamalardagi hafta kunlari (${settings.workingWeekdays.join(', ')}) va 1..${settings.lessonsPerDay}-dars oralig'idan tashqarida`,
+        message: `Dars faqat ish kunlariga (${settings.workingWeekdays.join(', ')}) va 1..${MAX_LESSON_NO}-dars oralig'iga qo'yiladi`,
       });
     }
   });

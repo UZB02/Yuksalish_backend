@@ -1,5 +1,5 @@
 import type { Types } from 'mongoose';
-import { TimetableVersion } from '../../models/TimetableVersion';
+import { MAX_LESSON_NO, TimetableVersion } from '../../models/TimetableVersion';
 import { addDaysStr } from '../../utils/clock';
 import { isoWeekday } from '../../utils/dates';
 import { settingsService } from '../settings/settings.service';
@@ -85,6 +85,7 @@ export interface VersionSlice {
 
 export interface ResolverSettings {
   workingWeekdays: number[];
+  /** Faqat ma'lumot (muharrirdagi boshlang'ich qatorlar soni); tekshiruvlarda ishlatilmaydi */
   lessonsPerDay: number;
 }
 
@@ -145,7 +146,7 @@ export function datesBetween(from: string, to: string): string[] {
 
 type Match = (e: SliceEntry, classId: string) => boolean;
 
-/** Sof hisob: berilgan versiyalar va sozlamalar bo'yicha darslar (outOfRange chiqarib tashlanadi) */
+/** Sof hisob: berilgan versiyalar va sozlamalar bo'yicha darslar (ish kuni bo'lmagan kunlar chiqarib tashlanadi) */
 export function lessonsFromSlices(
   slices: VersionSlice[],
   settings: ResolverSettings,
@@ -162,7 +163,7 @@ export function lessonsFromSlices(
       if (!v) continue;
       for (const e of v.entries) {
         if (e.weekday !== weekday) continue;
-        if (e.lessonNo < 1 || e.lessonNo > settings.lessonsPerDay) continue;
+        if (e.lessonNo < 1 || e.lessonNo > MAX_LESSON_NO) continue;
         if (match && !match(e, classId)) continue;
         out.push({
           classId,

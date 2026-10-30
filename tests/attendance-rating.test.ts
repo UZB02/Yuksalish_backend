@@ -1,7 +1,7 @@
 import { ObjectId } from 'mongodb';
 import type { Types } from 'mongoose';
 import request from 'supertest';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ratingEvents } from '../src/modules/ratings/ratings.events';
 import {
   applyPenalties,
@@ -414,8 +414,8 @@ describe('Qayta hisoblash faqat ratingImpact yoqilganda', () => {
       items: [{ studentId: s2.id, statusId: statuses.late.id }],
     });
     expect(r2.body.data.created).toBe(1);
-    await wait();
-    expect(ratingEvents.pending).toContain(school.id);
+    // dataChanged asinxron rejalashtiriladi: qat'iy 50 ms o'rniga rejalashtirilguncha kutamiz
+    await vi.waitFor(() => expect(ratingEvents.pending).toContain(school.id));
     await ratingEvents.flushAll();
     expect(
       (await students()).find((i: { studentId: string }) => i.studentId === s2.id),
@@ -428,8 +428,8 @@ describe('Qayta hisoblash faqat ratingImpact yoqilganda', () => {
       .set('X-School-Id', school.id)
       .send({ statusId: statuses.present.id });
     expect(patch.status).toBe(200);
-    await wait();
-    expect(ratingEvents.pending).toContain(school.id);
+    // dataChanged asinxron rejalashtiriladi: qat'iy 50 ms o'rniga rejalashtirilguncha kutamiz
+    await vi.waitFor(() => expect(ratingEvents.pending).toContain(school.id));
     await ratingEvents.flushAll();
     expect(
       (await students()).find((i: { studentId: string }) => i.studentId === s2.id),
@@ -440,8 +440,8 @@ describe('Qayta hisoblash faqat ratingImpact yoqilganda', () => {
       .set(bearer(root))
       .set('X-School-Id', school.id);
     expect(del.status).toBe(200);
-    await wait();
-    expect(ratingEvents.pending).toContain(school.id);
+    // dataChanged asinxron rejalashtiriladi: qat'iy 50 ms o'rniga rejalashtirilguncha kutamiz
+    await vi.waitFor(() => expect(ratingEvents.pending).toContain(school.id));
     await ratingEvents.flushAll();
     expect(
       (await students()).find((i: { studentId: string }) => i.studentId === s1.id),

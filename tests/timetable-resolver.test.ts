@@ -110,10 +110,10 @@ describe('resolver', () => {
     expect(await resolveLessons(other.id, c1.id, '2026-11-02')).toEqual([]);
   });
 
-  it('outOfRange yozuvlar chiqarib tashlanadi (lessonsPerDay va workingWeekdays)', async () => {
+  it('lessonsPerDay dan katta dars qaytadi; faqat ish kuni emas kunlar chiqarib tashlanadi', async () => {
     await version(c1.id, '2026-09-01', [
       entry(1, 1, math.id, t1.id),
-      entry(1, 5, math.id, t1.id),
+      entry(1, 8, math.id, t1.id),
       entry(3, 1, eng.id, t1.id),
     ]);
     await Setting.create({
@@ -123,7 +123,7 @@ describe('resolver', () => {
       value: { lessonsPerDay: 3, workingWeekdays: [1, 2] },
     });
     const mon = await resolveLessons(school.id, c1.id, '2026-11-02');
-    expect(mon.map((l) => l.lessonNo)).toEqual([1]); // 5-dars chiqarildi
+    expect(mon.map((l) => l.lessonNo)).toEqual([1, 8]); // 8-dars lessonsPerDay=3 dan oshsa ham qoladi
     expect(await resolveLessons(school.id, c1.id, '2026-11-04')).toEqual([]); // chorshanba ish kuni emas
   });
 
