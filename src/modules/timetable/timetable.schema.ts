@@ -63,6 +63,12 @@ export const correctBody = z.object({
 });
 
 export const weekQuery = z.object({ date: dateStrSchema.optional() });
+const exportFormat = z.enum(['xlsx', 'pdf'], { error: "format xlsx yoki pdf bo'lishi kerak" });
+export const exportQuery = z.object({ format: exportFormat, date: dateStrSchema.optional() });
+export const classExportQuery = exportQuery.extend({ versionId: objectIdSchema.optional() });
+export const schoolExportQuery = exportQuery.extend({
+  kind: z.enum(['classes', 'teachers']).default('classes'),
+});
 export const dayQuery = z.object({ date: dateStrSchema.optional() });
 export const teacherDayQuery = z.object({
   date: dateStrSchema.optional(),

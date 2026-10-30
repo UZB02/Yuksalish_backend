@@ -1,5 +1,6 @@
 import { SubjectGrade, LEGACY_GRADE_INDEX } from '../models/SubjectGrade';
 import { logger } from '../core/logger';
+import { rechainAllClasses } from '../modules/timetable/timetable.chain';
 
 /** MongoDB: NamespaceNotFound (26) yoki IndexNotFound (27) */
 const isMissing = (e: unknown) => {
@@ -27,5 +28,14 @@ export async function runMigrations(): Promise<void> {
     logger.info({ index: LEGACY_GRADE_INDEX }, "Eski SubjectGrade indeksi o'chirildi");
   } catch (e) {
     if (!isMissing(e)) throw e;
+  }
+  // Dars jadvali: "oxirgi faollashtirilgan versiya o'z validFrom idan boshlab g'olib" qoidasi.
+  // Mavjud ma'lumotlardagi zanjirni qayta hisoblaydi (idempotent: ikkinchi marta hech narsa o'zgarmaydi).
+  const chain = await rechainAllClasses();
+  if (chain.replaced) {
+    logger.info(
+      { classes: chain.classes, replaced: chain.replaced },
+      "Dars jadvali zanjiri qayta hisoblandi: versiyalar almashtirildi",
+    );
   }
 }

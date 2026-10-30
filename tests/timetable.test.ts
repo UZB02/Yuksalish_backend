@@ -239,13 +239,13 @@ describe("faollashtirish, rechain va o'chirish", () => {
     expect(await AuditLog.countDocuments({ action: 'timetable.version_activate' })).toBe(2);
   });
 
-  it("o'rtaga kiritilgan versiya ikkala tomondan bog'lanadi; kelajak versiyani o'chirish zanjirni tiklaydi; rechain idempotent", async () => {
+  it("ketma-ket versiyalar bog'lanadi; kelajak versiyani o'chirish zanjirni tiklaydi; rechain idempotent", async () => {
     const a = await draft(c1.id, [e(1, 1, math.id, t1.id)]);
     await p(admin, `/versions/${a.id}/activate`, { validFrom: '2026-11-02' });
-    const c = await draft(c1.id, [e(1, 1, eng.id, t2.id)], '2027-02-01');
-    await p(admin, `/versions/${c.id}/activate`, { validFrom: '2027-02-01' });
     const b = await draft(c1.id, [e(1, 1, art.id, t3.id)], '2026-12-01');
     await p(admin, `/versions/${b.id}/activate`, { validFrom: '2026-12-01' });
+    const c = await draft(c1.id, [e(1, 1, eng.id, t2.id)], '2027-02-01');
+    await p(admin, `/versions/${c.id}/activate`, { validFrom: '2027-02-01' });
     const get = async (id: string) => TimetableVersion.findById(id);
     expect((await get(a.id))?.validTo).toBe('2026-11-30');
     expect((await get(b.id))?.validTo).toBe('2027-01-31');

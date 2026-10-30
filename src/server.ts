@@ -3,10 +3,13 @@ import { connectDb, disconnectDb, ensureIndexes } from './config/db';
 import { env } from './config/env';
 import { logger } from './core/logger';
 import { startJobs } from './jobs';
+import { runTimetablePurge } from './modules/timetable/timetable.purge';
 
 async function main() {
   await connectDb(undefined, { autoIndex: false });
   await ensureIndexes();
+  // Migratsiyalardan (ensureIndexes ichida) keyin: eskirgan jadval versiyalarini tozalash
+  await runTimetablePurge();
   const app = createApp();
   startJobs();
   const server = app.listen(env.PORT, () => {

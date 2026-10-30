@@ -1,6 +1,6 @@
 import { HydratedDocument, Schema, Types, model } from 'mongoose';
 
-export const TIMETABLE_STATUSES = ['draft', 'active', 'superseded'] as const;
+export const TIMETABLE_STATUSES = ['draft', 'active', 'superseded', 'replaced'] as const;
 export type TimetableStatus = (typeof TIMETABLE_STATUSES)[number];
 
 export const MAX_WEEKDAY = 7;
@@ -20,7 +20,8 @@ export interface ITimetableEntry {
 /**
  * Sinfning dars jadvali versiyasi (yozuvlar hujjat ichida — saqlash atomik, tranzaksiyasiz).
  * Sanalar "YYYY-MM-DD" satr (Toshkent kuni). `validTo` — kesh: rechain() hisoblaydi.
- * status: draft | active (zanjirdagi oxirgi, validTo=null) | superseded (keyingi versiya bor).
+ * status: draft | active (zanjirdagi oxirgi, validTo=null) | superseded (keyingi versiya bor) |
+ * replaced (keyinroq faollashtirilgan versiya o'z validFrom idan boshlab uni almashtirgan; zanjirda yo'q).
  */
 export interface ITimetableVersion {
   schoolId: Types.ObjectId;
@@ -36,6 +37,9 @@ export interface ITimetableVersion {
   createdBy: Types.ObjectId | null;
   activatedBy: Types.ObjectId | null;
   activatedAt: Date | null;
+  /** Almashtirilgan (status=replaced) bo'lsa: qachon va qaysi versiya almashtirgan */
+  replacedAt: Date | null;
+  replacedBy: Types.ObjectId | null;
   /** To'qnashuv bo'lsa ham majburan faollashtirilgan */
   forced: boolean;
   createdAt: Date;
@@ -70,13 +74,15 @@ const timetableVersionSchema = new Schema<ITimetableVersion>(
     createdBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
     activatedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
     activatedAt: { type: Date, default: null },
+    replacedAt: { type: Date, default: null },
+    replacedBy: { type: Schema.Types.ObjectId, ref: 'TimetableVersion', default: null },
     forced: { type: Boolean, default: false },
   },
   { timestamps: true },
 );
 
 timetableVersionSchema.index({ schoolId: 1, classId: 1, status: 1, validFrom: 1 });
-// Faollashtirilgan (active/superseded) versiyalarda sinf uchun validFrom takrorlanmaydi
+// Faollashtirilgan (active/superseded/replaced) versiyalarda sinf uchun validFrom takrorlanmaydi
 timetableVersionSchema.index(
   { classId: 1, validFrom: 1 },
   {

@@ -67,14 +67,22 @@ export function buildPhase8(h: DocHelpers) {
     TimetableVersionSummary: o({
       id: str,
       classId: str,
-      status: { type: 'string', enum: ['draft', 'active', 'superseded'] },
-      phase: { type: 'string', enum: ['draft', 'past', 'current', 'future'] },
+      status: { type: 'string', enum: ['draft', 'active', 'superseded', 'replaced'] },
+      phase: { type: 'string', enum: ['draft', 'past', 'current', 'future', 'replaced'] },
       validFrom: date,
       validTo: { ...date, nullable: true },
       entryCount: int,
       note: { type: 'string', nullable: true },
       forced: bool,
       activatedAt: { type: 'string', format: 'date-time', nullable: true },
+      replacedAt: { type: 'string', format: 'date-time', nullable: true },
+      replacedBy: { ...str, nullable: true },
+      purgeAt: {
+        ...str,
+        nullable: true,
+        description:
+          "Avtomatik o'chiriladigan sana (YYYY-MM-DD): almashtirilgan versiya yoki eski qoralama",
+      },
       updatedAt: { type: 'string', format: 'date-time' },
     }),
     TimetableWarning: o({

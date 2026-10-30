@@ -4,6 +4,8 @@ import { getCtx } from '../../core/context';
 import { created, ok } from '../../core/response';
 import { authenticate } from '../../middlewares/authenticate';
 import { authorize, requireAnyPermission, requirePermission } from '../../middlewares/authorize';
+import { auditService } from '../audit/audit.service';
+import { contentDisposition, contentTypeOf, type ExportFormat } from '../reports/reports.files';
 import { tenant } from '../../middlewares/tenant';
 import { validate } from '../../middlewares/validate';
 import {
@@ -11,11 +13,13 @@ import {
   activateBulkBody,
   bulkPreviewBody,
   busyTeachersQuery,
+  classExportQuery,
   classIdParams,
   correctBody,
   createOverrideBody,
   createVersionBody,
   dayQuery,
+  exportQuery,
   freeTeachersQuery,
   lessonsQuery,
   moveOverrideBody,
@@ -23,6 +27,7 @@ import {
   teacherDayQuery,
   overrideDateQuery,
   overrideIdParams,
+  schoolExportQuery,
   teacherIdParams,
   updateVersionBody,
   versionIdParams,
@@ -30,6 +35,8 @@ import {
   weekQuery,
 } from './timetable.schema';
 import { overridesService } from './overrides.service';
+import { exportOverview, fileSlug, renderTimetableExcel, renderTimetablePdf } from './timetable.export';
+import { timetableExportService, type ExportResult } from './timetable.export.service';
 import { timetableService, type ActivateOpts } from './timetable.service';
 import { myTodayLessons } from './timetable.today';
 
@@ -57,6 +64,119 @@ timetableRouter.get(
       ctx.actor.id,
       (req.query as { date?: string }).date,
     );
+  }),
+);
+
+// --- Eksport (Excel/PDF): haftalik jadval (versiyalar), almashtirishlarsiz ---
+type Req = Parameters<Parameters<typeof asyncHandler>[0]>[0];
+type Res = Parameters<Parameters<typeof asyncHandler>[0]>[1];
+type ExportQ = { format: ExportFormat; date?: string };
+
+async function sendExport(
+  req: Req,
+  res: Res,
+  format: ExportFormat,
+  result: ExportResult,
+  type: string,
+  params: Record<string, unknown>,
+) {
+  const ctx = getCtx(req);
+  const buf =
+    format === 'pdf'
+      ? await renderTimetablePdf(result.docs)
+      : await renderTimetableExcel(result.docs, exportOverview(type));
+  await auditService.log({
+    userId: ctx.actor.id,
+    schoolId: req.schoolId as string,
+    action: 'reports.export',
+    entity: 'report',
+    entityId: type,
+    after: { type, format, params, rowCount: result.docs.length },
+    ip: ctx.ip,
+  });
+  const name = `dars-jadvali-${fileSlug(result.label)}${result.draft ? '-qoralama' : ''}-${result.date}.${format}`;
+  res.set({
+    'Content-Type': contentTypeOf(format),
+    'Content-Disposition': contentDisposition(name),
+    'Content-Length': String(buf.length),
+    'Cache-Control': 'no-store',
+  });
+  res.send(buf);
+}
+
+timetableRouter.get(
+  '/export',
+  validate({ query: schoolExportQuery }),
+  asyncHandler(async (req, res) => {
+    const q = req.query as unknown as ExportQ & { kind: 'classes' | 'teachers' };
+    const result = await timetableExportService.schoolDocs(
+      getCtx(req).actor,
+      req.schoolId as string,
+      q.kind,
+      q.date,
+    );
+    await sendExport(req, res, q.format, result, `timetable_school_${q.kind}`, {
+      kind: q.kind,
+      date: result.date,
+    });
+  }),
+);
+
+timetableRouter.get(
+  '/me/export',
+  validate({ query: exportQuery }),
+  asyncHandler(async (req, res) => {
+    const q = req.query as unknown as ExportQ;
+    const actor = getCtx(req).actor;
+    const result = await timetableExportService.teacherDoc(
+      actor,
+      req.schoolId as string,
+      actor.id,
+      q.date,
+    );
+    await sendExport(req, res, q.format, result, 'timetable_teacher', {
+      teacherId: actor.id,
+      date: result.date,
+    });
+  }),
+);
+
+timetableRouter.get(
+  '/teachers/:teacherId/export',
+  validate({ params: teacherIdParams, query: exportQuery }),
+  asyncHandler(async (req, res) => {
+    const q = req.query as unknown as ExportQ;
+    const teacherId = req.params.teacherId as string;
+    const result = await timetableExportService.teacherDoc(
+      getCtx(req).actor,
+      req.schoolId as string,
+      teacherId,
+      q.date,
+    );
+    await sendExport(req, res, q.format, result, 'timetable_teacher', {
+      teacherId,
+      date: result.date,
+    });
+  }),
+);
+
+timetableRouter.get(
+  '/classes/:classId/export',
+  validate({ params: classIdParams, query: classExportQuery }),
+  asyncHandler(async (req, res) => {
+    const q = req.query as unknown as ExportQ & { versionId?: string };
+    const classId = req.params.classId as string;
+    const result = await timetableExportService.classDoc(
+      getCtx(req).actor,
+      req.schoolId as string,
+      classId,
+      { date: q.date, versionId: q.versionId },
+    );
+    await sendExport(req, res, q.format, result, 'timetable_class', {
+      classId,
+      versionId: q.versionId ?? null,
+      date: result.date,
+    });
   }),
 );
 

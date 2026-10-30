@@ -3,7 +3,6 @@ import { ClassSubject } from '../../models/ClassSubject';
 import { Subject } from '../../models/Subject';
 import { MAX_LESSON_NO, TimetableVersion } from '../../models/TimetableVersion';
 import { User } from '../../models/User';
-import { addDaysStr } from '../../utils/clock';
 import { uniq } from '../../utils/helpers';
 import { loadResolverSettings, type ResolverSettings, type SliceEntry } from './timetable.resolver';
 
@@ -57,22 +56,17 @@ export const isOutOfRange = (e: { weekday: number; lessonNo: number }, s: Resolv
   !s.workingWeekdays.includes(e.weekday) || e.lessonNo < 1 || e.lessonNo > MAX_LESSON_NO;
 
 /**
- * Sinfda `validFrom` dan boshlanadigan versiyaning taxminiy tugash sanasi:
- * keyingi faollashtirilgan versiyaning boshlanishidan bir kun oldin (yo'q bo'lsa null).
+ * Sinfda `validFrom` dan faollashtiriladigan qoralamaning taxminiy tugash sanasi.
+ * Yangi qoida: oxirgi faollashtirilgan versiya o'z `validFrom` idan boshlab g'olib — undan keyin
+ * boshlanadigan versiyalar almashtiriladi, shuning uchun u doim ochiq (null) bo'ladi.
+ * (Imzo chaqiruvchilar uchun saqlangan; `replaced` versiyalar hech qachon hisobga olinmaydi.)
  */
 export async function hypotheticalValidTo(
-  classId: string,
-  validFrom: string,
-  excludeId?: string,
+  _classId: string,
+  _validFrom: string,
+  _excludeId?: string,
 ): Promise<string | null> {
-  const q: Record<string, unknown> = {
-    classId,
-    activatedAt: { $type: 'date' },
-    validFrom: { $gt: validFrom },
-  };
-  if (excludeId) q._id = { $ne: excludeId };
-  const next = await TimetableVersion.findOne(q).sort({ validFrom: 1 }).select('validFrom').lean();
-  return next ? addDaysStr(next.validFrom, -1) : null;
+  return null;
 }
 
 /**
@@ -106,6 +100,7 @@ export async function analyzeTargets(
       ? TimetableVersion.find({
           schoolId,
           activatedAt: { $type: 'date' },
+          status: { $ne: 'replaced' },
           'entries.teacherId': { $in: teacherIds },
         })
           .select('classId validFrom validTo entries')
@@ -273,6 +268,7 @@ export async function busyTeachersAt(
     schoolId,
     classId: { $ne: classId },
     activatedAt: { $type: 'date' },
+    status: { $ne: 'replaced' },
     validFrom: { $lte: validTo ?? FAR },
     $or: [{ validTo: null }, { validTo: { $gte: validFrom } }],
     entries: { $elemMatch: { weekday, lessonNo } },

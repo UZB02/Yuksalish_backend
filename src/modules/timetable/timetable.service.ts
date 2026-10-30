@@ -12,12 +12,13 @@ import {
   type TimetableVersionDoc,
 } from '../../models/TimetableVersion';
 import { User } from '../../models/User';
-import { addDaysStr, todayTashkent } from '../../utils/clock';
+import { addDaysStr, tashkentDate, todayTashkent } from '../../utils/clock';
+import { purgeDateOf } from './timetable.purge';
 import { isoWeekday } from '../../utils/dates';
 import { isDuplicateKeyError, isId, uniq } from '../../utils/helpers';
 import { auditService } from '../audit/audit.service';
 import { setClassSubjects } from '../classes/class-subjects.service';
-import { rechain } from './timetable.chain';
+import { rechain, rechainDetailed, versionsToReplace } from './timetable.chain';
 import {
   analyzeTargets,
   blocking,
@@ -37,7 +38,7 @@ import {
 } from './timetable.resolver';
 
 type Actor = Ctx['actor'];
-type Phase = 'draft' | 'past' | 'current' | 'future';
+type Phase = 'draft' | 'past' | 'current' | 'future' | 'replaced';
 type Plain = ITimetableEntry & { subjectId: Types.ObjectId; teacherId: Types.ObjectId };
 
 const ymd = (d: Date) => d.toISOString().slice(0, 10);
@@ -45,7 +46,7 @@ const idStr = (v: unknown) => String(v);
 
 export const canManage = (a: Actor) =>
   a.role === 'superadmin' || a.permissions.includes('timetable.manage');
-const canViewAll = (a: Actor) =>
+export const canViewAll = (a: Actor) =>
   a.role === 'superadmin' ||
   a.permissions.includes('timetable.view') ||
   a.permissions.includes('timetable.manage');
@@ -96,6 +97,7 @@ function phaseOf(
   today: string,
 ): Phase {
   if (v.status === 'draft') return 'draft';
+  if (v.status === 'replaced') return 'replaced';
   if (v.validFrom > today) return 'future';
   if (v.validTo !== null && v.validTo < today) return 'past';
   return 'current';
@@ -158,6 +160,8 @@ interface VersionLike {
   createdBy: Types.ObjectId | null;
   activatedBy: Types.ObjectId | null;
   activatedAt: Date | null;
+  replacedAt?: Date | null;
+  replacedBy?: Types.ObjectId | null;
   forced: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -175,8 +179,18 @@ function summaryOf(v: VersionLike, today: string) {
     note: v.note ?? null,
     forced: v.forced,
     activatedAt: v.activatedAt ? v.activatedAt.toISOString() : null,
+    replacedAt: v.replacedAt ? v.replacedAt.toISOString() : null,
+    replacedBy: v.replacedBy ? idStr(v.replacedBy) : null,
     updatedAt: v.updatedAt.toISOString(),
+    purgeAt: purgeAtOf(v),
   };
+}
+
+/** Avtomatik o'chiriladigan sana (YYYY-MM-DD, Toshkent): almashtirilgan yoki hech qachon faollashtirilmagan qoralama */
+function purgeAtOf(v: VersionLike): string | null {
+  if (v.status === 'replaced' && v.replacedAt) return tashkentDate(purgeDateOf(v.replacedAt));
+  if (v.status === 'draft' && !v.activatedAt) return tashkentDate(purgeDateOf(v.updatedAt));
+  return null;
 }
 
 async function dtoOf(v: VersionLike, settings: ResolverSettings, today: string) {
@@ -447,7 +461,8 @@ async function commitActivation(
     }
     throw e;
   }
-  await rechain(v.classId);
+  const chain = await rechainDetailed(v.classId);
+  const replacedIds = chain.replaced.filter((r) => r.replacedBy === idStr(v._id)).map((r) => r.id);
   await addTeachersToClass(cls, v.entries);
   const synced = o.syncAssignments ? await syncAssignments(ctx, schoolId, cls, v.entries) : [];
   await auditService.log({
@@ -466,6 +481,7 @@ async function commitActivation(
       note: o.note ?? null,
       conflicts: forced ? blocking(warnings).length : 0,
       syncedAssignments: synced,
+      replaced: replacedIds,
     },
     ip: ctx.ip,
   });
@@ -500,7 +516,7 @@ export const timetableService = {
         .filter((v) => v.status === 'draft')
         .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
       const act = list
-        .filter((v) => v.status !== 'draft')
+        .filter((v) => v.status !== 'draft' && v.status !== 'replaced')
         .sort((a, b) => a.validFrom.localeCompare(b.validFrom));
       const current = act.filter((v) => phaseOf(v, today) === 'current').pop() ?? null;
       const upcoming = act.find((v) => phaseOf(v, today) === 'future') ?? null;
@@ -511,11 +527,8 @@ export const timetableService = {
     for (const r of rows) {
       const focus = r.draft ?? r.current ?? r.upcoming;
       if (!focus) continue;
-      let validTo = focus.validTo;
-      if (focus.status === 'draft') {
-        const next = r.act.find((v) => v.validFrom > focus.validFrom);
-        validTo = next ? addDaysStr(next.validFrom, -1) : null;
-      }
+      // Qoralama faollashtirilsa o'z validFrom idan keyingi versiyalarni almashtiradi -> ochiq
+      const validTo = focus.status === 'draft' ? null : focus.validTo;
       targets.push(target(focus as VersionLike, focus.validFrom, validTo));
     }
     const warn = await analyzeTargets(schoolId, targets);
@@ -585,7 +598,12 @@ export const timetableService = {
     const warnings = canManage(actor)
       ? await warningsFor(schoolId, v, validFrom ?? v.validFrom)
       : [];
-    return { version: await dtoOf(v, settings, todayTashkent()), warnings };
+    // Faollashtirilsa almashtiriladigan versiyalar (faqat qoralama uchun, boshqaruvchiga)
+    const willReplace =
+      canManage(actor) && v.status === 'draft'
+        ? await versionsToReplace(v.classId, validFrom ?? v.validFrom, idStr(v._id))
+        : [];
+    return { version: await dtoOf(v, settings, todayTashkent()), warnings, willReplace };
   },
 
   async busyTeachers(
@@ -634,6 +652,7 @@ export const timetableService = {
       const list = await TimetableVersion.find({
         classId: cid,
         activatedAt: { $type: 'date' },
+        status: { $ne: 'replaced' },
       }).sort({
         validFrom: 1,
       });
@@ -843,7 +862,19 @@ export const timetableService = {
       targets.push(target(v, validFrom, validTo));
     }
     const warn = await analyzeTargets(schoolId, targets, targets);
+    const willReplace = (
+      await Promise.all(
+        versions.map(async (v) =>
+          (await versionsToReplace(v.classId, validFrom, idStr(v._id))).map((r) => ({
+            ...r,
+            classId: idStr(v.classId),
+            className: names.get(idStr(v.classId)) ?? '?',
+          })),
+        ),
+      )
+    ).flat();
     return {
+      willReplace,
       warnings: versions.flatMap((v) =>
         (warn.get(idStr(v._id)) ?? []).map((w) => ({
           ...w,
@@ -872,6 +903,9 @@ export const timetableService = {
       throw AppError.conflict("Qoralamani oddiy saqlash orqali o'zgartiring");
     }
     const today = todayTashkent();
+    if (v.status === 'replaced') {
+      throw AppError.conflict("Almashtirilgan versiyani tuzatib bo'lmaydi (faqat nusxalash mumkin)");
+    }
     if (phaseOf(v, today) === 'past') {
       throw AppError.conflict("To'liq o'tgan davr jadvalini tuzatib bo'lmaydi");
     }
