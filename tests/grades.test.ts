@@ -235,7 +235,9 @@ describe("Fan bahosini qo'yish (POST /grades)", () => {
     // DB darajasidagi unique indeks (partial) ham bor
     await SubjectGrade.init();
     const idx = await SubjectGrade.collection.indexes();
-    expect(idx.find((i) => i.name === 'one_grade_per_student_subject_day')?.unique).toBe(true);
+    expect(idx.find((i) => i.name === 'one_grade_per_student_subject_day_lesson')?.unique).toBe(
+      true,
+    );
   });
 });
 

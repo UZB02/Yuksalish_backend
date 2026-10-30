@@ -147,7 +147,6 @@ describe('Sinf jurnali: setka (GET /journal/subject)', () => {
     await grade(s1, math, '2026-10-05', 4);
     await grade(s2, math, '2026-10-01', 2);
     await grade(s1, phys, '2026-10-01', 5); // boshqa fan — kirmaydi
-    await grade(s1, math, '2026-10-04', 5); // yakshanba — ustun yo'q
     await grade(s3, math, '2026-10-01', 5, { classId: c6.id }); // boshqa sinf
     await grade(s1, math, '2026-10-06', 5, { isDeleted: true });
     // davomat
@@ -167,7 +166,7 @@ describe('Sinf jurnali: setka (GET /journal/subject)', () => {
     expect(d.class).toEqual({ id: c5.id, name: '5-A' });
     expect(d.subject).toEqual({ id: math.id, name: 'Matematika' });
     expect(d.teacher).toMatchObject({ id: tMathUser.id });
-    expect(d.dates.map((x: { date: string }) => x.date)).toEqual([
+    expect(d.columns.map((x: { key: string }) => x.key)).toEqual([
       '2026-10-01',
       '2026-10-02',
       '2026-10-03',
@@ -178,7 +177,14 @@ describe('Sinf jurnali: setka (GET /journal/subject)', () => {
       '2026-10-09',
       '2026-10-10',
     ]);
-    expect(d.dates[0]).toEqual({ date: '2026-10-01', weekday: 4 });
+    expect(d.columns[0]).toEqual({
+      key: '2026-10-01',
+      date: '2026-10-01',
+      weekday: 4,
+      lessonNo: 0,
+      source: 'workday',
+      cancelled: false,
+    });
     expect(d.students.map((s: { fullName: string }) => s.fullName)).toEqual([
       'Aliyev Ali',
       'Valiyev Vali',
@@ -189,15 +195,14 @@ describe('Sinf jurnali: setka (GET /journal/subject)', () => {
     expect(d.cells[s1.id]['2026-10-03']).toEqual({ absence: 'N' });
     expect(d.cells[s2.id]['2026-10-03']).toEqual({ absence: 'B' });
     expect(d.cells[s2.id]['2026-10-05']).toBeUndefined();
-    expect(d.cells[s1.id]['2026-10-04']).toBeUndefined();
     expect(d.cells[s1.id]['2026-10-06']).toBeUndefined();
     expect(d.cells[s1.id]['2026-10-07']).toEqual({ absence: 'N' });
     expect(d.cells[s2.id]['2026-10-07']).toEqual({ absence: 'partial' });
     // yig`indilar
     expect(d.summary.perStudent[s1.id]).toEqual({ avg: 4, count: 3, absentN: 2, absentB: 1 });
     expect(d.summary.perStudent[s2.id]).toEqual({ avg: 2, count: 1, absentN: 0, absentB: 1 });
-    expect(d.summary.perDate['2026-10-01']).toEqual({ avg: 3.5, count: 2 });
-    expect(d.summary.perDate['2026-10-03']).toEqual({ avg: null, count: 0 });
+    expect(d.summary.perColumn['2026-10-01']).toEqual({ avg: 3.5, count: 2 });
+    expect(d.summary.perColumn['2026-10-03']).toEqual({ avg: null, count: 0 });
     expect(d.summary.classAvg).toBe(3.5);
     expect(d.summary.classCount).toBe(4);
   });
@@ -263,7 +268,7 @@ describe('Sinf jurnali: setka (GET /journal/subject)', () => {
       .send({ workingWeekdays: [1, 2, 3, 4, 5, 6, 7] });
     if (r.status !== 200) return; // sozlamani o'zgartirish ruxsati bo'lmasa o'tkazib yuboriladi
     const res = await get(tm, `subject?${Q(c5.id, math.id)}`);
-    expect(res.body.data.dates).toHaveLength(11);
+    expect(res.body.data.columns).toHaveLength(11);
   });
 
   it('options: o`qituvchiga faqat o`z sinf/fanlari, sinf rahbariga sinfning barcha fanlari', async () => {
@@ -390,9 +395,9 @@ describe('Sinf jurnali: eksport', () => {
     const q = Q(c5.id, math.id, '2026-09-01', '2026-10-31');
     const grid = await get(aGrades, `subject?${q}`);
     expect(grid.status).toBe(200);
-    const expected = chunkDates({ dates: grid.body.data.dates });
+    const expected = chunkDates({ columns: grid.body.data.columns });
     // 26 ish kunli oy 23+3 emas, teng bo'linadi
-    for (const c of expected) expect(c.dates.length).toBeGreaterThan(5);
+    for (const c of expected) expect(c.columns.length).toBeGreaterThan(5);
     const res = await get(aGrades, `subject/export.pdf?${q}`)
       .buffer(true)
       .parse((r, cb) => {
@@ -408,11 +413,15 @@ describe('Sinf jurnali: eksport', () => {
 
   it('chunkDates: sahifa limitidan oshgan oy teng bo`laklarga bo`linadi', () => {
     const days = Array.from({ length: 26 }, (_, i) => ({
+      key: `2026-09-${String(i + 1).padStart(2, '0')}`,
+      lessonNo: 0,
+      source: 'workday' as const,
+      cancelled: false,
       date: `2026-09-${String(i + 1).padStart(2, '0')}`,
       weekday: 1,
     }));
-    expect(chunkDates({ dates: days }).map((c) => c.dates.length)).toEqual([13, 13]);
-    expect(chunkDates({ dates: days.slice(0, 20) }).map((c) => c.dates.length)).toEqual([20]);
+    expect(chunkDates({ columns: days }).map((c) => c.columns.length)).toEqual([13, 13]);
+    expect(chunkDates({ columns: days.slice(0, 20) }).map((c) => c.columns.length)).toEqual([20]);
   });
 
   it('eksportda ham ruxsatlar: boshqa fan o`qituvchisi 403, ruxsatsiz admin 403, validatsiya 400', async () => {

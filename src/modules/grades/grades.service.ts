@@ -1,5 +1,4 @@
 import { photoUrl } from '../photos/photos.url';
-import type { Types } from 'mongoose';
 import type { Ctx } from '../../core/context';
 import { AppError, type ErrorCode, type ErrorDetail } from '../../core/errors';
 import { buildMeta, skipOf } from '../../core/pagination';
@@ -19,6 +18,8 @@ import { ratingEvents } from '../ratings/ratings.events';
 import { settingsService } from '../settings/settings.service';
 import type { ScoringSettings } from '../settings/scoring.settings';
 import { withinEditWindow } from '../scores/scores.rules';
+import { teacherLessons } from '../timetable/timetable.resolver';
+import { assertCanGradeOn, lessonOptions, pickLessonNo, subjectDay } from './grades.lesson';
 import { canEditAnyGrade, checkDate, checkGradeValue, isGradeEditable } from './grades.rules';
 
 type Actor = Ctx['actor'];
@@ -59,6 +60,7 @@ export async function toGradeDtos(
       value: d.value,
       comment: opts.hideOthersComments && !own ? null : (d.comment ?? null),
       date: d.date,
+      lessonNo: d.lessonNo ?? 0,
       editable: isGradeEditable(d, opts.actor, opts.settings, now),
       createdAt: d.createdAt,
       updatedAt: d.updatedAt,
@@ -74,6 +76,7 @@ const snapshot = (d: SubjectGradeDoc) => ({
   value: d.value,
   comment: d.comment,
   date: d.date,
+  lessonNo: d.lessonNo ?? 0,
 });
 
 // ---------- Yordamchilar ----------
@@ -99,18 +102,6 @@ async function loadSubject(schoolId: string, subjectId: string): Promise<Subject
   return doc;
 }
 
-/**
- * Baholash huquqi: o'qituvchi faqat o'zi shu fan o'qituvchisi etib biriktirilgan sinfda baholaydi;
- * superadmin / school_admin (grades.create — marshrutda tekshiriladi) — maktabdagi istalgan sinf/fan.
- */
-async function assertCanGrade(actor: Actor, classId: Types.ObjectId, subjectId: Types.ObjectId) {
-  if (actor.role !== 'teacher') return;
-  const assigned = await ClassSubject.exists({ classId, subjectId, teacherId: actor.id });
-  if (!assigned) {
-    throw AppError.forbidden("Siz bu sinfda bu fan o'qituvchisi sifatida biriktirilmagansiz");
-  }
-}
-
 /** Faol yildagi arxivlanmagan sinfdagi faol o'quvchi baholanadi */
 function assertGradable(student: StudentDoc, cls: ClassDoc | null, yearId: string | null) {
   const err = (message: string) => AppError.validation(message, [{ path: 'studentId', message }]);
@@ -122,8 +113,8 @@ function assertGradable(student: StudentDoc, cls: ClassDoc | null, yearId: strin
 }
 
 const conflict = () =>
-  AppError.conflict("Bu o'quvchiga shu fandan shu kuni allaqachon baho qo'yilgan", [
-    { path: 'studentId', message: 'Bu kun uchun baho mavjud' },
+  AppError.conflict("Bu o'quvchiga shu fandan shu kuni (shu darsga) allaqachon baho qo'yilgan", [
+    { path: 'studentId', message: 'Bu kun/dars uchun baho mavjud' },
   ]);
 
 async function loadClass(schoolId: string, classId: string): Promise<ClassDoc> {
@@ -155,6 +146,7 @@ export const gradesService = {
       studentId: string;
       subjectId: string;
       date?: string;
+      lessonNo?: number;
       value: number;
       comment?: string | null;
     },
@@ -171,19 +163,22 @@ export const gradesService = {
       ClassModel.findOne({ _id: student.classId, schoolId }),
     ]);
     assertGradable(student, cls, yearId);
-    await assertCanGrade(ctx.actor, student.classId, subject._id);
 
     const date = input.date ?? todayTashkent();
+    const day = await subjectDay(schoolId, String(student.classId), subject.id as string, date);
+    await assertCanGradeOn(ctx.actor, student.classId, subject._id, day, input.lessonNo ?? null);
     throwValidation([
       ...checkDate(settings, date, todayTashkent()),
       ...checkGradeValue(input.value),
     ]);
+    const lessonNo = pickLessonNo(day, input.lessonNo, true) as number;
     if (
       await SubjectGrade.exists({
         schoolId,
         studentId: student._id,
         subjectId: subject._id,
         date,
+        lessonNo,
         isDeleted: false,
       })
     ) {
@@ -201,6 +196,7 @@ export const gradesService = {
         value: input.value,
         comment: input.comment ?? null,
         date,
+        lessonNo,
       });
     } catch (e) {
       if (isDuplicateKeyError(e)) throw conflict();
@@ -299,21 +295,24 @@ export const gradesService = {
       classId: string;
       subjectId: string;
       date?: string;
+      lessonNo?: number;
       items: { studentId: string; value: number; comment?: string | null }[];
     },
   ) {
     const settings = await settingsService.getEffectiveScoring(schoolId);
     const cls = await loadClass(schoolId, input.classId);
     const subject = await loadSubject(schoolId, input.subjectId);
-    await assertCanGrade(ctx.actor, cls._id, subject._id);
+    const date = input.date ?? todayTashkent();
+    const day = await subjectDay(schoolId, cls.id as string, subject.id as string, date);
+    await assertCanGradeOn(ctx.actor, cls._id, subject._id, day, input.lessonNo ?? null);
     const yearId = await activeYearId(schoolId);
     if (cls.isArchived || !yearId || String(cls.academicYearId) !== yearId) {
       throw AppError.validation('Sinf baholash uchun mavjud emas', [
         { path: 'classId', message: "Faqat faol o'quv yilidagi arxivlanmagan sinf baholanadi" },
       ]);
     }
-    const date = input.date ?? todayTashkent();
     throwValidation(checkDate(settings, date, todayTashkent()));
+    const lessonNo = pickLessonNo(day, input.lessonNo, true) as number;
 
     const students = await Student.find({ schoolId, classId: cls._id, isDeleted: false });
     const byId = new Map(students.map((s) => [s.id as string, s]));
@@ -321,6 +320,7 @@ export const gradesService = {
       schoolId,
       subjectId: subject._id,
       date,
+      lessonNo,
       isDeleted: false,
       studentId: { $in: students.map((s) => s._id) },
     });
@@ -380,6 +380,7 @@ export const gradesService = {
             value: item.value,
             comment,
             date,
+            lessonNo,
           });
           created++;
         }
@@ -399,6 +400,7 @@ export const gradesService = {
         classId: input.classId,
         subjectId: input.subjectId,
         date,
+        lessonNo,
         created,
         updated,
         failed: failed.length,
@@ -458,11 +460,20 @@ export const gradesService = {
     if (actor.role !== 'teacher') return { mode: 'all' as const, assignments: [] };
     const yearId = await activeYearId(schoolId);
     if (!yearId) return { mode: 'assigned' as const, assignments: [] };
-    const rows = await ClassSubject.find({
+    const assigned = await ClassSubject.find({
       schoolId,
       academicYearId: yearId,
       teacherId: actor.id,
     }).lean();
+    // Bugungi jadval darslari (jadvalda bor, lekin ClassSubject da yo'q juftliklar ham baholash ro'yxatida)
+    const today = await teacherLessons(schoolId, actor.id, todayTashkent());
+    const rows = [
+      ...assigned.map((r) => ({ classId: String(r.classId), subjectId: String(r.subjectId) })),
+      ...today.map((l) => ({ classId: l.classId, subjectId: l.subjectId })),
+    ].filter(
+      (r, i, all) =>
+        all.findIndex((x) => x.classId === r.classId && x.subjectId === r.subjectId) === i,
+    );
     const [classes, subjects] = await Promise.all([
       ClassModel.find({
         _id: { $in: uniq(rows.map((r) => String(r.classId))) },
@@ -502,33 +513,43 @@ export const gradesService = {
   async sheet(
     actor: Actor,
     schoolId: string,
-    q: { classId: string; subjectId: string; date?: string },
+    q: { classId: string; subjectId: string; date?: string; lessonNo?: number },
   ) {
     const cls = await loadClass(schoolId, q.classId);
     const subject = await loadSubject(schoolId, q.subjectId);
-    await assertCanGrade(actor, cls._id, subject._id);
+    const day = q.date ?? todayTashkent();
+    const sd = await subjectDay(schoolId, cls.id as string, subject.id as string, day);
+    // Bir nechta dars bo'lib tanlanmagan bo'lsa lessonNo = null (mijoz tanlashi kerak)
+    const lessonNo = pickLessonNo(sd, q.lessonNo, false);
+    await assertCanGradeOn(actor, cls._id, subject._id, sd, lessonNo);
 
     const settings = await settingsService.getEffectiveScoring(schoolId);
-    const day = q.date ?? todayTashkent();
     const students = await Student.find({
       schoolId,
       classId: cls._id,
       isDeleted: false,
       status: 'active',
     }).sort({ fullName: 1, _id: 1 });
-    const grades = await SubjectGrade.find({
-      schoolId,
-      subjectId: subject._id,
-      date: day,
-      isDeleted: false,
-      studentId: { $in: students.map((s) => s._id) },
-    });
+    const grades =
+      lessonNo === null
+        ? []
+        : await SubjectGrade.find({
+            schoolId,
+            subjectId: subject._id,
+            date: day,
+            lessonNo,
+            isDeleted: false,
+            studentId: { $in: students.map((s) => s._id) },
+          });
     const dtos = await toGradeDtos(grades, { actor, settings });
     const byStudent = new Map(dtos.map((d) => [d.studentId, d]));
     return {
       class: { id: cls.id as string, name: cls.name },
       subject: { id: subject.id as string, name: subject.name },
       date: day,
+      lessonNo,
+      hasTimetable: sd.hasTimetable,
+      lessons: await lessonOptions(sd, actor),
       settings: { editWindowHours: settings.editWindowHours, backdateDays: settings.backdateDays },
       students: students.map((st) => {
         const grade = byStudent.get(st.id as string) ?? null;

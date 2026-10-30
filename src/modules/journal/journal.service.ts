@@ -16,10 +16,16 @@ import { isId, uniq } from '../../utils/helpers';
 import { photoUrl } from '../photos/photos.url';
 import { settingsService } from '../settings/settings.service';
 import { ATTENDANCE_KEY, type AttendanceSettings } from '../settings/attendance.settings';
+import {
+  loadVersionSlices,
+  subjectLessonsInRange,
+  versionOn,
+} from '../timetable/timetable.resolver';
 import { JOURNAL_MAX_DAYS, type GridQuery } from './journal.schema';
 import type {
   Absence,
   JournalCell,
+  JournalColumn,
   JournalGrid,
   JournalStudent,
   JournalSummaryRow,
@@ -191,8 +197,40 @@ export const journalService = {
       ? await User.findById(assignment.teacherId).select('fullName').lean()
       : null;
 
-    const dates = enumerateWorkingDays(q.from, q.to, attendance.workingWeekdays);
-    const dateSet = new Set(dates.map((d) => d.date));
+    const workDays = enumerateWorkingDays(q.from, q.to, attendance.workingWeekdays);
+
+    // Jadval: shu fanning davrdagi darslari (bekor qilinganlari ham) va jadval qamragan kunlar
+    const subjectKey = String(subject._id);
+    const [lessons, slices] = await Promise.all([
+      subjectLessonsInRange(schoolId, String(cls._id), subjectKey, q.from, q.to),
+      loadVersionSlices(schoolId, { classIds: [String(cls._id)] }, q.from, q.to),
+    ]);
+    const colMap = new Map<string, JournalColumn>();
+    const addCol = (c: JournalColumn) => {
+      if (!colMap.has(c.key)) colMap.set(c.key, c);
+    };
+    const keyOf = (date: string, lessonNo: number) => (lessonNo > 0 ? `${date}#${lessonNo}` : date);
+    for (const l of lessons) {
+      addCol({
+        key: keyOf(l.date, l.lessonNo),
+        date: l.date,
+        weekday: l.weekday,
+        lessonNo: l.lessonNo,
+        source: 'timetable',
+        cancelled: l.cancelled,
+      });
+    }
+    for (const d of workDays) {
+      if (versionOn(slices, String(cls._id), d.date)) continue; // jadval kuni: ustunlar darslardan
+      addCol({
+        key: d.date,
+        date: d.date,
+        weekday: d.weekday,
+        lessonNo: 0,
+        source: 'workday',
+        cancelled: false,
+      });
+    }
 
     // Joriy sinfdagi faol o'quvchilar
     const active = await Student.find({
@@ -212,8 +250,23 @@ export const journalService = {
       date: { $gte: q.from, $lte: q.to },
       $or: [{ classId: cls._id }, { studentId: { $in: active.map((s) => s._id) } }],
     })
-      .select('studentId value date')
+      .select('studentId value date lessonNo')
       .lean();
+    // Hech bir ustunga tushmagan baho yo'qolmasin: record ustuni
+    for (const g of grades) {
+      const lessonNo = g.lessonNo ?? 0;
+      addCol({
+        key: keyOf(g.date, lessonNo),
+        date: g.date,
+        weekday: isoWeekday(g.date),
+        lessonNo,
+        source: 'record',
+        cancelled: false,
+      });
+    }
+    const columns = [...colMap.values()].sort(
+      (a, b) => a.date.localeCompare(b.date) || a.lessonNo - b.lessonNo,
+    );
 
     const activeSet = new Set(active.map((s) => String(s._id)));
     const extraIds = uniq(grades.map((g) => String(g.studentId)).filter((i) => !activeSet.has(i)));
@@ -242,12 +295,14 @@ export const journalService = {
       );
     const studentIds = students.map((s) => s.id);
 
-    // Davomat (faqat ko'rsatish uchun). Qoidalar (dars yozuvidagi fan bo'yicha):
-    // - kunlik rejim yozuvi (lessonNo 0): barcha fanlar jurnalida ko'rinadi;
-    // - dars yozuvi shu fan uchun: shu fanning kundagi dars yozuvlari bo'yicha hisoblanadi;
-    // - boshqa fan uchun dars yozuvi: e'tiborga olinmaydi;
-    // - eski dars yozuvi (fan yo'q): shu kunda shu fanning o'z yozuvi bo'lmasa, kun darajasida ko'rsatiladi.
-    const att = dates.length
+    // Davomat (faqat ko'rsatish uchun). Qoidalar:
+    // - kunlik rejim yozuvi (lessonNo 0): shu kunning barcha ustunlarida ko'rinadi;
+    // - dars ustuni (lessonNo n): shu fan uchun shu raqamdagi dars yozuvi;
+    //   shu kunda shu fanning hech bir dars yozuvi bo'lmasa - eski (fansiz) dars yozuvlari kun darajasida;
+    // - ish kuni ustuni (lessonNo 0): shu fanning kundagi barcha dars yozuvlari (yoki eski fansiz yozuvlar);
+    // - boshqa fan uchun dars yozuvi: e'tiborga olinmaydi.
+    const colDates = new Set(columns.map((c) => c.date));
+    const att = columns.length
       ? await AttendanceRecord.find({
           schoolId,
           studentId: { $in: studentIds },
@@ -264,35 +319,48 @@ export const journalService = {
       if (cat === 'absent_unexcused') e.unexcused++;
       else if (cat === 'absent_excused') e.excused++;
     };
-    const buckets = new Map<string, { daily: Tally; own: Tally; legacy: Tally }>();
-    const subjectKey = String(subject._id);
+    const merge = (a: Tally, b: Tally): Tally => ({
+      total: a.total + b.total,
+      unexcused: a.unexcused + b.unexcused,
+      excused: a.excused + b.excused,
+    });
+    interface Bucket {
+      daily: Tally;
+      ownAll: Tally;
+      ownByNo: Map<number, Tally>;
+      legacy: Tally;
+    }
+    const buckets = new Map<string, Bucket>();
     for (const r of att) {
-      if (!dateSet.has(r.date)) continue;
+      if (!colDates.has(r.date)) continue;
       const k = `${r.studentId}|${r.date}`;
-      const b = buckets.get(k) ?? { daily: tallyOf(), own: tallyOf(), legacy: tallyOf() };
-      buckets.set(k, b);
+      let b = buckets.get(k);
+      if (!b) {
+        b = { daily: tallyOf(), ownAll: tallyOf(), ownByNo: new Map(), legacy: tallyOf() };
+        buckets.set(k, b);
+      }
       if (r.lessonNo === 0) add(b.daily, r.category);
       else if (!r.subjectId) add(b.legacy, r.category);
-      else if (String(r.subjectId) === subjectKey) add(b.own, r.category);
+      else if (String(r.subjectId) === subjectKey) {
+        add(b.ownAll, r.category);
+        const t = b.ownByNo.get(r.lessonNo) ?? tallyOf();
+        add(t, r.category);
+        b.ownByNo.set(r.lessonNo, t);
+      }
     }
-    const attByDay = new Map<string, Tally>();
-    for (const [k, b] of buckets) {
-      const lesson = b.own.total ? b.own : b.legacy;
-      attByDay.set(k, {
-        total: b.daily.total + lesson.total,
-        unexcused: b.daily.unexcused + lesson.unexcused,
-        excused: b.daily.excused + lesson.excused,
-      });
-    }
+    const tallyFor = (b: Bucket, col: JournalColumn): Tally => {
+      if (col.lessonNo === 0) return merge(b.daily, b.ownAll.total ? b.ownAll : b.legacy);
+      if (b.ownAll.total) return merge(b.daily, b.ownByNo.get(col.lessonNo) ?? tallyOf());
+      return merge(b.daily, b.legacy);
+    };
 
     const cells: Record<string, Record<string, JournalCell>> = {};
-    const cellOf = (sid: string, date: string): JournalCell => {
+    const cellOf = (sid: string, key: string): JournalCell => {
       cells[sid] ??= {};
-      return (cells[sid][date] ??= {});
+      return (cells[sid][key] ??= {});
     };
     for (const g of grades) {
-      if (!dateSet.has(g.date)) continue;
-      const c = cellOf(String(g.studentId), g.date);
+      const c = cellOf(String(g.studentId), keyOf(g.date, g.lessonNo ?? 0));
       c.grade = g.value;
       c.gradeId = String(g._id);
     }
@@ -302,28 +370,32 @@ export const journalService = {
       perStudent[sid] = { avg: null, count: 0, absentN: 0, absentB: 0 };
       sums[sid] = 0;
     }
-    for (const [k, e] of attByDay) {
+    for (const [k, b] of buckets) {
       const [sid, date] = k.split('|');
-      const absent = e.unexcused + e.excused;
-      if (!absent) continue;
-      // Dars rejimida kun faqat HAMMA dars yozuvi yo'qlik bo'lsa yo'qlik hisoblanadi
-      let absence: Absence;
-      if (absent < e.total) absence = 'partial';
-      else absence = e.unexcused ? 'N' : 'B';
-      cellOf(sid, date).absence = absence;
-      if (absence === 'N') perStudent[sid].absentN++;
-      else if (absence === 'B') perStudent[sid].absentB++;
+      for (const col of columns) {
+        if (col.date !== date) continue;
+        const e = tallyFor(b, col);
+        const absent = e.unexcused + e.excused;
+        if (!absent) continue;
+        // Faqat HAMMA yozuv yo'qlik bo'lsa yo'qlik hisoblanadi, aks holda "qisman"
+        let absence: Absence;
+        if (absent < e.total) absence = 'partial';
+        else absence = e.unexcused ? 'N' : 'B';
+        cellOf(sid, col.key).absence = absence;
+        if (absence === 'N') perStudent[sid].absentN++;
+        else if (absence === 'B') perStudent[sid].absentB++;
+      }
     }
 
-    const dateAgg: Record<string, { sum: number; n: number }> = {};
+    const colAgg: Record<string, { sum: number; n: number }> = {};
     let totalSum = 0;
     let totalN = 0;
     for (const sid of Object.keys(cells)) {
-      for (const [date, c] of Object.entries(cells[sid])) {
+      for (const [key, c] of Object.entries(cells[sid])) {
         if (c.grade === undefined) continue;
         sums[sid] += c.grade;
         perStudent[sid].count++;
-        const a = (dateAgg[date] ??= { sum: 0, n: 0 });
+        const a = (colAgg[key] ??= { sum: 0, n: 0 });
         a.sum += c.grade;
         a.n++;
         totalSum += c.grade;
@@ -331,10 +403,10 @@ export const journalService = {
       }
     }
     for (const sid of studentIds) perStudent[sid].avg = avgOf(sums[sid], perStudent[sid].count);
-    const perDate: Record<string, { avg: number | null; count: number }> = {};
-    for (const d of dates) {
-      const a = dateAgg[d.date];
-      perDate[d.date] = { avg: a ? avgOf(a.sum, a.n) : null, count: a?.n ?? 0 };
+    const perColumn: Record<string, { avg: number | null; count: number }> = {};
+    for (const c of columns) {
+      const a = colAgg[c.key];
+      perColumn[c.key] = { avg: a ? avgOf(a.sum, a.n) : null, count: a?.n ?? 0 };
     }
 
     return {
@@ -344,10 +416,10 @@ export const journalService = {
       school: { id: schoolId, name: school?.name ?? '' },
       from: q.from,
       to: q.to,
-      dates,
+      columns,
       students,
       cells,
-      summary: { perStudent, perDate, classAvg: avgOf(totalSum, totalN, 2), classCount: totalN },
+      summary: { perStudent, perColumn, classAvg: avgOf(totalSum, totalN, 2), classCount: totalN },
     };
   },
 };

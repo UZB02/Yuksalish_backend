@@ -1,9 +1,11 @@
 import { z } from 'zod';
 import { paginationQuery } from '../../core/pagination';
 import { dateStrSchema, objectIdSchema } from '../../core/validators';
+import { MAX_LESSON_NO } from '../../models/TimetableVersion';
 
 const msg = "Baho 2 dan 5 gacha butun son bo'lishi kerak";
 const value = z.number(msg).int(msg).min(2, msg).max(5, msg);
+const lessonNo = z.number().int().min(0).max(MAX_LESSON_NO);
 const comment = z
   .string()
   .trim()
@@ -15,6 +17,7 @@ export const createBody = z.object({
   studentId: objectIdSchema,
   subjectId: objectIdSchema,
   date: dateStrSchema.optional(),
+  lessonNo: lessonNo.optional(),
   value,
   comment,
 });
@@ -28,6 +31,7 @@ export const bulkBody = z.object({
   classId: objectIdSchema,
   subjectId: objectIdSchema,
   date: dateStrSchema.optional(),
+  lessonNo: lessonNo.optional(),
   items: z
     .array(
       z.object({
@@ -55,6 +59,7 @@ export const sheetQuery = z.object({
   classId: objectIdSchema,
   subjectId: objectIdSchema,
   date: dateStrSchema.optional(),
+  lessonNo: z.coerce.number().int().min(0).max(MAX_LESSON_NO).optional(),
 });
 
 export const summaryQuery = z.object({

@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import { env } from './env';
 import { logger } from '../core/logger';
+import { runMigrations } from './migrations';
 
 /**
  * @param opts.autoIndex false bo'lsa indekslar fon rejimida emas, ensureIndexes() orqali ketma-ket yaratiladi
@@ -22,6 +23,7 @@ export async function connectDb(
 
 /** Barcha modellarning kolleksiya va indekslarini ketma-ket yaratadi (parallel qurish navbatda qotib qolmasligi uchun) */
 export async function ensureIndexes(): Promise<void> {
+  await runMigrations();
   for (const m of Object.values(mongoose.models)) {
     await m.createCollection().catch(() => undefined); // mavjud bo'lsa e'tiborsiz
     await m.createIndexes();

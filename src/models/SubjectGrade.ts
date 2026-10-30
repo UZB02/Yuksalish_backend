@@ -16,6 +16,8 @@ export interface ISubjectGrade {
   comment: string | null;
   /** Asia/Tashkent bo'yicha kun: YYYY-MM-DD */
   date: string;
+  /** Dars raqami (dars jadvali): 0 = darsga bog'lanmagan (jadvalsiz / eski baho) */
+  lessonNo: number;
   isDeleted: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -33,6 +35,7 @@ const subjectGradeSchema = new Schema<ISubjectGrade>(
     value: { type: Number, required: true, min: GRADE_MIN, max: GRADE_MAX },
     comment: { type: String, default: null },
     date: { type: String, required: true },
+    lessonNo: { type: Number, default: 0, min: 0 },
     isDeleted: { type: Boolean, default: false },
   },
   { timestamps: true },
@@ -42,14 +45,18 @@ subjectGradeSchema.index({ schoolId: 1, classId: 1, subjectId: 1, date: 1 });
 subjectGradeSchema.index({ schoolId: 1, date: 1 });
 subjectGradeSchema.index({ schoolId: 1, studentId: 1, date: 1 });
 subjectGradeSchema.index({ schoolId: 1, teacherId: 1, date: 1 });
-// Bir o'quvchiga bir fandan bir kunda bitta baho (o'chirilganlar hisobga olinmaydi)
+// Bir o'quvchiga bir fandan bir darsga bitta baho (o'chirilganlar hisobga olinmaydi).
+// lessonNo = 0 — jadvalsiz holat: kuniga bitta (avvalgidek).
 subjectGradeSchema.index(
-  { schoolId: 1, studentId: 1, subjectId: 1, date: 1 },
+  { schoolId: 1, studentId: 1, subjectId: 1, date: 1, lessonNo: 1 },
   {
     unique: true,
     partialFilterExpression: { isDeleted: false },
-    name: 'one_grade_per_student_subject_day',
+    name: 'one_grade_per_student_subject_day_lesson',
   },
 );
+
+/** P3 dan oldingi (kuniga bitta baho) indeks nomi — mavjud bazalarda ishga tushishda o'chiriladi */
+export const LEGACY_GRADE_INDEX = 'one_grade_per_student_subject_day';
 
 export const SubjectGrade = model<ISubjectGrade>('SubjectGrade', subjectGradeSchema);

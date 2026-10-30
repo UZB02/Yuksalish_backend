@@ -2,7 +2,7 @@ import ExcelJS from 'exceljs';
 import { fmtDate, fmtDateTime, fmtPeriod } from '../reports/reports.labels';
 import { safeText } from '../reports/reports.excel';
 import { createDoc } from '../reports/reports.pdf';
-import type { JournalGrid } from './journal.types';
+import type { JournalColumn, JournalGrid } from './journal.types';
 
 export const WEEKDAY_SHORT = ['', 'Du', 'Se', 'Cho', 'Pa', 'Ju', 'Sha', 'Ya'];
 const MONTHS = [
@@ -32,14 +32,21 @@ const GRADE_FILL: Record<number, { argb: string; hex: string }> = {
 };
 const LOW_AVG = 3;
 
-/** Ish kunlari oy bo'yicha guruhlanadi */
-export function groupByMonth(dates: JournalGrid['dates']) {
-  const groups: { label: string; dates: JournalGrid['dates'] }[] = [];
-  for (const d of dates) {
+/** Dars ustuni belgisi: "3-d" (ish kuni ustuni uchun hafta kuni) */
+export const lessonLabel = (c: Pick<JournalColumn, 'lessonNo' | 'weekday'>) =>
+  c.lessonNo > 0 ? `${c.lessonNo}-d` : WEEKDAY_SHORT[c.weekday];
+
+const CANCELLED_ARGB = 'FFE5E7EB';
+const CANCELLED_HEX = '#E5E7EB';
+
+/** Ustunlar oy bo'yicha guruhlanadi */
+export function groupByMonth(cols: JournalGrid['columns']) {
+  const groups: { label: string; columns: JournalGrid['columns'] }[] = [];
+  for (const d of cols) {
     const label = monthLabel(d.date);
     const last = groups[groups.length - 1];
-    if (last && last.label === label) last.dates.push(d);
-    else groups.push({ label, dates: [d] });
+    if (last && last.label === label) last.columns.push(d);
+    else groups.push({ label, columns: [d] });
   }
   return groups;
 }
@@ -58,7 +65,7 @@ export async function renderJournalExcel(g: JournalGrid): Promise<Buffer> {
       .slice(0, 31),
   );
 
-  const nDays = g.dates.length;
+  const nDays = g.columns.length;
   const firstDay = 3;
   const sumCol = firstDay + nDays; // O'rtacha
   const lastCol = sumCol + 3;
@@ -109,19 +116,28 @@ export async function renderJournalExcel(g: JournalGrid): Promise<Buffer> {
   }
 
   let col = firstDay;
-  for (const grp of groupByMonth(g.dates)) {
-    for (let i = 0; i < grp.dates.length; i++) head(hMonth, col + i, i === 0 ? grp.label : '');
-    if (grp.dates.length > 1) ws.mergeCells(hMonth, col, hMonth, col + grp.dates.length - 1);
-    grp.dates.forEach((d, i) => {
+  for (const grp of groupByMonth(g.columns)) {
+    for (let i = 0; i < grp.columns.length; i++) head(hMonth, col + i, i === 0 ? grp.label : '');
+    if (grp.columns.length > 1) ws.mergeCells(hMonth, col, hMonth, col + grp.columns.length - 1);
+    grp.columns.forEach((d, i) => {
       head(hDay, col + i, dayNum(d.date));
-      head(hWeek, col + i, WEEKDAY_SHORT[d.weekday]);
+      head(hWeek, col + i, lessonLabel(d));
+      if (d.cancelled) {
+        for (const r of [hDay, hWeek]) {
+          ws.getRow(r).getCell(col + i).fill = {
+            type: 'pattern',
+            pattern: 'solid',
+            fgColor: { argb: CANCELLED_ARGB },
+          };
+        }
+      }
     });
-    col += grp.dates.length;
+    col += grp.columns.length;
   }
 
   ws.getColumn(1).width = 5;
   ws.getColumn(2).width = 32;
-  for (let i = 0; i < nDays; i++) ws.getColumn(firstDay + i).width = 4.5;
+  for (let i = 0; i < nDays; i++) ws.getColumn(firstDay + i).width = 5;
   for (let i = 0; i < 4; i++) ws.getColumn(sumCol + i).width = 11;
 
   const center = { vertical: 'middle', horizontal: 'center' } as const;
@@ -136,11 +152,14 @@ export async function renderJournalExcel(g: JournalGrid): Promise<Buffer> {
       r.getCell(c).border = BORDER;
       r.getCell(c).alignment = { vertical: 'middle', horizontal: c === 1 ? 'center' : 'left' };
     }
-    g.dates.forEach((d, i) => {
-      const cell = g.cells[s.id]?.[d.date];
+    g.columns.forEach((d, i) => {
+      const cell = g.cells[s.id]?.[d.key];
       const x = r.getCell(firstDay + i);
       x.border = BORDER;
       x.alignment = center;
+      if (d.cancelled) {
+        x.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: CANCELLED_ARGB } };
+      }
       if (!cell) return;
       if (cell.grade !== undefined) {
         x.value = cell.grade;
@@ -184,9 +203,9 @@ export async function renderJournalExcel(g: JournalGrid): Promise<Buffer> {
     const r = ws.getRow(rowNo);
     r.getCell(2).value = label;
     r.getCell(2).font = { bold: true };
-    g.dates.forEach((d, i) => {
+    g.columns.forEach((d, i) => {
       const x = r.getCell(firstDay + i);
-      x.value = pick(d.date);
+      x.value = pick(d.key);
       x.numFmt = fmt;
       x.alignment = center;
       x.font = { size: 9 };
@@ -201,8 +220,8 @@ export async function renderJournalExcel(g: JournalGrid): Promise<Buffer> {
       r.getCell(c).fill = headFill;
     }
   };
-  foot(base, "Sinf o'rtachasi", (d) => g.summary.perDate[d].avg, g.summary.classAvg, '0.0');
-  foot(base + 1, 'Baholar soni', (d) => g.summary.perDate[d].count, g.summary.classCount, '0');
+  foot(base, "Sinf o'rtachasi", (d) => g.summary.perColumn[d].avg, g.summary.classAvg, '0.0');
+  foot(base + 1, 'Baholar soni', (d) => g.summary.perColumn[d].count, g.summary.classCount, '0');
 
   const note = ws.getRow(base + 3).getCell(1);
   note.value =
@@ -228,20 +247,20 @@ const MAX_DAYS_PER_PAGE = 23;
 
 export interface Chunk {
   label: string;
-  dates: JournalGrid['dates'];
+  columns: JournalGrid['columns'];
 }
 
 /**
  * Oy bo'yicha, sahifaga sig'masa teng bo'laklarga (26 kun -> 13+13, 23+3 emas:
  * deyarli bo'sh sahifa chiqmasin).
  */
-export function chunkDates(g: Pick<JournalGrid, 'dates'>): Chunk[] {
+export function chunkDates(g: Pick<JournalGrid, 'columns'>): Chunk[] {
   const out: Chunk[] = [];
-  for (const grp of groupByMonth(g.dates)) {
-    const parts = Math.max(1, Math.ceil(grp.dates.length / MAX_DAYS_PER_PAGE));
-    const size = Math.ceil(grp.dates.length / parts);
-    for (let i = 0; i < grp.dates.length; i += size) {
-      out.push({ label: grp.label, dates: grp.dates.slice(i, i + size) });
+  for (const grp of groupByMonth(g.columns)) {
+    const parts = Math.max(1, Math.ceil(grp.columns.length / MAX_DAYS_PER_PAGE));
+    const size = Math.ceil(grp.columns.length / parts);
+    for (let i = 0; i < grp.columns.length; i += size) {
+      out.push({ label: grp.label, columns: grp.columns.slice(i, i + size) });
     }
   }
   return out;
@@ -267,7 +286,7 @@ export function renderJournalPdf(g: JournalGrid): Promise<Buffer> {
     const pageH = doc.page.height;
     const bottom = pageH - M - 18;
     const parts = chunkDates(g);
-    const list = parts.length ? parts : [{ label: '', dates: [] as JournalGrid['dates'] }];
+    const list = parts.length ? parts : [{ label: '', columns: [] as JournalGrid['columns'] }];
 
     const txt = (
       t: string,
@@ -304,7 +323,7 @@ export function renderJournalPdf(g: JournalGrid): Promise<Buffer> {
         // jadval sarlavhasi
         const x0 = M;
         const dx = x0 + NUM_W + NAME_W;
-        const dw = part.dates.length * DAY_W;
+        const dw = part.columns.length * DAY_W;
         doc.font('BodyBold').fontSize(7).fillColor('#111827');
         box(x0, y, NUM_W, HEAD_H[0] + HEAD_H[1] + HEAD_H[2], '#E5E7EB');
         box(x0 + NUM_W, y, NAME_W, HEAD_H[0] + HEAD_H[1] + HEAD_H[2], '#E5E7EB');
@@ -314,14 +333,15 @@ export function renderJournalPdf(g: JournalGrid): Promise<Buffer> {
         box(dx, y, dw, HEAD_H[0], '#E5E7EB');
         doc.fillColor('#111827');
         txt(part.label, dx, y + 3, dw);
-        part.dates.forEach((d, i) => {
+        part.columns.forEach((d, i) => {
           const cx = dx + i * DAY_W;
-          box(cx, y + HEAD_H[0], DAY_W, HEAD_H[1], '#E5E7EB');
-          box(cx, y + HEAD_H[0] + HEAD_H[1], DAY_W, HEAD_H[2], '#E5E7EB');
+          const hf = d.cancelled ? CANCELLED_HEX : '#E5E7EB';
+          box(cx, y + HEAD_H[0], DAY_W, HEAD_H[1], hf);
+          box(cx, y + HEAD_H[0] + HEAD_H[1], DAY_W, HEAD_H[2], hf);
           doc.fillColor('#111827');
           txt(String(dayNum(d.date)), cx, y + HEAD_H[0] + 2, DAY_W);
           doc.font('Body').fontSize(6);
-          txt(WEEKDAY_SHORT[d.weekday], cx, y + HEAD_H[0] + HEAD_H[1] + 3, DAY_W);
+          txt(lessonLabel(d), cx, y + HEAD_H[0] + HEAD_H[1] + 3, DAY_W);
           doc.font('BodyBold').fontSize(7);
         });
         if (lastPart) {
@@ -351,11 +371,11 @@ export function renderJournalPdf(g: JournalGrid): Promise<Buffer> {
         while (name.length > 3 && doc.widthOfString(name) > NAME_W - 6)
           name = `${name.slice(0, -2)}…`;
         txt(name, x0 + NUM_W + 3, y + 4.5, NAME_W - 4, 'left');
-        part.dates.forEach((d, i) => {
+        part.columns.forEach((d, i) => {
           const cx = dx + i * DAY_W;
-          const c = g.cells[s.id]?.[d.date];
+          const c = g.cells[s.id]?.[d.key];
           if (c?.grade !== undefined) box(cx, y, DAY_W, ROW_H, GRADE_FILL[c.grade].hex);
-          else box(cx, y, DAY_W, ROW_H);
+          else box(cx, y, DAY_W, ROW_H, d.cancelled ? CANCELLED_HEX : undefined);
           if (!c) return;
           if (c.grade !== undefined) {
             doc.font('BodyBold').fontSize(8).fillColor('#111827');
@@ -379,7 +399,7 @@ export function renderJournalPdf(g: JournalGrid): Promise<Buffer> {
           const sm = g.summary.perStudent[s.id];
           const vals = [fmtAvg(sm.avg), String(sm.count), String(sm.absentN), String(sm.absentB)];
           vals.forEach((v, i) => {
-            const cx = dx + part.dates.length * DAY_W + i * SUM_W;
+            const cx = dx + part.columns.length * DAY_W + i * SUM_W;
             const low = i === 0 && sm.avg !== null && sm.avg < LOW_AVG;
             box(cx, y, SUM_W, ROW_H, low ? '#FECACA' : undefined);
             doc
@@ -394,8 +414,12 @@ export function renderJournalPdf(g: JournalGrid): Promise<Buffer> {
 
       // Pastki qatorlar
       const rows: [string, (d: string) => string, string][] = [
-        ["Sinf o'rtachasi", (d) => fmtAvg(g.summary.perDate[d].avg), fmtAvg(g.summary.classAvg, 2)],
-        ['Baholar soni', (d) => String(g.summary.perDate[d].count), String(g.summary.classCount)],
+        [
+          "Sinf o'rtachasi",
+          (d) => fmtAvg(g.summary.perColumn[d].avg),
+          fmtAvg(g.summary.classAvg, 2),
+        ],
+        ['Baholar soni', (d) => String(g.summary.perColumn[d].count), String(g.summary.classCount)],
       ];
       for (const [label, pick, total] of rows) {
         if (y + FOOT_H > bottom) header(false);
@@ -404,14 +428,14 @@ export function renderJournalPdf(g: JournalGrid): Promise<Buffer> {
         box(x0, y, NUM_W + NAME_W, FOOT_H, '#F3F4F6');
         doc.font('BodyBold').fontSize(7).fillColor('#111827');
         txt(label, x0 + NUM_W + 3, y + 4, NAME_W - 4, 'left');
-        part.dates.forEach((d, i) => {
+        part.columns.forEach((d, i) => {
           const cx = dx + i * DAY_W;
           box(cx, y, DAY_W, FOOT_H, '#F3F4F6');
           doc.font('Body').fontSize(6).fillColor('#111827');
-          txt(pick(d.date), cx, y + 4, DAY_W);
+          txt(pick(d.key), cx, y + 4, DAY_W);
         });
         if (lastPart) {
-          const cx = dx + part.dates.length * DAY_W;
+          const cx = dx + part.columns.length * DAY_W;
           box(cx, y, SUM_W, FOOT_H, '#F3F4F6');
           doc.font('BodyBold').fontSize(7).fillColor('#111827');
           txt(total, cx, y + 4, SUM_W);
