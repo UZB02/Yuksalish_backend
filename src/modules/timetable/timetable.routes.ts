@@ -10,6 +10,7 @@ import {
   activateBody,
   activateBulkBody,
   bulkPreviewBody,
+  busyTeachersQuery,
   classIdParams,
   correctBody,
   createOverrideBody,
@@ -153,6 +154,22 @@ timetableRouter.get(
       (req.query as { validFrom?: string }).validFrom,
     ),
   ),
+);
+
+timetableRouter.get(
+  '/versions/:id/busy-teachers',
+  validate({ params: versionIdParams, query: busyTeachersQuery }),
+  read((req) => {
+    const q = req.query as unknown as { weekday: number; lessonNo: number; validFrom?: string };
+    return timetableService.busyTeachers(
+      getCtx(req).actor,
+      req.schoolId as string,
+      req.params.id as string,
+      q.weekday,
+      q.lessonNo,
+      q.validFrom,
+    );
+  }),
 );
 
 // --- Yozish: timetable.manage ---

@@ -35,6 +35,11 @@ export const updateVersionBody = z.object({
   note,
 });
 
+export const busyTeachersQuery = z.object({
+  weekday: z.coerce.number().int().min(1).max(MAX_WEEKDAY),
+  lessonNo: z.coerce.number().int().min(1).max(MAX_LESSON_NO),
+  validFrom: dateStrSchema.optional(),
+});
 export const versionQuery = z.object({ validFrom: dateStrSchema.optional() });
 
 const activateFields = {

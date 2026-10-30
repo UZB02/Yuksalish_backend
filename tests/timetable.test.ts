@@ -6,6 +6,7 @@ import { ClassSubject } from '../src/models/ClassSubject';
 import { Setting } from '../src/models/Setting';
 import { Subject } from '../src/models/Subject';
 import { TimetableVersion } from '../src/models/TimetableVersion';
+import { dedupeWarnings } from '../src/modules/timetable/timetable.conflicts';
 import { rechain } from '../src/modules/timetable/timetable.chain';
 import { clock } from '../src/utils/clock';
 import {
@@ -362,6 +363,68 @@ describe("to'qnashuvlar", () => {
         (x) => x.code === 'teacher_double_booked',
       ),
     ).toBe(true);
+  });
+
+  it("bitta boshqa sinfning bir nechta versiyasi to'qnashsa ham bitta ogohlantirish (versions bilan)", async () => {
+    const a = await draft(c1.id, [e(1, 1, math.id, t1.id)], '2026-11-02');
+    await p(admin, `/versions/${a.id}/activate`, { validFrom: '2026-11-02' });
+    const a2 = await draft(c1.id, [e(1, 1, math.id, t1.id)], '2026-12-01');
+    await p(admin, `/versions/${a2.id}/activate`, { validFrom: '2026-12-01' });
+    const b = await draft(c2.id, [e(1, 1, math.id, t1.id)], '2026-11-02');
+    const dbl = (
+      b.res.body.data.warnings as {
+        code: string;
+        other: { classId: string; versions: unknown[] };
+      }[]
+    ).filter((x) => x.code === 'teacher_double_booked');
+    expect(dbl).toHaveLength(1);
+    expect(dbl[0]?.other.classId).toBe(c1.id);
+    expect(dbl[0]?.other.versions).toHaveLength(2);
+    const full = await g(admin, `/versions/${b.id}`);
+    expect(
+      full.body.data.warnings.filter((x: { code: string }) => x.code === 'teacher_double_booked'),
+    ).toHaveLength(1);
+  });
+
+  it('dedupeWarnings aynan bir xil elementlarni olib tashlaydi', () => {
+    const w = {
+      code: 'teacher_double_booked' as const,
+      severity: 'error' as const,
+      weekday: 1,
+      lessonNo: 1,
+      subjectId: 's',
+      teacherId: 't',
+      message: 'x',
+      other: {
+        classId: 'c',
+        className: 'C',
+        versionId: 'v',
+        validFrom: 'a',
+        validTo: null,
+        versions: [],
+      },
+    };
+    expect(
+      dedupeWarnings([w, { ...w }, { ...w, other: { ...w.other, classId: 'd' } }]),
+    ).toHaveLength(2);
+  });
+
+  it("band o'qituvchilar: boshqa sinfdagi faol versiya, tenant va ruxsat", async () => {
+    const a = await draft(c1.id, [e(1, 1, math.id, t1.id), e(2, 3, math.id, t2.id)]);
+    await p(admin, `/versions/${a.id}/activate`, { validFrom: '2026-11-02' });
+    const b = await draft(c2.id, [e(1, 2, math.id, t3.id)]);
+    const q = (t: string, qs: string) => g(t, `/versions/${b.id}/busy-teachers?${qs}`);
+    const r = await q(admin, 'weekday=1&lessonNo=1');
+    expect(r.status).toBe(200);
+    expect(r.body.data.items).toEqual([{ teacherId: t1.id, classId: c1.id, className: '5-A' }]);
+    expect((await q(admin, 'weekday=1&lessonNo=5')).body.data.items).toEqual([]);
+    expect((await q(admin, 'weekday=2&lessonNo=3')).body.data.items[0].teacherId).toBe(t2.id);
+    // o'z sinfi hisobga olinmaydi
+    const own = await g(admin, `/versions/${a.id}/busy-teachers?weekday=1&lessonNo=1`);
+    expect(own.body.data.items).toEqual([]);
+    expect((await q(viewer, 'weekday=1&lessonNo=1')).status).toBe(403);
+    expect((await q(adminOther, 'weekday=1&lessonNo=1')).status).toBe(404);
+    expect((await q(admin, 'weekday=9&lessonNo=1')).status).toBe(400);
   });
 
   it("biriktirilmagan, nofaol fan/o'qituvchi va sozlama o'zgargach outOfRange", async () => {

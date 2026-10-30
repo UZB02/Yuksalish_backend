@@ -21,6 +21,7 @@ import { rechain } from './timetable.chain';
 import {
   analyzeTargets,
   blocking,
+  busyTeachersAt,
   hypotheticalValidTo,
   isOutOfRange,
   type AnalysisTarget,
@@ -585,6 +586,24 @@ export const timetableService = {
       ? await warningsFor(schoolId, v, validFrom ?? v.validFrom)
       : [];
     return { version: await dtoOf(v, settings, todayTashkent()), warnings };
+  },
+
+  async busyTeachers(
+    actor: Actor,
+    schoolId: string,
+    id: string,
+    weekday: number,
+    lessonNo: number,
+    validFrom?: string,
+  ) {
+    if (!canManage(actor)) throw AppError.forbidden();
+    const v = await loadVersion(schoolId, id);
+    const from = validFrom ?? v.validFrom;
+    const to =
+      v.status === 'draft'
+        ? await hypotheticalValidTo(idStr(v.classId), from, idStr(v._id))
+        : v.validTo;
+    return { items: await busyTeachersAt(schoolId, idStr(v.classId), from, to, weekday, lessonNo) };
   },
 
   async createVersion(

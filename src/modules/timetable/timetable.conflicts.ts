@@ -33,6 +33,8 @@ export interface TimetableWarning {
     versionId: string;
     validFrom: string;
     validTo: string | null;
+    /** Shu sinfning to'qnashayotgan barcha versiyalari (bitta ogohlantirishga jamlanadi) */
+    versions: { versionId: string; validFrom: string; validTo: string | null }[];
   };
 }
 
@@ -167,27 +169,39 @@ export async function analyzeTargets(
         });
         continue;
       }
+      // Har bir boshqa sinf uchun bitta ogohlantirish: sinfning bir nechta versiyasi
+      // (masalan ketma-ket faol versiyalar) bir vaqtda to'qnashsa ham takrorlanmaydi
+      const clashes = new Map<string, AnalysisTarget[]>();
       for (const r of rivals) {
-        const clash = r.entries.find(
+        const hit = r.entries.some(
           (x) =>
             x.teacherId === e.teacherId &&
             x.weekday === e.weekday &&
             x.lessonNo === e.lessonNo &&
             !isOutOfRange(x, settings),
         );
-        if (!clash) continue;
-        const name = classNames.get(r.classId) ?? '?';
+        if (!hit) continue;
+        clashes.set(r.classId, [...(clashes.get(r.classId) ?? []), r]);
+      }
+      for (const [otherClassId, versions] of clashes) {
+        const first = versions[0] as AnalysisTarget;
+        const name = classNames.get(otherClassId) ?? '?';
         list.push({
           ...base,
           code: 'teacher_double_booked',
           severity: 'error',
           message: `O'qituvchi shu vaqtda ${name} sinfida ham dars beradi`,
           other: {
-            classId: r.classId,
+            classId: otherClassId,
             className: name,
-            versionId: r.versionId ?? r.key,
-            validFrom: r.validFrom,
-            validTo: r.validTo,
+            versionId: first.versionId ?? first.key,
+            validFrom: first.validFrom,
+            validTo: first.validTo,
+            versions: versions.map((v) => ({
+              versionId: v.versionId ?? v.key,
+              validFrom: v.validFrom,
+              validTo: v.validTo,
+            })),
           },
         });
       }
@@ -219,9 +233,71 @@ export async function analyzeTargets(
         });
       }
     }
-    result.set(t.key, list);
+    result.set(t.key, dedupeWarnings(list));
   }
   return result;
 }
 
+/** Aynan bir xil (kod + katak + boshqa sinf) ogohlantirishlarni bittaga keltiradi */
+export function dedupeWarnings(list: TimetableWarning[]): TimetableWarning[] {
+  const seen = new Set<string>();
+  return list.filter((w) => {
+    const k = `${w.code}:${w.weekday}:${w.lessonNo}:${w.other?.classId ?? ''}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
 export const blocking = (w: TimetableWarning[]) => w.filter((x) => BLOCKING_CODES.includes(x.code));
+
+export interface BusyTeacher {
+  teacherId: string;
+  classId: string;
+  className: string;
+}
+
+/**
+ * Berilgan katak (hafta kuni + dars) uchun `[validFrom, validTo]` davrida boshqa sinflarda
+ * band bo'lgan o'qituvchilar (faollashtirilgan versiyalar bo'yicha). Bitta (o'qituvchi, sinf) — bitta yozuv.
+ */
+export async function busyTeachersAt(
+  schoolId: string,
+  classId: string,
+  validFrom: string,
+  validTo: string | null,
+  weekday: number,
+  lessonNo: number,
+): Promise<BusyTeacher[]> {
+  const versions = await TimetableVersion.find({
+    schoolId,
+    classId: { $ne: classId },
+    activatedAt: { $type: 'date' },
+    validFrom: { $lte: validTo ?? FAR },
+    $or: [{ validTo: null }, { validTo: { $gte: validFrom } }],
+    entries: { $elemMatch: { weekday, lessonNo } },
+  })
+    .select('classId entries')
+    .lean();
+  const classNames = new Map(
+    (
+      await ClassModel.find({ _id: { $in: uniq(versions.map((v) => String(v.classId))) } })
+        .select('name')
+        .lean()
+    ).map((c) => [String(c._id), c.name]),
+  );
+  const seen = new Map<string, BusyTeacher>();
+  for (const v of versions) {
+    for (const e of v.entries) {
+      if (e.weekday !== weekday || e.lessonNo !== lessonNo) continue;
+      const key = `${e.teacherId}:${v.classId}`;
+      if (seen.has(key)) continue;
+      seen.set(key, {
+        teacherId: String(e.teacherId),
+        classId: String(v.classId),
+        className: classNames.get(String(v.classId)) ?? '?',
+      });
+    }
+  }
+  return [...seen.values()];
+}

@@ -96,7 +96,14 @@ export function buildPhase8(h: DocHelpers) {
       message: str,
       other: {
         nullable: true,
-        ...o({ classId: str, className: str, versionId: str, validFrom: date, validTo: date }),
+        ...o({
+          classId: str,
+          className: str,
+          versionId: str,
+          validFrom: date,
+          validTo: date,
+          versions: arr(o({ versionId: str, validFrom: date, validTo: date })),
+        }),
       },
     }),
     ResolvedLesson: o({
@@ -209,6 +216,15 @@ export function buildPhase8(h: DocHelpers) {
             note: { type: 'string', nullable: true },
           }),
         },
+      ),
+    },
+    '/timetable/versions/{id}/busy-teachers': {
+      get: op(
+        "Katak (hafta kuni + dars) uchun boshqa sinflarda band o'qituvchilar (timetable.manage)",
+        {
+          '200': okRes(o({ items: arr(o({ teacherId: str, classId: str, className: str })) })),
+        },
+        { params: [idParam, q('weekday'), q('lessonNo'), q('validFrom', 'YYYY-MM-DD')] },
       ),
     },
     '/timetable/versions/{id}': {
