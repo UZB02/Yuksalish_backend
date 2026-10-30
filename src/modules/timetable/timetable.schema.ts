@@ -59,9 +59,44 @@ export const correctBody = z.object({
 
 export const weekQuery = z.object({ date: dateStrSchema.optional() });
 export const dayQuery = z.object({ date: dateStrSchema.optional() });
+export const teacherDayQuery = z.object({
+  date: dateStrSchema.optional(),
+  teacherId: objectIdSchema.optional(),
+});
 export const lessonsQuery = z.object({ classId: objectIdSchema, date: dateStrSchema });
 export const optionsQuery = z.object({ classId: objectIdSchema.optional() });
 export const bulkPreviewBody = z.object({
   versionIds: z.array(objectIdSchema).min(1).max(200),
   validFrom: dateStrSchema,
 });
+
+// --- P4: dars almashtirishlari ---
+const lessonNoSchema = z.number().int().min(1).max(MAX_LESSON_NO);
+const slotInput = z.object({ date: dateStrSchema, lessonNo: lessonNoSchema });
+
+export const overrideDateQuery = z.object({ date: dateStrSchema });
+export const freeTeachersQuery = z.object({
+  date: dateStrSchema,
+  lessonNo: z.coerce.number().int().min(1).max(MAX_LESSON_NO),
+  subjectId: objectIdSchema.optional(),
+});
+export const createOverrideBody = z.object({
+  classId: objectIdSchema,
+  date: dateStrSchema,
+  lessonNo: lessonNoSchema,
+  type: z.enum(['substitute', 'replace', 'cancel', 'extra']),
+  subjectId: objectIdSchema.nullish(),
+  teacherId: objectIdSchema.nullish(),
+  room: optionalText(30),
+  reason: optionalText(200),
+});
+export type CreateOverrideInput = z.infer<typeof createOverrideBody>;
+export const moveOverrideBody = z.object({
+  classId: objectIdSchema,
+  from: slotInput,
+  to: slotInput,
+  teacherId: objectIdSchema.nullish(),
+  reason: optionalText(200),
+});
+export type MoveOverrideInput = z.infer<typeof moveOverrideBody>;
+export const overrideIdParams = z.object({ id: objectIdSchema });

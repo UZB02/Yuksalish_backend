@@ -3,7 +3,7 @@ import { asyncHandler } from '../../core/asyncHandler';
 import { getCtx } from '../../core/context';
 import { created, ok } from '../../core/response';
 import { authenticate } from '../../middlewares/authenticate';
-import { authorize, requirePermission } from '../../middlewares/authorize';
+import { authorize, requireAnyPermission, requirePermission } from '../../middlewares/authorize';
 import { tenant } from '../../middlewares/tenant';
 import { validate } from '../../middlewares/validate';
 import {
@@ -12,16 +12,23 @@ import {
   bulkPreviewBody,
   classIdParams,
   correctBody,
+  createOverrideBody,
   createVersionBody,
   dayQuery,
+  freeTeachersQuery,
   lessonsQuery,
+  moveOverrideBody,
   optionsQuery,
+  teacherDayQuery,
+  overrideDateQuery,
+  overrideIdParams,
   teacherIdParams,
   updateVersionBody,
   versionIdParams,
   versionQuery,
   weekQuery,
 } from './timetable.schema';
+import { overridesService } from './overrides.service';
 import { timetableService, type ActivateOpts } from './timetable.service';
 import { myTodayLessons } from './timetable.today';
 
@@ -81,6 +88,20 @@ timetableRouter.get(
       (req.query as { date?: string }).date,
     ),
   ),
+);
+
+timetableRouter.get(
+  '/teacher-day',
+  validate({ query: teacherDayQuery }),
+  read((req) => {
+    const q = req.query as { date?: string; teacherId?: string };
+    return timetableService.teacherDay(
+      getCtx(req).actor,
+      req.schoolId as string,
+      q.date,
+      q.teacherId,
+    );
+  }),
 );
 
 timetableRouter.get(
@@ -241,5 +262,60 @@ timetableRouter.post(
         req.body,
       ),
     );
+  }),
+);
+
+// --- Dars almashtirishlari (P4): o'qish view|substitute, yozish substitute ---
+const readOverrides = requireAnyPermission('timetable.view', 'timetable.substitute');
+const substitute = requirePermission('timetable.substitute');
+
+timetableRouter.get(
+  '/overrides',
+  readOverrides,
+  validate({ query: overrideDateQuery }),
+  asyncHandler(async (req, res) => {
+    const q = req.query as unknown as { date: string };
+    ok(res, await overridesService.list(req.schoolId as string, q.date));
+  }),
+);
+
+timetableRouter.get(
+  '/free-teachers',
+  substitute,
+  validate({ query: freeTeachersQuery }),
+  asyncHandler(async (req, res) => {
+    const q = req.query as unknown as { date: string; lessonNo: number; subjectId?: string };
+    ok(
+      res,
+      await overridesService.freeTeachers(req.schoolId as string, q.date, q.lessonNo, q.subjectId),
+    );
+  }),
+);
+
+timetableRouter.post(
+  '/overrides',
+  substitute,
+  validate({ body: createOverrideBody }),
+  asyncHandler(async (req, res) => {
+    created(res, await overridesService.create(getCtx(req), req.schoolId as string, req.body));
+  }),
+);
+
+timetableRouter.post(
+  '/overrides/move',
+  substitute,
+  validate({ body: moveOverrideBody }),
+  asyncHandler(async (req, res) => {
+    created(res, await overridesService.move(getCtx(req), req.schoolId as string, req.body));
+  }),
+);
+
+timetableRouter.delete(
+  '/overrides/:id',
+  substitute,
+  validate({ params: overrideIdParams }),
+  asyncHandler(async (req, res) => {
+    await overridesService.remove(getCtx(req), req.schoolId as string, req.params.id as string);
+    res.status(204).end();
   }),
 );

@@ -45,12 +45,15 @@ export async function myTodayLessons(actor: Actor, schoolId: string) {
   const base = { date, attendanceMode: settings.mode };
 
   const slices = await loadVersionSlices(schoolId, { teacherId: actor.id }, date, date);
-  const hasTimetable = slices.length > 0;
   const working = settings.workingWeekdays.includes(isoWeekday(date));
-  if (!hasTimetable || !working)
-    return { ...base, working, hasTimetable, lessons: [] as TodayLesson[] };
+  if (!working) {
+    return { ...base, working, hasTimetable: slices.length > 0, lessons: [] as TodayLesson[] };
+  }
 
+  // O'rinbosar/qo'shimcha darsi bor o'qituvchining o'z jadvali bo'lmasligi mumkin: avval darslar
   const resolved = await teacherLessons(schoolId, actor.id, date);
+  const hasTimetable = slices.length > 0 || resolved.length > 0;
+  if (!hasTimetable) return { ...base, working, hasTimetable, lessons: [] as TodayLesson[] };
   const classes = await ClassModel.find({
     _id: { $in: uniq(resolved.map((l) => l.classId)) },
     schoolId,

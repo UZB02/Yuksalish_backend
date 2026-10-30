@@ -65,6 +65,9 @@ function assertCanViewAll(actor: Actor) {
   if (!canViewAll(actor)) throw AppError.forbidden();
 }
 
+/** O'rinbosar sahifasi o'qishlari (kun, sinflar, tanlovlar): view|manage yoki substitute */
+const canViewDay = (a: Actor) => canViewAll(a) || a.permissions.includes('timetable.substitute');
+
 async function loadClass(schoolId: string, classId: string): Promise<ClassDoc> {
   const cls = isId(classId) ? await ClassModel.findOne({ _id: classId, schoolId }) : null;
   if (!cls) throw AppError.notFound('Sinf topilmadi');
@@ -471,7 +474,7 @@ async function commitActivation(
 export const timetableService = {
   /** Faol yildagi sinflar bo'yicha jadval holati */
   async overview(actor: Actor, schoolId: string) {
-    assertCanViewAll(actor);
+    if (!canViewDay(actor)) throw AppError.forbidden();
     const today = todayTashkent();
     const year = await AcademicYear.findOne({ schoolId, isActive: true }).lean();
     if (!year) return { today, classes: [] };
@@ -958,9 +961,57 @@ export const timetableService = {
     };
   },
 
+  /**
+   * O'rinbosar sahifasi uchun tekis kun ro'yxati: hamma sinflar darslari (almashtirishlar hisobga olingan),
+   * sinf nomi va dars raqami bo'yicha. `teacherId` berilsa asl (jadvaldagi) yoki joriy o'qituvchisi shu bo'lgan darslar.
+   */
+  async teacherDay(actor: Actor, schoolId: string, date?: string, teacherId?: string) {
+    if (!canViewDay(actor)) throw AppError.forbidden();
+    const d = date ?? todayTashkent();
+    const year = await AcademicYear.findOne({ schoolId, isActive: true }).lean();
+    const settings = await loadResolverSettings(schoolId);
+    const isWorkday = settings.workingWeekdays.includes(isoWeekday(d));
+    if (!year || !isWorkday) return { date: d, isWorkday, lessons: [] };
+    const classes = await ClassModel.find({ schoolId, academicYearId: year._id, isArchived: false })
+      .select('name grade')
+      .lean();
+    const lessons = await resolveClassesRange(
+      schoolId,
+      classes.map((c) => idStr(c._id)),
+      d,
+      d,
+    );
+    const enriched = await enrich(lessons, classes);
+    const origNames = await loadNames(
+      [],
+      enriched.map((l) => l.originalTeacherId).filter((x): x is string => !!x),
+    );
+    const flat = enriched
+      .filter((l) => !teacherId || l.teacherId === teacherId || l.originalTeacherId === teacherId)
+      .map((l) => ({
+        classId: l.classId,
+        class: { id: l.classId, name: l.class?.name ?? '?' },
+        lessonNo: l.lessonNo,
+        subject: l.subject,
+        teacher: l.teacher,
+        originalTeacher: l.originalTeacherId
+          ? {
+              id: l.originalTeacherId,
+              fullName: origNames.teachers.get(l.originalTeacherId) ?? '?',
+            }
+          : null,
+        source: l.source,
+        overrideType: l.overrideType ?? null,
+        overrideId: l.overrideId ?? null,
+        cancelled: l.cancelled,
+      }))
+      .sort((a, b) => a.class.name.localeCompare(b.class.name, 'uz') || a.lessonNo - b.lessonNo);
+    return { date: d, isWorkday, lessons: flat };
+  },
+
   /** Muharrir uchun tanlov ro'yxatlari: faol fanlar/o'qituvchilar, sinf biriktirishlari, fan -> o'qituvchilar */
   async options(actor: Actor, schoolId: string, classId?: string) {
-    assertCanViewAll(actor);
+    if (!canViewDay(actor)) throw AppError.forbidden();
     const [subjects, teachers, assignments] = await Promise.all([
       Subject.find({ $or: [{ schoolId: null }, { schoolId }], isActive: true })
         .select('name order')

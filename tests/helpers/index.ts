@@ -11,6 +11,7 @@ import { ClassSubject } from '../../src/models/ClassSubject';
 import { Subject } from '../../src/models/Subject';
 import { SubjectGrade } from '../../src/models/SubjectGrade';
 import { TimetableVersion } from '../../src/models/TimetableVersion';
+import { LessonOverride } from '../../src/models/LessonOverride';
 import { Setting } from '../../src/models/Setting';
 import { Rating, RatingDailyRank, RatingState } from '../../src/models/Rating';
 import { publicCache } from '../../src/modules/public/public.cache';
@@ -53,6 +54,7 @@ const ALL_MODELS: { init(): Promise<unknown>; deleteMany(f: object): PromiseLike
   ClassSubject,
   SubjectGrade,
   TimetableVersion,
+  LessonOverride,
 ];
 
 /** Har bir test fayli uchun alohida baza; har testdan oldin tozalanadi */

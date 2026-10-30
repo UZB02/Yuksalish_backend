@@ -2,6 +2,7 @@ import type { Types } from 'mongoose';
 import { MAX_LESSON_NO, TimetableVersion } from '../../models/TimetableVersion';
 import { addDaysStr } from '../../utils/clock';
 import { isoWeekday } from '../../utils/dates';
+import { loadOverridesForClasses, overrideClassIdsOfTeacher } from './overrides.loader';
 import { settingsService } from '../settings/settings.service';
 import { ATTENDANCE_KEY, type AttendanceSettings } from '../settings/attendance.settings';
 
@@ -28,9 +29,13 @@ export interface ResolvedLesson {
   cancelled: boolean;
   versionId: string | null;
   overrideId?: string;
+  /** O'rinbosar/almashtirishda jadvaldagi asl o'qituvchi */
+  originalTeacherId?: string;
+  /** Almashtirishda jadvaldagi asl fan */
+  originalSubjectId?: string;
 }
 
-/** 4-bosqichda (LessonOverride) to'ldiriladi; hozircha manba bo'sh */
+/** LessonOverride yozuvining resolver ko'rinishi */
 export interface LessonOverrideRow {
   id: string;
   classId: string;
@@ -41,6 +46,7 @@ export interface LessonOverrideRow {
   subjectId?: string | null;
   teacherId?: string | null;
   room?: string | null;
+  moveGroupId?: string | null;
 }
 
 export type OverrideLoader = (
@@ -50,20 +56,71 @@ export type OverrideLoader = (
   to: string,
 ) => Promise<LessonOverrideRow[]>;
 
-let overrideLoader: OverrideLoader = async () => [];
-/** P4 da LessonOverride modeli shu yerga ulanadi */
+let overrideLoader: OverrideLoader = loadOverridesForClasses;
+/** Sinov uchun: almashtirishlar manbasini almashtirish (standart — Mongo) */
 export const setOverrideLoader = (fn: OverrideLoader) => {
   overrideLoader = fn;
 };
 
-/** Almashtirishlarni qo'llash (P4): hozircha ro'yxat bo'sh bo'lsa darslar o'zgarmaydi */
+const slotKey = (classId: string, date: string, lessonNo: number, groupKey: string | null) =>
+  `${classId}|${date}|${lessonNo}|${groupKey ?? ''}`;
+
+/**
+ * Almashtirishlarni qo'llash: jadval darsiga substitute/replace/cancel, bo'sh slotga extra.
+ * Jadvalda mos dars topilmasa (jadval keyin o'zgargan) substitute/replace/cancel e'tiborsiz qoladi;
+ * extra esa slotda jadval darsi bo'lsa e'tiborsiz qoladi. Ro'yxat bo'sh bo'lsa lessons o'zgarishsiz qaytadi.
+ */
 export function applyOverrides(
   lessons: ResolvedLesson[],
   overrides: LessonOverrideRow[],
 ): ResolvedLesson[] {
   if (!overrides.length) return lessons;
-  // TODO(P4): substitute/cancel/replace/extra qoidalari
-  return lessons;
+  const out = lessons.map((l) => ({ ...l }));
+  const bySlot = new Map(out.map((l) => [slotKey(l.classId, l.date, l.lessonNo, l.groupKey), l]));
+  const extras: ResolvedLesson[] = [];
+  for (const o of overrides) {
+    const base = bySlot.get(slotKey(o.classId, o.date, o.lessonNo, o.groupKey));
+    if (o.type === 'extra') {
+      if (base || !o.subjectId || !o.teacherId) continue;
+      extras.push({
+        classId: o.classId,
+        date: o.date,
+        weekday: isoWeekday(o.date),
+        lessonNo: o.lessonNo,
+        groupKey: o.groupKey,
+        subjectId: o.subjectId,
+        teacherId: o.teacherId,
+        room: o.room ?? null,
+        source: 'override',
+        overrideType: 'extra',
+        overrideId: o.id,
+        cancelled: false,
+        versionId: null,
+      });
+      continue;
+    }
+    if (!base) continue;
+    base.source = 'override';
+    base.overrideType = o.type;
+    base.overrideId = o.id;
+    if (o.type === 'cancel') {
+      base.cancelled = true;
+      continue;
+    }
+    if (o.teacherId && o.teacherId !== base.teacherId) {
+      base.originalTeacherId = base.teacherId;
+      base.teacherId = o.teacherId;
+    }
+    if (o.type === 'replace' && o.subjectId && o.subjectId !== base.subjectId) {
+      base.originalSubjectId = base.subjectId;
+      base.subjectId = o.subjectId;
+    }
+    if (o.room) base.room = o.room;
+  }
+  return [...out, ...extras].sort(
+    (a, b) =>
+      a.date.localeCompare(b.date) || a.lessonNo - b.lessonNo || a.classId.localeCompare(b.classId),
+  );
 }
 
 export interface SliceEntry {
@@ -145,6 +202,7 @@ export function datesBetween(from: string, to: string): string[] {
 }
 
 type Match = (e: SliceEntry, classId: string) => boolean;
+type LessonMatch = (l: ResolvedLesson) => boolean;
 
 /** Sof hisob: berilgan versiyalar va sozlamalar bo'yicha darslar (ish kuni bo'lmagan kunlar chiqarib tashlanadi) */
 export function lessonsFromSlices(
@@ -193,7 +251,7 @@ export async function resolveClassesRange(
   classIds: string[],
   from: string,
   to: string,
-  match?: Match,
+  match?: LessonMatch,
 ): Promise<ResolvedLesson[]> {
   if (!classIds.length || from > to) return [];
   const [slices, settings, overrides] = await Promise.all([
@@ -201,10 +259,11 @@ export async function resolveClassesRange(
     loadResolverSettings(schoolId),
     overrideLoader(schoolId, classIds, from, to),
   ]);
-  return applyOverrides(
-    lessonsFromSlices(slices, settings, classIds, datesBetween(from, to), match),
+  const lessons = applyOverrides(
+    lessonsFromSlices(slices, settings, classIds, datesBetween(from, to)),
     overrides,
   );
+  return match ? lessons.filter(match) : lessons;
 }
 
 /** Sinfning shu sanadagi darslari va sinfda shu sana uchun amaldagi jadval versiyasi borligi */
@@ -240,7 +299,10 @@ export async function resolveLesson(
   return all.find((l) => l.lessonNo === lessonNo && l.groupKey === groupKey) ?? null;
 }
 
-/** O'qituvchining davr ichidagi darslari (barcha sinflar) */
+/**
+ * O'qituvchining davr ichidagi darslari (barcha sinflar), almashtirishlar hisobga olingan:
+ * o'rinbosar qilingan dars yangi o'qituvchiga o'tadi, bekor qilingan dars (cancelled) asl o'qituvchida qoladi.
+ */
 export async function teacherLessonsInRange(
   schoolId: string,
   teacherId: string,
@@ -248,21 +310,25 @@ export async function teacherLessonsInRange(
   to: string,
 ): Promise<ResolvedLesson[]> {
   if (from > to) return [];
-  const slices = await loadVersionSlices(schoolId, { teacherId }, from, to);
-  const classIds = [...new Set(slices.map((s) => s.classId))];
+  const [mySlices, overrideClasses] = await Promise.all([
+    loadVersionSlices(schoolId, { teacherId }, from, to),
+    overrideClassIdsOfTeacher(schoolId, teacherId, from, to),
+  ]);
+  const classIds = [...new Set([...mySlices.map((s) => s.classId), ...overrideClasses])];
   if (!classIds.length) return [];
   const [settings, overrides] = await Promise.all([
     loadResolverSettings(schoolId),
     overrideLoader(schoolId, classIds, from, to),
   ]);
-  const lessons = lessonsFromSlices(
-    slices,
-    settings,
-    classIds,
-    datesBetween(from, to),
-    (e) => e.teacherId === teacherId,
+  const dates = datesBetween(from, to);
+  if (!overrides.length) {
+    return lessonsFromSlices(mySlices, settings, classIds, dates, (e) => e.teacherId === teacherId);
+  }
+  // Almashtirish bor: sinflarning to'liq jadvali (o'rinbosar boshqa o'qituvchining darsiga keladi)
+  const slices = await loadVersionSlices(schoolId, { classIds }, from, to);
+  return applyOverrides(lessonsFromSlices(slices, settings, classIds, dates), overrides).filter(
+    (l) => l.teacherId === teacherId,
   );
-  return applyOverrides(lessons, overrides);
 }
 
 /** O'qituvchining shu sanadagi darslari */
@@ -276,4 +342,4 @@ export const subjectLessonsInRange = (
   subjectId: string,
   from: string,
   to: string,
-) => resolveClassesRange(schoolId, [classId], from, to, (e) => e.subjectId === subjectId);
+) => resolveClassesRange(schoolId, [classId], from, to, (l) => l.subjectId === subjectId);
