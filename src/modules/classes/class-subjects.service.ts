@@ -22,7 +22,10 @@ export interface ClassSubjectDto {
  * Sinfga kirish huquqi (o'quvchilar, davomat, ...) hozirgidek `Class.teacherIds` orqali beriladi.
  * Invariant: fanga biriktirilgan o'qituvchi har doim shu sinf `teacherIds` ichida bo'ladi
  * (biriktirilganda avtomatik qo'shiladi; sinfdan chiqarilganda uning biriktirishlari ham o'chadi).
- * Biriktirish olib tashlansa o'qituvchi `teacherIds` da qoladi (uni alohida chiqarish mumkin).
+ * Biriktirish olib tashlansa o'qituvchi `teacherIds` da qoladi (uni alohida chiqarish mumkin) —
+ * `PUT /:id/subjects` va `teacherIds` aniq berilgan `PATCH /:id` da shunday.
+ * Istisno: `PATCH /:id` da `teacherIds` berilmasa, shu so'rov bilan hech bir biriktirishi qolmagan
+ * o'qituvchi (va almashtirilgan sinf rahbari) `teacherIds` dan chiqariladi; ilgaridan fansiz turganlar qoladi.
  * Bir sinfda bir fanning bir nechta o'qituvchisi bo'lishi mumkin (har bir juftlik alohida kurs).
  */
 

@@ -4,6 +4,7 @@ import { AppError } from '../../core/errors';
 import { buildMeta, skipOf } from '../../core/pagination';
 import { AcademicYear } from '../../models/AcademicYear';
 import { ClassModel, type ClassDoc } from '../../models/Class';
+import { ClassSubject } from '../../models/ClassSubject';
 import { Student } from '../../models/Student';
 import { User, type UserDoc } from '../../models/User';
 import { classKeyOf, cleanText } from '../../utils/text';
@@ -267,7 +268,22 @@ export const classesService = {
           : cls.homeroomTeacherId
             ? String(cls.homeroomTeacherId)
             : null;
-      const base = patch.teacherIds ?? cls.teacherIds.map(String);
+      let base = patch.teacherIds ?? cls.teacherIds.map(String);
+      if (patch.teacherIds === undefined) {
+        // To'liq ro'yxat berilmagan (sinfni tahrirlash sahifasi): shu so'rov bilan hech bir
+        // biriktirishi qolmagan o'qituvchi (va almashtirilgan sinf rahbari) ro'yxatdan chiqariladi.
+        // Avvalgi biriktirishlar fan sinxronlashidan OLDIN o'qiladi; ilgaridan "fansiz" turganlarga tegilmaydi.
+        const prevAssigned = new Set(
+          (await ClassSubject.distinct('teacherId', { classId: cls._id })).map(String),
+        );
+        const nowAssigned = patch.subjects
+          ? new Set(patch.subjects.map((i) => i.teacherId))
+          : prevAssigned;
+        const prevHome = cls.homeroomTeacherId ? String(cls.homeroomTeacherId) : null;
+        const dropped = new Set([...prevAssigned].filter((t) => !nowAssigned.has(t)));
+        if (prevHome && prevHome !== home) dropped.add(prevHome);
+        base = base.filter((t) => !dropped.has(t) || nowAssigned.has(t) || t === home);
+      }
       const teacherIds = uniq([
         ...base,
         ...(home ? [home] : []),

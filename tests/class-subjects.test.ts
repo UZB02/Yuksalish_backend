@@ -258,3 +258,75 @@ describe("Sinfga fan + o'qituvchi biriktirish", () => {
     expect(phy.homeroomClasses).toEqual([]);
   });
 });
+
+describe('PATCH /classes/:id teacherIds bermasdan: qolmagan biriktirishli o‘qituvchi chiqariladi', () => {
+  const patch = (body: object) =>
+    request(app).patch(`/api/v1/classes/${cls.id}`).set(bearer(admin)).send(body);
+  const teacherIdsOf = async () =>
+    ((await ClassModel.findById(cls.id).lean())?.teacherIds ?? []).map(String).sort();
+  const sorted = (...ids: string[]) => [...ids].sort();
+
+  it("fan o'qituvchisi A -> B almashtirilsa A teacherIds dan chiqadi; audit yoziladi", async () => {
+    await putSubjects(admin, cls.id, [{ subjectId: math.id, teacherId: tMath.id }]);
+    const res = await patch({ subjects: [{ subjectId: math.id, teacherId: tPhys.id }] });
+    expect(res.status).toBe(200);
+    expect(await teacherIdsOf()).toEqual([tPhys.id]);
+    expect(res.body.data.teacherIds).toEqual([tPhys.id]);
+    expect(await AuditLog.countDocuments({ action: 'class.update', entityId: cls.id })).toBe(1);
+  });
+
+  it('A sinfda yana boshqa fan olsa — qoladi', async () => {
+    await putSubjects(admin, cls.id, [
+      { subjectId: math.id, teacherId: tMath.id },
+      { subjectId: phys.id, teacherId: tMath.id },
+    ]);
+    await patch({
+      subjects: [
+        { subjectId: math.id, teacherId: tPhys.id },
+        { subjectId: phys.id, teacherId: tMath.id },
+      ],
+    });
+    expect(await teacherIdsOf()).toEqual(sorted(tMath.id, tPhys.id));
+  });
+
+  it('A sinf rahbari bo‘lib qolsa — qoladi; yangi rahbar A bo‘lsa ham qoladi', async () => {
+    await putSubjects(admin, cls.id, [{ subjectId: math.id, teacherId: tMath.id }]);
+    await patch({
+      homeroomTeacherId: tMath.id,
+      subjects: [{ subjectId: math.id, teacherId: tPhys.id }],
+    });
+    expect(await teacherIdsOf()).toEqual(sorted(tMath.id, tPhys.id));
+  });
+
+  it("sinf rahbari A -> B almashtirilsa va A fani yo'q bo'lsa A chiqadi; fani bo'lsa qoladi", async () => {
+    await patch({ homeroomTeacherId: tMath.id });
+    expect(await teacherIdsOf()).toEqual([tMath.id]);
+    const res = await patch({ homeroomTeacherId: tPhys.id });
+    expect(res.status).toBe(200);
+    expect(await teacherIdsOf()).toEqual([tPhys.id]);
+
+    await putSubjects(admin, cls.id, [{ subjectId: math.id, teacherId: tPhys.id }]);
+    await patch({ homeroomTeacherId: tMath.id }); // tPhys fani bor — qoladi
+    expect(await teacherIdsOf()).toEqual(sorted(tMath.id, tPhys.id));
+  });
+
+  it("ilgaridan fansiz o'qituvchiga tegilmaydi", async () => {
+    await putSubjects(admin, cls.id, [{ subjectId: math.id, teacherId: tMath.id }]);
+    await patch({ teacherIds: [tMath.id, tPhys.id] }); // tPhys — fansiz
+    const res = await patch({ subjects: [{ subjectId: math.id, teacherId: tMath.id }] });
+    expect(res.status).toBe(200);
+    expect(await teacherIdsOf()).toEqual(sorted(tMath.id, tPhys.id));
+    // subjects berilmasa ham o'zgarmaydi
+    await patch({ name: '7-Z' });
+    expect(await teacherIdsOf()).toEqual(sorted(tMath.id, tPhys.id));
+  });
+
+  it("teacherIds aniq berilsa avvalgidek: A ro'yxatda qoladi", async () => {
+    await putSubjects(admin, cls.id, [{ subjectId: math.id, teacherId: tMath.id }]);
+    await patch({
+      teacherIds: [tMath.id, tPhys.id],
+      subjects: [{ subjectId: math.id, teacherId: tPhys.id }],
+    });
+    expect(await teacherIdsOf()).toEqual(sorted(tMath.id, tPhys.id));
+  });
+});
