@@ -21,17 +21,42 @@ export interface SubjectDay {
   lessons: SubjectDayLesson[];
 }
 
-/** Sinf+fan+sana: fanning shu kundagi darslari (dars raqami bo'yicha, guruhlar birlashtiriladi) */
+/**
+ * Baholash doirasi: sinfda fanning bir nechta o'qituvchisi bo'lsa, o'qituvchi faqat o'z darslari va
+ * o'z kursi doirasida baholaydi (har bir (fan, o'qituvchi) juftligi alohida kurs).
+ * - `explicit` (admin tanlovi) berilsa — o'sha o'qituvchi;
+ * - o'qituvchi (actor) fanning biriktirilgan o'qituvchilaridan biri va bir nechta o'qituvchi bo'lsa — o'zi;
+ * - aks holda (bitta o'qituvchi, o'rinbosar, admin tanlamagan) — undefined: eski xatti-harakat.
+ */
+export async function gradingTeacher(
+  actor: Actor,
+  classId: Types.ObjectId,
+  subjectId: Types.ObjectId,
+  explicit?: string,
+): Promise<string | undefined> {
+  if (explicit && actor.role !== 'teacher') return explicit;
+  if (actor.role !== 'teacher') return undefined;
+  const teachers = await ClassSubject.distinct('teacherId', { classId, subjectId });
+  if (teachers.length > 1 && teachers.some((t) => String(t) === actor.id)) return actor.id;
+  return undefined;
+}
+
+/**
+ * Sinf+fan+sana: fanning shu kundagi darslari (dars raqami bo'yicha, guruhlar birlashtiriladi).
+ * `teacherId` berilsa faqat shu o'qituvchining darslari (jadvaldagi joriy o'qituvchi, o'rinbosar hisobga olingan).
+ */
 export async function subjectDay(
   schoolId: string,
   classId: string,
   subjectId: string,
   date: string,
+  teacherId?: string,
 ): Promise<SubjectDay> {
   const day = await resolveClassDay(schoolId, classId, date);
   const byNo = new Map<number, SubjectDayLesson>();
   for (const l of day.lessons) {
     if (l.subjectId !== subjectId) continue;
+    if (teacherId && l.teacherId !== teacherId) continue;
     const prev = byNo.get(l.lessonNo);
     // Bir raqamda bir nechta guruh bo'lsa: bekor qilinmagani va guruhsizi ustun
     if (prev && (!prev.cancelled || l.cancelled)) continue;

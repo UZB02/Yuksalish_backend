@@ -19,7 +19,13 @@ import { settingsService } from '../settings/settings.service';
 import type { ScoringSettings } from '../settings/scoring.settings';
 import { withinEditWindow } from '../scores/scores.rules';
 import { teacherLessons } from '../timetable/timetable.resolver';
-import { assertCanGradeOn, lessonOptions, pickLessonNo, subjectDay } from './grades.lesson';
+import {
+  assertCanGradeOn,
+  gradingTeacher,
+  lessonOptions,
+  pickLessonNo,
+  subjectDay,
+} from './grades.lesson';
 import { canEditAnyGrade, checkDate, checkGradeValue, isGradeEditable } from './grades.rules';
 
 type Actor = Ctx['actor'];
@@ -117,6 +123,12 @@ const conflict = () =>
     { path: 'studentId', message: 'Bu kun/dars uchun baho mavjud' },
   ]);
 
+/** Boshqa o'qituvchi (shu fandan) allaqachon baho qo'ygan: o'qituvchi uni jimgina almashtira olmaydi */
+async function otherTeacherMessage(g: { teacherId: unknown }): Promise<string> {
+  const t = await User.findById(g.teacherId).select('fullName').lean();
+  return `Bu o'quvchiga shu fandan shu darsga ${t?.fullName ?? "boshqa o'qituvchi"} allaqachon baho qo'ygan`;
+}
+
 async function loadClass(schoolId: string, classId: string): Promise<ClassDoc> {
   const cls = isId(classId) ? await ClassModel.findOne({ _id: classId, schoolId }) : null;
   if (!cls) throw AppError.notFound('Sinf topilmadi');
@@ -147,6 +159,7 @@ export const gradesService = {
       subjectId: string;
       date?: string;
       lessonNo?: number;
+      teacherId?: string;
       value: number;
       comment?: string | null;
     },
@@ -165,23 +178,36 @@ export const gradesService = {
     assertGradable(student, cls, yearId);
 
     const date = input.date ?? todayTashkent();
-    const day = await subjectDay(schoolId, String(student.classId), subject.id as string, date);
+    const scope = await gradingTeacher(ctx.actor, student.classId, subject._id, input.teacherId);
+    const day = await subjectDay(
+      schoolId,
+      String(student.classId),
+      subject.id as string,
+      date,
+      scope,
+    );
     await assertCanGradeOn(ctx.actor, student.classId, subject._id, day, input.lessonNo ?? null);
     throwValidation([
       ...checkDate(settings, date, todayTashkent()),
       ...checkGradeValue(input.value),
     ]);
     const lessonNo = pickLessonNo(day, input.lessonNo, true) as number;
-    if (
-      await SubjectGrade.exists({
-        schoolId,
-        studentId: student._id,
-        subjectId: subject._id,
-        date,
-        lessonNo,
-        isDeleted: false,
-      })
-    ) {
+    const dup = await SubjectGrade.findOne({
+      schoolId,
+      studentId: student._id,
+      subjectId: subject._id,
+      date,
+      lessonNo,
+      isDeleted: false,
+    })
+      .select('teacherId')
+      .lean();
+    if (dup) {
+      if (String(dup.teacherId) !== ctx.actor.id) {
+        throw AppError.conflict(await otherTeacherMessage(dup), [
+          { path: 'studentId', message: "Bu kun/dars uchun boshqa o'qituvchi baho qo'ygan" },
+        ]);
+      }
       throw conflict();
     }
     let doc: SubjectGradeDoc;
@@ -296,6 +322,7 @@ export const gradesService = {
       subjectId: string;
       date?: string;
       lessonNo?: number;
+      teacherId?: string;
       items: { studentId: string; value: number; comment?: string | null }[];
     },
   ) {
@@ -303,7 +330,8 @@ export const gradesService = {
     const cls = await loadClass(schoolId, input.classId);
     const subject = await loadSubject(schoolId, input.subjectId);
     const date = input.date ?? todayTashkent();
-    const day = await subjectDay(schoolId, cls.id as string, subject.id as string, date);
+    const scope = await gradingTeacher(ctx.actor, cls._id, subject._id, input.teacherId);
+    const day = await subjectDay(schoolId, cls.id as string, subject.id as string, date, scope);
     await assertCanGradeOn(ctx.actor, cls._id, subject._id, day, input.lessonNo ?? null);
     const yearId = await activeYearId(schoolId);
     if (cls.isArchived || !yearId || String(cls.academicYearId) !== yearId) {
@@ -331,6 +359,7 @@ export const gradesService = {
     const now = clock.now();
     let created = 0;
     let updated = 0;
+    let otherTeacher = 0;
 
     for (const item of input.items) {
       const fail = (code: ErrorCode, message: string) =>
@@ -358,6 +387,12 @@ export const gradesService = {
       try {
         const prev = existingBy.get(item.studentId);
         if (prev) {
+          // O'qituvchi boshqa o'qituvchining bahosini jimgina almashtirmaydi (admin grades.edit bilan mumkin)
+          if (ctx.actor.role === 'teacher' && String(prev.teacherId) !== ctx.actor.id) {
+            otherTeacher++;
+            fail('CONFLICT', await otherTeacherMessage(prev));
+            continue;
+          }
           if (!isGradeEditable(prev, ctx.actor, settings, now)) {
             fail(
               'FORBIDDEN',
@@ -390,6 +425,12 @@ export const gradesService = {
       }
     }
 
+    if (otherTeacher > 0 && created + updated === 0 && failed.length === otherTeacher) {
+      throw AppError.conflict(
+        failed[0]?.message ?? "Bu o'quvchiga boshqa o'qituvchi allaqachon baho qo'ygan",
+        failed.map((f) => ({ path: `items.${f.studentId}`, message: f.message })),
+      );
+    }
     await auditService.log({
       userId: ctx.actor.id,
       schoolId,
@@ -513,12 +554,13 @@ export const gradesService = {
   async sheet(
     actor: Actor,
     schoolId: string,
-    q: { classId: string; subjectId: string; date?: string; lessonNo?: number },
+    q: { classId: string; subjectId: string; date?: string; lessonNo?: number; teacherId?: string },
   ) {
     const cls = await loadClass(schoolId, q.classId);
     const subject = await loadSubject(schoolId, q.subjectId);
     const day = q.date ?? todayTashkent();
-    const sd = await subjectDay(schoolId, cls.id as string, subject.id as string, day);
+    const scope = await gradingTeacher(actor, cls._id, subject._id, q.teacherId);
+    const sd = await subjectDay(schoolId, cls.id as string, subject.id as string, day, scope);
     // Bir nechta dars bo'lib tanlanmagan bo'lsa lessonNo = null (mijoz tanlashi kerak)
     const lessonNo = pickLessonNo(sd, q.lessonNo, false);
     await assertCanGradeOn(actor, cls._id, subject._id, sd, lessonNo);

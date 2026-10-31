@@ -1,4 +1,6 @@
 import { SubjectGrade, LEGACY_GRADE_INDEX } from '../models/SubjectGrade';
+import { ClassSubject, LEGACY_CLASS_SUBJECT_INDEX } from '../models/ClassSubject';
+import { LessonOverride, LEGACY_OVERRIDE_INDEX } from '../models/LessonOverride';
 import { logger } from '../core/logger';
 import { rechainAllClasses } from '../modules/timetable/timetable.chain';
 
@@ -26,6 +28,31 @@ export async function runMigrations(): Promise<void> {
   try {
     await col.dropIndex(LEGACY_GRADE_INDEX);
     logger.info({ index: LEGACY_GRADE_INDEX }, "Eski SubjectGrade indeksi o'chirildi");
+  } catch (e) {
+    if (!isMissing(e)) throw e;
+  }
+  // Ko'p o'qituvchi: sinf+fan unique indeksi (bitta o'qituvchi) -> sinf+fan+o'qituvchi.
+  // Eski indeks o'chirilmasa ikkinchi o'qituvchi biriktirilmaydi; yangisini ensureIndexes() yaratadi.
+  try {
+    await ClassSubject.collection.dropIndex(LEGACY_CLASS_SUBJECT_INDEX);
+    logger.info({ index: LEGACY_CLASS_SUBJECT_INDEX }, "Eski ClassSubject indeksi o'chirildi");
+  } catch (e) {
+    if (!isMissing(e)) throw e;
+  }
+  // Dars almashtirishlari: bir slotda bir nechta dars bo'lishi mumkin -> unique (slot + target o'qituvchi).
+  try {
+    await LessonOverride.collection.dropIndex(LEGACY_OVERRIDE_INDEX);
+    logger.info({ index: LEGACY_OVERRIDE_INDEX }, "Eski LessonOverride indeksi o'chirildi");
+  } catch (e) {
+    if (!isMissing(e)) throw e;
+  }
+  // Eski qo'shimcha (extra) darslarning targeti = o'zining o'qituvchisi/fani (aniq hisoblanadi).
+  // Eski substitute/replace/cancel yozuvlarida target qolmaydi (null): ular slotdagi birinchi darsga qo'llanadi.
+  try {
+    await LessonOverride.collection.updateMany(
+      { type: 'extra', targetTeacherId: { $exists: false } },
+      [{ $set: { targetTeacherId: '$teacherId', targetSubjectId: '$subjectId' } }],
+    );
   } catch (e) {
     if (!isMissing(e)) throw e;
   }

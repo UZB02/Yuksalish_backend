@@ -8,6 +8,8 @@ export const rowOf = (d: {
   date: string;
   lessonNo: number;
   groupKey?: string | null;
+  targetTeacherId?: unknown;
+  targetSubjectId?: unknown;
   type: LessonOverrideRow['type'];
   subjectId?: unknown;
   teacherId?: unknown;
@@ -19,6 +21,8 @@ export const rowOf = (d: {
   date: d.date,
   lessonNo: d.lessonNo,
   groupKey: d.groupKey ?? null,
+  targetTeacherId: d.targetTeacherId ? String(d.targetTeacherId) : null,
+  targetSubjectId: d.targetSubjectId ? String(d.targetSubjectId) : null,
   type: d.type,
   subjectId: d.subjectId ? String(d.subjectId) : null,
   teacherId: d.teacherId ? String(d.teacherId) : null,

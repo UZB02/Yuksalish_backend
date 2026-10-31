@@ -42,6 +42,9 @@ export interface LessonOverrideRow {
   date: string;
   lessonNo: number;
   groupKey: string | null;
+  /** Qaysi darsga qaratilgan: jadvaldagi asl dars o'qituvchisi (eski yozuvlarda yo'q -> slotdagi birinchi dars) */
+  targetTeacherId?: string | null;
+  targetSubjectId?: string | null;
   type: OverrideType;
   subjectId?: string | null;
   teacherId?: string | null;
@@ -67,8 +70,11 @@ const slotKey = (classId: string, date: string, lessonNo: number, groupKey: stri
 
 /**
  * Almashtirishlarni qo'llash: jadval darsiga substitute/replace/cancel, bo'sh slotga extra.
+ * Slotda bir nechta dars bo'lishi mumkin: o'zgartirish `targetTeacherId` (asl dars o'qituvchisi) bo'yicha
+ * aniq bir darsga qo'llanadi; target yo'q (eski yozuv) bo'lsa slotdagi birinchi darsga.
  * Jadvalda mos dars topilmasa (jadval keyin o'zgargan) substitute/replace/cancel e'tiborsiz qoladi;
- * extra esa slotda jadval darsi bo'lsa e'tiborsiz qoladi. Ro'yxat bo'sh bo'lsa lessons o'zgarishsiz qaytadi.
+ * extra esa slotda jadval darsi bo'lsa e'tiborsiz qoladi (bo'sh slotga bir nechta extra mumkin).
+ * Ro'yxat bo'sh bo'lsa lessons o'zgarishsiz qaytadi.
  */
 export function applyOverrides(
   lessons: ResolvedLesson[],
@@ -76,12 +82,19 @@ export function applyOverrides(
 ): ResolvedLesson[] {
   if (!overrides.length) return lessons;
   const out = lessons.map((l) => ({ ...l }));
-  const bySlot = new Map(out.map((l) => [slotKey(l.classId, l.date, l.lessonNo, l.groupKey), l]));
+  // Slot -> jadval darslari (asl o'qituvchi bilan: o'rinbosar qo'llangach ham target topilsin)
+  const bySlot = new Map<string, { lesson: ResolvedLesson; teacher0: string }[]>();
+  for (const l of out) {
+    const k = slotKey(l.classId, l.date, l.lessonNo, l.groupKey);
+    const list = bySlot.get(k) ?? [];
+    list.push({ lesson: l, teacher0: l.teacherId });
+    bySlot.set(k, list);
+  }
   const extras: ResolvedLesson[] = [];
   for (const o of overrides) {
-    const base = bySlot.get(slotKey(o.classId, o.date, o.lessonNo, o.groupKey));
+    const at = bySlot.get(slotKey(o.classId, o.date, o.lessonNo, o.groupKey)) ?? [];
     if (o.type === 'extra') {
-      if (base || !o.subjectId || !o.teacherId) continue;
+      if (at.length || !o.subjectId || !o.teacherId) continue;
       extras.push({
         classId: o.classId,
         date: o.date,
@@ -99,7 +112,9 @@ export function applyOverrides(
       });
       continue;
     }
-    if (!base) continue;
+    const hit = o.targetTeacherId ? at.find((x) => x.teacher0 === o.targetTeacherId) : at[0];
+    if (!hit) continue;
+    const base = hit.lesson;
     base.source = 'override';
     base.overrideType = o.type;
     base.overrideId = o.id;
@@ -117,11 +132,18 @@ export function applyOverrides(
     }
     if (o.room) base.room = o.room;
   }
-  return [...out, ...extras].sort(
-    (a, b) =>
-      a.date.localeCompare(b.date) || a.lessonNo - b.lessonNo || a.classId.localeCompare(b.classId),
-  );
+  return sortLessons([...out, ...extras]);
 }
+
+/** Tartib: sana, dars raqami, sinf, o'qituvchi (slotda bir nechta dars barqaror tartibda) */
+const sortLessons = (list: ResolvedLesson[]) =>
+  list.sort(
+    (a, b) =>
+      a.date.localeCompare(b.date) ||
+      a.lessonNo - b.lessonNo ||
+      a.classId.localeCompare(b.classId) ||
+      a.teacherId.localeCompare(b.teacherId),
+  );
 
 export interface SliceEntry {
   weekday: number;
@@ -239,10 +261,7 @@ export function lessonsFromSlices(
       }
     }
   }
-  return out.sort(
-    (a, b) =>
-      a.date.localeCompare(b.date) || a.lessonNo - b.lessonNo || a.classId.localeCompare(b.classId),
-  );
+  return sortLessons(out);
 }
 
 /** Sinflar to'plami uchun davr darslari (bitta so'rov) */
@@ -287,16 +306,22 @@ export async function resolveClassDay(
 export const resolveLessons = (schoolId: string, classId: string, date: string) =>
   resolveClassesRange(schoolId, [classId], date, date);
 
-/** Bitta dars (sinf, sana, dars raqami, guruh) yoki null */
+/**
+ * Bitta dars (sinf, sana, dars raqami, guruh) yoki null. Slotda bir nechta dars bo'lsa `teacherId`
+ * (joriy o'qituvchi) berilgan darsni, bo'lmasa birinchisini qaytaradi.
+ */
 export async function resolveLesson(
   schoolId: string,
   classId: string,
   date: string,
   lessonNo: number,
   groupKey: string | null = null,
+  teacherId?: string,
 ): Promise<ResolvedLesson | null> {
-  const all = await resolveLessons(schoolId, classId, date);
-  return all.find((l) => l.lessonNo === lessonNo && l.groupKey === groupKey) ?? null;
+  const all = (await resolveLessons(schoolId, classId, date)).filter(
+    (l) => l.lessonNo === lessonNo && l.groupKey === groupKey,
+  );
+  return (teacherId ? all.find((l) => l.teacherId === teacherId) : undefined) ?? all[0] ?? null;
 }
 
 /**

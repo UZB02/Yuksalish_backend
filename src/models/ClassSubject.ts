@@ -1,6 +1,9 @@
 import { HydratedDocument, Schema, Types, model } from 'mongoose';
 
-/** Sinf + fan = bitta o'qituvchi (masalan "7-A: Matematika — Aliyev") */
+/**
+ * Sinf + fan + o'qituvchi (masalan "7-A: Ingliz tili — Aliyeva"). Bir sinfda bir fanga bir nechta
+ * o'qituvchi biriktirilishi mumkin: har bir (fan, o'qituvchi) juftligi alohida kurs sifatida ishlaydi.
+ */
 export interface IClassSubject {
   schoolId: Types.ObjectId;
   classId: Types.ObjectId;
@@ -11,6 +14,10 @@ export interface IClassSubject {
   updatedAt: Date;
 }
 export type ClassSubjectDoc = HydratedDocument<IClassSubject>;
+
+/** Bir o'qituvchi davridagi unique indeks (classId+subjectId) nomi — ishga tushishda o'chiriladi */
+export const LEGACY_CLASS_SUBJECT_INDEX = 'classId_1_subjectId_1';
+export const CLASS_SUBJECT_UNIQUE_INDEX = 'unique_class_subject_teacher';
 
 const classSubjectSchema = new Schema<IClassSubject>(
   {
@@ -23,8 +30,11 @@ const classSubjectSchema = new Schema<IClassSubject>(
   { timestamps: true },
 );
 
-// Sinfdagi har bir fanga bittadan o'qituvchi
-classSubjectSchema.index({ classId: 1, subjectId: 1 }, { unique: true });
+// Aynan bir xil (fan, o'qituvchi) juftligi sinfga bir marta biriktiriladi
+classSubjectSchema.index(
+  { classId: 1, subjectId: 1, teacherId: 1 },
+  { unique: true, name: CLASS_SUBJECT_UNIQUE_INDEX },
+);
 classSubjectSchema.index({ schoolId: 1, teacherId: 1 });
 classSubjectSchema.index({ schoolId: 1, subjectId: 1 });
 

@@ -95,6 +95,8 @@ export const createOverrideBody = z.object({
   classId: objectIdSchema,
   date: dateStrSchema,
   lessonNo: lessonNoSchema,
+  /** Slotda bir nechta dars bo'lsa: jadvaldagi asl dars o'qituvchisi (qaysi darsga qo'llanishi) */
+  targetTeacherId: objectIdSchema.nullish(),
   type: z.enum(['substitute', 'replace', 'cancel', 'extra']),
   subjectId: objectIdSchema.nullish(),
   teacherId: objectIdSchema.nullish(),
@@ -104,7 +106,7 @@ export const createOverrideBody = z.object({
 export type CreateOverrideInput = z.infer<typeof createOverrideBody>;
 export const moveOverrideBody = z.object({
   classId: objectIdSchema,
-  from: slotInput,
+  from: slotInput.extend({ targetTeacherId: objectIdSchema.nullish() }),
   to: slotInput,
   teacherId: objectIdSchema.nullish(),
   reason: optionalText(200),

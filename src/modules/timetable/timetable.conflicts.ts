@@ -109,9 +109,14 @@ export async function analyzeTargets(
   ]);
   const subjectActive = new Map(subjects.map((s) => [String(s._id), s.isActive]));
   const teacherActive = new Map(teachers.map((t) => [String(t._id), t.isActive]));
-  const assignment = new Map(
-    assigned.map((a) => [`${a.classId}:${a.subjectId}`, String(a.teacherId)]),
-  );
+  // Sinf+fan -> biriktirilgan o'qituvchilar to'plami (bir fanga bir nechta o'qituvchi bo'lishi mumkin)
+  const assignment = new Map<string, Set<string>>();
+  for (const a of assigned) {
+    const k = `${a.classId}:${a.subjectId}`;
+    const set = assignment.get(k) ?? new Set<string>();
+    set.add(String(a.teacherId));
+    assignment.set(k, set);
+  }
 
   const pool: AnalysisTarget[] = [
     ...others.map((v) => ({
@@ -200,13 +205,13 @@ export async function analyzeTargets(
           },
         });
       }
-      const assignedTeacher = assignment.get(`${t.classId}:${e.subjectId}`);
-      if (assignedTeacher !== e.teacherId) {
+      const assignedTeachers = assignment.get(`${t.classId}:${e.subjectId}`);
+      if (!assignedTeachers?.has(e.teacherId)) {
         list.push({
           ...base,
           code: 'teacher_not_assigned',
           severity: 'warning',
-          message: assignedTeacher
+          message: assignedTeachers
             ? "Fan boshqa o'qituvchiga biriktirilgan"
             : "Fan sinfga biriktirilmagan yoki o'qituvchi biriktirilmagan",
         });
@@ -237,7 +242,8 @@ export async function analyzeTargets(
 export function dedupeWarnings(list: TimetableWarning[]): TimetableWarning[] {
   const seen = new Set<string>();
   return list.filter((w) => {
-    const k = `${w.code}:${w.weekday}:${w.lessonNo}:${w.other?.classId ?? ''}`;
+    // Bir katakda bir nechta dars bo'lishi mumkin: o'qituvchi va fan ham kalitga kiradi
+    const k = `${w.code}:${w.weekday}:${w.lessonNo}:${w.teacherId}:${w.subjectId}:${w.other?.classId ?? ''}`;
     if (seen.has(k)) return false;
     seen.add(k);
     return true;

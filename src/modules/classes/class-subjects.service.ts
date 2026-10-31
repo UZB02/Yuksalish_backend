@@ -17,12 +17,13 @@ export interface ClassSubjectDto {
 }
 
 /**
- * Sinf+fan -> o'qituvchi biriktirishlari.
+ * Sinf+fan+o'qituvchi biriktirishlari.
  *
  * Sinfga kirish huquqi (o'quvchilar, davomat, ...) hozirgidek `Class.teacherIds` orqali beriladi.
  * Invariant: fanga biriktirilgan o'qituvchi har doim shu sinf `teacherIds` ichida bo'ladi
  * (biriktirilganda avtomatik qo'shiladi; sinfdan chiqarilganda uning biriktirishlari ham o'chadi).
  * Biriktirish olib tashlansa o'qituvchi `teacherIds` da qoladi (uni alohida chiqarish mumkin).
+ * Bir sinfda bir fanning bir nechta o'qituvchisi bo'lishi mumkin (har bir juftlik alohida kurs).
  */
 
 /** {classId -> biriktirishlar} (fan va o'qituvchi nomlari bilan) */
@@ -46,6 +47,10 @@ export async function loadClassSubjects(classIds: Types.ObjectId[]) {
       (sMap.get(String(a.subjectId))?.order ?? 0) - (sMap.get(String(b.subjectId))?.order ?? 0) ||
       (sMap.get(String(a.subjectId))?.name ?? '').localeCompare(
         sMap.get(String(b.subjectId))?.name ?? '',
+        'uz',
+      ) ||
+      (tMap.get(String(a.teacherId)) ?? '').localeCompare(
+        tMap.get(String(b.teacherId)) ?? '',
         'uz',
       ),
   );
@@ -76,10 +81,13 @@ export async function removeTeacherAssignments(classIds: string[], teacherId: Ty
   await ClassSubject.deleteMany({ classId: { $in: classIds }, teacherId });
 }
 
+const pairKey = (subjectId: string, teacherId: string) => `${subjectId}:${teacherId}`;
+
 /**
  * Sinfning fan-o'qituvchi ro'yxatini to'liq almashtiradi.
  * Tekshiruvlar: fan global yoki shu maktabniki va faol; o'qituvchi shu maktabning faol o'qituvchisi;
- * bir fan bir marta. O'zgarmagan (avvalgi) biriktirish nofaol fan/o'qituvchi bilan ham saqlanadi.
+ * aynan bir xil (fan, o'qituvchi) juftligi bir marta. Bir fanga bir nechta o'qituvchi biriktirish mumkin
+ * (har bir juftlik alohida kurs). O'zgarmagan (avvalgi) biriktirish nofaol fan/o'qituvchi bilan ham saqlanadi.
  */
 export async function setClassSubjects(
   ctx: Ctx,
@@ -88,13 +96,22 @@ export async function setClassSubjects(
   items: { subjectId: string; teacherId: string }[],
 ): Promise<void> {
   const errs: ErrorDetail[] = [];
-  const subjectIds = items.map((i) => i.subjectId);
-  if (new Set(subjectIds).size !== subjectIds.length) {
-    errs.push({ path: 'subjects', message: 'Bir fan sinfga faqat bir marta biriktiriladi' });
-  }
+  const seenPairs = new Set<string>();
+  items.forEach((it, idx) => {
+    const k = pairKey(it.subjectId, it.teacherId);
+    if (seenPairs.has(k)) {
+      errs.push({
+        path: `subjects.${idx}`,
+        message: "Bu fan shu o'qituvchiga sinfda allaqachon biriktirilgan",
+      });
+    }
+    seenPairs.add(k);
+  });
   const existing = await ClassSubject.find({ classId: cls._id });
-  const prev = new Map(existing.map((e) => [String(e.subjectId), String(e.teacherId)]));
+  const prevPairs = new Set(existing.map((e) => pairKey(String(e.subjectId), String(e.teacherId))));
+  const prevSubjects = new Set(existing.map((e) => String(e.subjectId)));
 
+  const subjectIds = items.map((i) => i.subjectId);
   const ids = uniq([...subjectIds, ...items.map((i) => i.teacherId)]);
   if (ids.some((i) => !isId(i)))
     errs.push({ path: 'subjects', message: "Identifikator noto'g'ri" });
@@ -111,10 +128,10 @@ export async function setClassSubjects(
   const sMap = new Map(subjects.map((s) => [s.id as string, s]));
   const tMap = new Map(teachers.map((t) => [t.id as string, t]));
   items.forEach((it, idx) => {
-    const unchanged = prev.get(it.subjectId) === it.teacherId;
+    const unchanged = prevPairs.has(pairKey(it.subjectId, it.teacherId));
     const s = sMap.get(it.subjectId);
     if (!s) errs.push({ path: `subjects.${idx}.subjectId`, message: 'Fan topilmadi' });
-    else if (!s.isActive && prev.get(it.subjectId) === undefined) {
+    else if (!s.isActive && !prevSubjects.has(it.subjectId)) {
       errs.push({ path: `subjects.${idx}.subjectId`, message: 'Fan faol emas' });
     }
     const t = tMap.get(it.teacherId);
@@ -129,20 +146,18 @@ export async function setClassSubjects(
   });
   if (errs.length) throw AppError.validation("Fanlar ro'yxati noto'g'ri", errs);
 
-  const wanted = new Map(items.map((i) => [i.subjectId, i.teacherId]));
-  const removed = [...prev.keys()].filter((s) => !wanted.has(s));
-  const changed = items.filter((i) => prev.get(i.subjectId) !== i.teacherId);
+  const removed = existing.filter(
+    (e) => !seenPairs.has(pairKey(String(e.subjectId), String(e.teacherId))),
+  );
+  const added = items.filter((i) => !prevPairs.has(pairKey(i.subjectId, i.teacherId)));
 
   if (removed.length) {
-    await ClassSubject.deleteMany({ classId: cls._id, subjectId: { $in: removed } });
+    await ClassSubject.deleteMany({ _id: { $in: removed.map((r) => r._id) } });
   }
-  for (const it of changed) {
+  for (const it of added) {
     await ClassSubject.updateOne(
-      { classId: cls._id, subjectId: it.subjectId },
-      {
-        $set: { teacherId: it.teacherId },
-        $setOnInsert: { schoolId, academicYearId: cls.academicYearId },
-      },
+      { classId: cls._id, subjectId: it.subjectId, teacherId: it.teacherId },
+      { $setOnInsert: { schoolId, academicYearId: cls.academicYearId } },
       { upsert: true },
     );
   }
@@ -157,14 +172,19 @@ export async function setClassSubjects(
       (t) => new Types.ObjectId(t),
     );
   }
-  if (removed.length || changed.length) {
+  if (removed.length || added.length) {
     await auditService.log({
       userId: ctx.actor.id,
       schoolId,
       action: 'class.subjects',
       entity: 'class',
       entityId: cls.id,
-      before: { subjects: [...prev].map(([subjectId, teacherId]) => ({ subjectId, teacherId })) },
+      before: {
+        subjects: existing.map((e) => ({
+          subjectId: String(e.subjectId),
+          teacherId: String(e.teacherId),
+        })),
+      },
       after: { subjects: items },
       ip: ctx.ip,
     });

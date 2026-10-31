@@ -183,7 +183,8 @@ describe('CRUD va tekshiruvlar', () => {
     expect(await bad([e(1, 12, math.id, t1.id)])).toBe(200);
     expect(await bad([e(1, 13, math.id, t1.id)])).toBe(400);
     expect(await bad([e(0, 1, math.id, t1.id)])).toBe(400);
-    expect(await bad([e(1, 1, math.id, t1.id), e(1, 1, eng.id, t2.id)])).toBe(400);
+    // bir o'qituvchi bir katakda ikki marta bo'lmaydi (turli o'qituvchilar bir katakda mumkin)
+    expect(await bad([e(1, 1, math.id, t1.id), e(1, 1, eng.id, t1.id)])).toBe(400);
     expect(await bad([e(1, 1, math.id, tOther.id)])).toBe(400);
     expect(await bad([e(1, 1, '0'.repeat(24), t1.id)])).toBe(400);
     expect(await bad([{ ...e(1, 1, math.id, t1.id), groupKey: 'g1' }])).toBe(400);

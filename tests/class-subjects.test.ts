@@ -70,6 +70,40 @@ const getClass = (t: string, id: string) =>
   request(app).get(`/api/v1/classes/${id}`).set(bearer(t));
 
 describe("Sinfga fan + o'qituvchi biriktirish", () => {
+  it("bir fanga bir nechta o'qituvchi: ikkalasi saqlanadi, DTO'da ikkala juftlik, o'qituvchi almashtirilganda faqat o'sha juftlik o'zgaradi", async () => {
+    const res = await putSubjects(admin, cls.id, [
+      { subjectId: math.id, teacherId: tMath.id },
+      { subjectId: math.id, teacherId: tPhys.id },
+    ]);
+    expect(res.status).toBe(200);
+    expect(res.body.data.subjects).toHaveLength(2);
+    expect(res.body.data.subjects.map((s: { teacherId: string }) => s.teacherId).sort()).toEqual(
+      [tMath.id, tPhys.id].sort(),
+    );
+    expect(await ClassSubject.countDocuments({ classId: cls.id })).toBe(2);
+    const c = await ClassModel.findById(cls.id);
+    expect(c?.teacherIds.map(String)).toEqual(expect.arrayContaining([tMath.id, tPhys.id]));
+    // bitta juftlikni olib tashlash ikkinchisiga tegmaydi
+    const r2 = await putSubjects(admin, cls.id, [{ subjectId: math.id, teacherId: tPhys.id }]);
+    expect(r2.status).toBe(200);
+    const rows = await ClassSubject.find({ classId: cls.id });
+    expect(rows).toHaveLength(1);
+    expect(String(rows[0].teacherId)).toBe(tPhys.id);
+  });
+
+  it("unique indeks: (sinf, fan, o'qituvchi) takrorlanmaydi, lekin (sinf, fan) takrorlanishi mumkin", async () => {
+    await ClassSubject.syncIndexes();
+    const base = {
+      schoolId: school.id,
+      classId: cls.id,
+      academicYearId: year.id,
+      subjectId: math.id,
+    };
+    await ClassSubject.create({ ...base, teacherId: tMath.id });
+    await ClassSubject.create({ ...base, teacherId: tPhys.id });
+    await expect(ClassSubject.create({ ...base, teacherId: tMath.id })).rejects.toThrow(/E11000/);
+  });
+
   it("biriktiradi: DTO'da subjects, o'qituvchilar sinf teacherIds ga avtomatik qo'shiladi, audit", async () => {
     const res = await putSubjects(admin, cls.id, [
       { subjectId: math.id, teacherId: tMath.id },
@@ -117,15 +151,16 @@ describe("Sinfga fan + o'qituvchi biriktirish", () => {
     expect(await ClassSubject.countDocuments({ classId: cls.id })).toBe(0);
   });
 
-  it("validatsiya: takroriy fan, boshqa maktab o'qituvchisi/fani, nofaol fan va o'qituvchi, noto'g'ri id", async () => {
+  it("validatsiya: takroriy (fan, o'qituvchi) juftligi, boshqa maktab o'qituvchisi/fani, nofaol fan va o'qituvchi, noto'g'ri id", async () => {
     const bad = async (subjects: object[]) => {
       const r = await putSubjects(admin, cls.id, subjects);
       expect(r.status, JSON.stringify(subjects)).toBe(400);
       expect(r.body.error.code).toBe('VALIDATION_ERROR');
     };
+    // Aynan bir xil juftlik rad etiladi (bir fanga boshqa o'qituvchi esa mumkin: ko'p o'qituvchi)
     await bad([
       { subjectId: math.id, teacherId: tMath.id },
-      { subjectId: math.id, teacherId: tPhys.id },
+      { subjectId: math.id, teacherId: tMath.id },
     ]);
     await bad([{ subjectId: math.id, teacherId: tOther.id }]); // boshqa maktab o'qituvchisi
     await bad([{ subjectId: foreignSubj.id, teacherId: tMath.id }]); // boshqa maktab fani

@@ -41,8 +41,12 @@ import {
 } from './attendance.subjects';
 import {
   canAccessClassOn,
+  chooseLesson,
   decideTake,
   enrichLessons,
+  isAdminActor,
+  isHomeroomOf,
+  isParallelSlot,
   loadSlotContext,
   pickLesson,
   type TakeDecision,
@@ -195,6 +199,29 @@ const throwDenied = (d: TakeDecision) => {
 /** Qo'lda olingan dars yozuvi uchun o'qituvchi snapshoti: o'qituvchi o'zi, aks holda null */
 const manualTeacher = (actor: Actor): string | null => (actor.role === 'teacher' ? actor.id : null);
 
+/** Parallel darsda boshqa o'qituvchi belgilagan yozuv uchun xabar */
+async function crossLessonMessage(rec: AttendanceRecordDoc): Promise<string> {
+  const [teacher, subject] = await Promise.all([
+    rec.teacherId ? User.findById(rec.teacherId).select('fullName').lean() : null,
+    rec.subjectId ? Subject.findById(rec.subjectId).select('name').lean() : null,
+  ]);
+  const who = teacher?.fullName ?? "boshqa o'qituvchi";
+  const what = subject ? ` (${subject.name})` : '';
+  return `Bu o'quvchi shu soatda ${who}${what} darsida allaqachon belgilangan`;
+}
+
+/** Varaqda: yozuv tanlangan darsdan boshqa o'qituvchiga tegishli bo'lsa */
+function otherLessonOf(
+  rec: {
+    teacher: { id: string; fullName: string } | null;
+    subject: { id: string; name: string } | null;
+  } | null,
+  lesson: { teacherId: string } | null,
+) {
+  if (!rec?.teacher || !lesson || rec.teacher.id === lesson.teacherId) return null;
+  return { teacher: rec.teacher, subject: rec.subject };
+}
+
 const scheduledSubjectConflict = async (subjectId: string) => {
   const name = (await Subject.findById(subjectId).select('name').lean())?.name ?? '';
   return AppError.conflict(
@@ -214,6 +241,8 @@ export const attendanceService = {
       date?: string;
       lessonNo?: number;
       subjectId?: string;
+      /** Slotda bir nechta dars bo'lsa: qaysi o'qituvchining darsi (admin / sinf rahbari) */
+      teacherId?: string;
       items: {
         studentId: string;
         statusId: string;
@@ -237,9 +266,26 @@ export const attendanceService = {
     const lessonNo = unit.lessonNo;
 
     // Dars rejimi: jadval (agar yoqilgan bo'lsa) bo'yicha kim va qaysi fanga davomat olishi mumkin
-    const lesson = settings.mode === 'lesson' ? pickLesson(slot, lessonNo) : null;
+    const choice =
+      settings.mode === 'lesson'
+        ? chooseLesson(slot, lessonNo, {
+            actorId: ctx.actor.role === 'teacher' ? ctx.actor.id : null,
+            teacherId: input.teacherId,
+            subjectId: input.subjectId,
+          })
+        : { lesson: null, ambiguous: false };
+    const lesson = choice.lesson;
+    if (choice.ambiguous) {
+      throw AppError.validation("Bu soatda bir nechta dars bor: o'qituvchini tanlang", [
+        { path: 'teacherId', message: "Bu soatda bir nechta dars bor: o'qituvchini tanlang" },
+      ]);
+    }
     const decision = settings.mode === 'lesson' ? decideTake(ctx.actor, cls, slot, lesson) : null;
     if (decision) throwDenied(decision);
+    // Bir vaqtda bir nechta dars (parallel o'qituvchilar): "bir dars = bir fan" qoidasi o'quvchi darajasida
+    const parallel = settings.mode === 'lesson' && isParallelSlot(slot, lessonNo);
+    const privileged =
+      isAdminActor(ctx.actor) || (isHomeroomOf(cls, ctx.actor) && slot.tt.homeroomCanTakeAnyLesson);
     const resolved = decision && lesson && !decision.manual ? lesson : null;
     throwValidation(checkSubjectInput(settings, input.subjectId, !!resolved));
 
@@ -248,7 +294,9 @@ export const attendanceService = {
     let teacherId: string | null = null;
     let source: AttendanceSource | null = null;
     if (resolved && (!input.subjectId || input.subjectId === resolved.subjectId)) {
-      await assertLessonSubjectFree(schoolId, cls._id, date, lessonNo, resolved.subjectId);
+      if (!parallel) {
+        await assertLessonSubjectFree(schoolId, cls._id, date, lessonNo, resolved.subjectId);
+      }
       subjectId = resolved.subjectId;
       teacherId = resolved.teacherId;
       source = resolved.source;
@@ -270,7 +318,9 @@ export const attendanceService = {
         input.subjectId,
         used.map((u) => String(u)),
       );
-      await assertLessonSubjectFree(schoolId, cls._id, date, lessonNo, input.subjectId);
+      if (!parallel) {
+        await assertLessonSubjectFree(schoolId, cls._id, date, lessonNo, input.subjectId);
+      }
       subjectId = input.subjectId;
       teacherId = manualTeacher(ctx.actor);
       source = 'manual';
@@ -295,6 +345,7 @@ export const attendanceService = {
     const now = clock.now();
     let created = 0;
     let updated = 0;
+    let crossConflicts = 0;
 
     for (const item of input.items) {
       const fail = (code: ErrorCode, message: string) =>
@@ -311,6 +362,19 @@ export const attendanceService = {
       seen.add(item.studentId);
       if (student.status !== 'active') {
         fail('VALIDATION_ERROR', "Faqat faol o'quvchi uchun davomat olinadi");
+        continue;
+      }
+      // Parallel darslar: o'quvchi shu soatda boshqa o'qituvchining darsida allaqachon belgilangan
+      const other = existingBy.get(item.studentId);
+      const crossLesson =
+        parallel &&
+        !!other &&
+        !!teacherId &&
+        !!other.teacherId &&
+        String(other.teacherId) !== teacherId;
+      if (crossLesson && !privileged) {
+        crossConflicts++;
+        fail('CONFLICT', await crossLessonMessage(other as AttendanceRecordDoc));
         continue;
       }
       const values: RecordValues = {
@@ -331,7 +395,8 @@ export const attendanceService = {
       }
       try {
         if (prev) {
-          if (!isEditable(prev, ctx.actor, settings, now)) {
+          // Admin / sinf rahbari boshqa o'qituvchi darsidagi belgini almashtira oladi (oxirgi yozuv g'olib)
+          if (!(crossLesson && privileged) && !isEditable(prev, ctx.actor, settings, now)) {
             fail(
               'FORBIDDEN',
               "Bu yozuvni o'zgartirishga ruxsat yo'q (muddat tugagan yoki boshqa foydalanuvchi yozgan)",
@@ -343,6 +408,10 @@ export const attendanceService = {
             // Fan o'zgargan: snapshot ham yangilanadi
             prev.subjectId = new Types.ObjectId(subjectId);
             prev.teacherId = teacherId ? new Types.ObjectId(teacherId) : null;
+            prev.source = source;
+          } else if (teacherId && prev.teacherId && String(prev.teacherId) !== teacherId) {
+            // Parallel darslarda belgi boshqa o'qituvchi darsidan olib o'tiladi
+            prev.teacherId = new Types.ObjectId(teacherId);
             prev.source = source;
           } else if (subjectId && !prev.source) {
             // Eski (snapshotsiz) yozuv
@@ -379,6 +448,13 @@ export const attendanceService = {
         if (isDuplicateKeyError(e)) fail('CONFLICT', 'Bu birlik uchun yozuv allaqachon mavjud');
         else throw e;
       }
+    }
+
+    if (crossConflicts > 0 && created + updated === 0 && failed.length === crossConflicts) {
+      throw AppError.conflict(
+        failed[0]?.message ?? "O'quvchi boshqa o'qituvchi darsida allaqachon belgilangan",
+        failed.map((f) => ({ path: `items.${f.studentId}`, message: f.message })),
+      );
     }
 
     await auditService.log({
@@ -470,7 +546,11 @@ export const attendanceService = {
       const cls = await ClassModel.findOne({ _id: doc.classId, schoolId });
       if (!cls) throw AppError.notFound('Sinf topilmadi');
       const slot = await loadSlotContext(schoolId, String(doc.classId), doc.date, settings);
-      const lesson = pickLesson(slot, doc.lessonNo);
+      const lesson = pickLesson(slot, doc.lessonNo, {
+        actorId: ctx.actor.role === 'teacher' ? ctx.actor.id : null,
+        teacherId: doc.teacherId ? String(doc.teacherId) : null,
+        subjectId: patch.subjectId,
+      });
       const decision = decideTake(ctx.actor, cls, slot, lesson);
       throwDenied(decision);
       let nextSource: AttendanceSource = 'manual';
@@ -585,7 +665,7 @@ export const attendanceService = {
     actor: Actor,
     schoolId: string,
     classId: string,
-    q: { date?: string; lessonNo?: number },
+    q: { date?: string; lessonNo?: number; teacherId?: string },
   ) {
     const notFound = AppError.notFound('Sinf topilmadi');
     if (!isId(classId)) throw notFound;
@@ -603,7 +683,14 @@ export const attendanceService = {
       slot.maxNo,
     );
     throwValidation(unit.errors);
-    const lesson = settings.mode === 'lesson' ? pickLesson(slot, unit.lessonNo) : null;
+    const choice =
+      settings.mode === 'lesson'
+        ? chooseLesson(slot, unit.lessonNo, {
+            actorId: actor.role === 'teacher' ? actor.id : null,
+            teacherId: q.teacherId,
+          })
+        : { lesson: null, ambiguous: false };
+    const lesson = choice.lesson;
     const decision = settings.mode === 'lesson' ? decideTake(actor, cls, slot, lesson) : null;
     const lessonDtos = await enrichLessons(slot.lessons, actor);
 
@@ -628,7 +715,10 @@ export const attendanceService = {
     let lessonSubject: { id: string; name: string } | null = null;
     let subjects: Awaited<ReturnType<typeof lessonSubjectOptions>> = [];
     if (settings.mode === 'lesson') {
-      lessonSubject = dtos.find((d) => d.subject)?.subject ?? null;
+      // Parallel darslarda tanlangan dars o'qituvchisining yozuvlaridagi fan (eski, o'qituvchisiz yozuvlar ham)
+      lessonSubject =
+        dtos.find((d) => d.subject && (!lesson || !d.teacherId || d.teacherId === lesson.teacherId))
+          ?.subject ?? null;
       subjects = await lessonSubjectOptions(
         actor,
         schoolId,
@@ -670,10 +760,15 @@ export const attendanceService = {
       },
       lesson: lesson
         ? (lessonDtos.find(
-            (l) => l.lessonNo === lesson.lessonNo && l.groupKey === lesson.groupKey,
+            (l) =>
+              l.lessonNo === lesson.lessonNo &&
+              l.groupKey === lesson.groupKey &&
+              l.teacherId === lesson.teacherId,
           ) ?? null)
         : null,
       lessons: lessonDtos,
+      /** Slotda bir nechta dars bor va qaysi biri ekani aniqlanmadi (admin / sinf rahbari tanlashi kerak) */
+      lessonChoiceRequired: choice.ambiguous,
       canTake: decision ? decision.canTake : true,
       cannotTakeReason: decision?.reason ?? null,
       /** Jadvaldagi fan o'rniga boshqasini tanlash mumkin (admin / sinf rahbari, suggest) */
@@ -690,6 +785,8 @@ export const attendanceService = {
         studentCode: s.studentCode ?? null,
         photo: photoUrl(s.photoId),
         record: dtoByStudent.get(s.id) ?? null,
+        /** Shu soatda boshqa o'qituvchining (parallel) darsida belgilangan bo'lsa — kim va qaysi fan */
+        otherLesson: otherLessonOf(dtoByStudent.get(s.id) ?? null, lesson),
       })),
       summary,
     };

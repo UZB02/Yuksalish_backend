@@ -88,13 +88,18 @@ export async function assertLessonSubject(
   }
   const rows = await ClassSubject.find({ classId: cls._id }).select('subjectId teacherId').lean();
   if (rows.length) {
-    const row = rows.find((r) => String(r.subjectId) === subjectId);
-    if (!row) {
+    // Bir fanga bir nechta o'qituvchi biriktirilgan bo'lishi mumkin
+    const forSubject = rows.filter((r) => String(r.subjectId) === subjectId);
+    if (!forSubject.length) {
       throw AppError.validation("Ma'lumotlar noto'g'ri", [
         { path: 'subjectId', message: 'Bu fan sinfga biriktirilmagan' },
       ]);
     }
-    if (actor.role === 'teacher' && !isHomeroom(cls, actor) && String(row.teacherId) !== actor.id) {
+    if (
+      actor.role === 'teacher' &&
+      !isHomeroom(cls, actor) &&
+      !forSubject.some((r) => String(r.teacherId) === actor.id)
+    ) {
       throw AppError.forbidden("Bu fandan dars uchun davomat olishga ruxsat yo'q");
     }
   }

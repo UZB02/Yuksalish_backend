@@ -92,14 +92,27 @@ function exporter(format: ExportFormat): RequestHandler[] {
         after: {
           type: 'journal_subject',
           format,
-          params: { classId: q.classId, subjectId: q.subjectId, from: q.from, to: q.to },
+          params: {
+            classId: q.classId,
+            subjectId: q.subjectId,
+            ...(q.teacherId ? { teacherId: q.teacherId } : {}),
+            from: q.from,
+            to: q.to,
+          },
           rowCount: grid.students.length,
         },
         ip: ctx.ip,
       });
       send(
         res,
-        safeFileName(`jurnal-${grid.class.name}-${grid.subject.name}`, q.from, q.to, format),
+        safeFileName(
+          `jurnal-${grid.class.name}-${grid.subject.name}${
+            grid.teachers.length > 1 && grid.teacher ? `-${grid.teacher.fullName}` : ''
+          }`,
+          q.from,
+          q.to,
+          format,
+        ),
         format,
         buf,
       );

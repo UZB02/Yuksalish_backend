@@ -48,11 +48,55 @@ export async function loadSlotContext(
   };
 }
 
-/** Dars raqamiga mos dars (guruhsiz birinchi, bo'lmasa istalgani) */
-export const pickLesson = (ctx: SlotContext, lessonNo: number): ResolvedLesson | null => {
+/** Slotdagi darsni tanlash ko'rsatmalari (bir slotda bir nechta dars bo'lishi mumkin) */
+export interface LessonPref {
+  /** Davomat oluvchi o'qituvchi: slotda o'z darsi bo'lsa o'sha tanlanadi */
+  actorId?: string | null;
+  /** Aniq tanlangan dars o'qituvchisi (admin / sinf rahbari tanlovi, yozuv snapshoti) */
+  teacherId?: string | null;
+  /** Fan bo'yicha toraytirish (teacherId bo'lmasa) */
+  subjectId?: string | null;
+}
+
+/** Raqamdagi (bekor qilinganlar ham) guruhsiz darslar; guruhsiz yo'q bo'lsa istalgani */
+export const lessonsAt = (ctx: SlotContext, lessonNo: number): ResolvedLesson[] => {
   const at = ctx.lessons.filter((l) => l.lessonNo === lessonNo);
-  return at.find((l) => l.groupKey === null) ?? at[0] ?? null;
+  const plain = at.filter((l) => l.groupKey === null);
+  return plain.length ? plain : at;
 };
+
+/** Slotda bir vaqtda bir nechta (bekor qilinmagan) dars bor */
+export const isParallelSlot = (ctx: SlotContext, lessonNo: number): boolean =>
+  lessonsAt(ctx, lessonNo).filter((l) => !l.cancelled).length > 1;
+
+/**
+ * Dars raqamiga mos dars. Slotda bir nechta dars bo'lsa: aniq o'qituvchi -> davomat oluvchining o'z darsi
+ * -> fan bo'yicha toraytiriladi; hali bir nechta qolsa `ambiguous` (chaqiruvchi tanlov so'rashi kerak).
+ */
+export function chooseLesson(
+  ctx: SlotContext,
+  lessonNo: number,
+  pref: LessonPref = {},
+): { lesson: ResolvedLesson | null; ambiguous: boolean } {
+  let cands = lessonsAt(ctx, lessonNo);
+  if (cands.length <= 1) return { lesson: cands[0] ?? null, ambiguous: false };
+  const narrow = (f: (l: ResolvedLesson) => boolean) => {
+    const m = cands.filter(f);
+    if (m.length) cands = m;
+  };
+  if (pref.teacherId) narrow((l) => l.teacherId === pref.teacherId);
+  else if (pref.actorId) narrow((l) => l.teacherId === pref.actorId);
+  if (cands.length > 1 && pref.subjectId) narrow((l) => l.subjectId === pref.subjectId);
+  if (cands.length > 1) narrow((l) => !l.cancelled);
+  return { lesson: cands[0] ?? null, ambiguous: cands.length > 1 };
+}
+
+/** Dars raqamiga mos dars (qarang: chooseLesson) */
+export const pickLesson = (
+  ctx: SlotContext,
+  lessonNo: number,
+  pref: LessonPref = {},
+): ResolvedLesson | null => chooseLesson(ctx, lessonNo, pref).lesson;
 
 export const isHomeroomOf = (cls: Pick<ClassDoc, 'homeroomTeacherId'>, actor: Actor) =>
   !!cls.homeroomTeacherId && String(cls.homeroomTeacherId) === actor.id;

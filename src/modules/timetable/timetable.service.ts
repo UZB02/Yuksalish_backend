@@ -231,13 +231,15 @@ async function validateEntries(
   const had = new Set(prev.map((p) => `${p.weekday}:${p.lessonNo}`));
   input.forEach((e, i) => {
     const k = `${e.weekday}:${e.lessonNo}`;
-    if (seen.has(k)) {
+    // Bir katakda bir nechta dars bo'lishi mumkin (parallel o'qituvchilar), lekin o'qituvchi takrorlanmaydi
+    const kt = `${k}:${e.teacherId}`;
+    if (seen.has(kt)) {
       errs.push({
         path: `entries.${i}`,
-        message: 'Bir hafta kuni va dars raqamiga bitta yozuv kiritiladi',
+        message: "Bir o'qituvchi bir hafta kuni va dars raqamida sinfda faqat bitta dars o'tadi",
       });
     }
-    seen.add(k);
+    seen.add(kt);
     if (isOutOfRange(e, settings) && !had.has(k)) {
       errs.push({
         path: `entries.${i}`,
@@ -288,7 +290,11 @@ async function addTeachersToClass(cls: ClassDoc, entries: ITimetableEntry[]) {
   cls.teacherIds = [...cls.teacherIds, ...missing.map((m) => new Types.ObjectId(m))];
 }
 
-/** Jadvalda bor, lekin ClassSubject'da yo'q fanlarni biriktiradi (bir tomonlama sinxronlash) */
+/**
+ * Jadvalda bor, lekin ClassSubject'da umuman yo'q fanlarni biriktiradi (bir tomonlama sinxronlash).
+ * Fan jadvalda bir nechta o'qituvchi bilan kelsa (parallel/ko'p o'qituvchi) hammasi biriktiriladi;
+ * fanga allaqachon biror o'qituvchi biriktirilgan bo'lsa unga tegilmaydi.
+ */
 async function syncAssignments(
   ctx: Ctx,
   schoolId: string,
@@ -297,19 +303,19 @@ async function syncAssignments(
 ) {
   const existing = await ClassSubject.find({ classId: cls._id }).lean();
   const have = new Set(existing.map((e) => idStr(e.subjectId)));
-  const votes = new Map<string, Map<string, number>>();
+  const wantedBy = new Map<string, Set<string>>();
   for (const e of entries) {
     const s = idStr(e.subjectId);
     if (have.has(s)) continue;
-    const m = votes.get(s) ?? new Map<string, number>();
-    m.set(idStr(e.teacherId), (m.get(idStr(e.teacherId)) ?? 0) + 1);
-    votes.set(s, m);
+    const set = wantedBy.get(s) ?? new Set<string>();
+    set.add(idStr(e.teacherId));
+    wantedBy.set(s, set);
   }
-  if (!votes.size) return [] as { subjectId: string; teacherId: string }[];
+  if (!wantedBy.size) return [] as { subjectId: string; teacherId: string }[];
   // Nofaol fan/o'qituvchi biriktirilmaydi (setClassSubjects ularni rad etadi)
   const activeSubjects = new Set(
     (
-      await Subject.find({ _id: { $in: [...votes.keys()] }, isActive: true })
+      await Subject.find({ _id: { $in: [...wantedBy.keys()] }, isActive: true })
         .select('_id')
         .lean()
     ).map((s) => idStr(s._id)),
@@ -318,19 +324,18 @@ async function syncAssignments(
   const activeTeachers = new Set(
     (
       await User.find({
-        _id: { $in: uniq([...votes.values()].flatMap((m) => [...m.keys()])) },
+        _id: { $in: uniq([...wantedBy.values()].flatMap((m) => [...m])) },
         isActive: true,
       })
         .select('_id')
         .lean()
     ).map((t) => idStr(t._id)),
   );
-  for (const [subjectId, m] of votes) {
+  for (const [subjectId, teachers] of wantedBy) {
     if (!activeSubjects.has(subjectId)) continue;
-    const best = [...m.entries()]
-      .filter(([t]) => activeTeachers.has(t))
-      .sort((a, b) => b[1] - a[1])[0];
-    if (best) added.push({ subjectId, teacherId: best[0] });
+    for (const teacherId of teachers) {
+      if (activeTeachers.has(teacherId)) added.push({ subjectId, teacherId });
+    }
   }
   if (!added.length) return added;
   const items = [
@@ -904,7 +909,9 @@ export const timetableService = {
     }
     const today = todayTashkent();
     if (v.status === 'replaced') {
-      throw AppError.conflict("Almashtirilgan versiyani tuzatib bo'lmaydi (faqat nusxalash mumkin)");
+      throw AppError.conflict(
+        "Almashtirilgan versiyani tuzatib bo'lmaydi (faqat nusxalash mumkin)",
+      );
     }
     if (phaseOf(v, today) === 'past') {
       throw AppError.conflict("To'liq o'tgan davr jadvalini tuzatib bo'lmaydi");
@@ -1047,6 +1054,8 @@ export const timetableService = {
         lessonNo: l.lessonNo,
         subject: l.subject,
         teacher: l.teacher,
+        /** Jadvaldagi asl dars o'qituvchisi: almashtirish aynan shu darsga qo'llanadi (slotda bir nechta dars bo'lishi mumkin) */
+        targetTeacherId: l.originalTeacherId ?? l.teacherId,
         originalTeacher: l.originalTeacherId
           ? {
               id: l.originalTeacherId,
@@ -1058,7 +1067,12 @@ export const timetableService = {
         overrideId: l.overrideId ?? null,
         cancelled: l.cancelled,
       }))
-      .sort((a, b) => a.class.name.localeCompare(b.class.name, 'uz') || a.lessonNo - b.lessonNo);
+      .sort(
+        (a, b) =>
+          a.class.name.localeCompare(b.class.name, 'uz') ||
+          a.lessonNo - b.lessonNo ||
+          (a.teacher?.fullName ?? '').localeCompare(b.teacher?.fullName ?? '', 'uz'),
+      );
     return { date: d, isWorkday, lessons: flat };
   },
 

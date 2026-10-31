@@ -37,6 +37,8 @@ export interface OverrideDto {
   teacher: { id: string; fullName: string } | null;
   originalSubject: { id: string; name: string } | null;
   originalTeacher: { id: string; fullName: string } | null;
+  /** Qaysi darsga qaratilgan (asl dars o'qituvchisi; extra uchun yangi dars o'qituvchisi) */
+  targetTeacherId: string | null;
   room: string | null;
   reason: string | null;
   moveGroupId: string | null;
@@ -118,6 +120,9 @@ interface Plan {
   type: LessonOverrideType;
   subjectId: string | null;
   teacherId: string | null;
+  /** Aniq qaysi darsga qaratilgan (slotda bir nechta dars bo'lishi mumkin) */
+  targetTeacherId: string | null;
+  targetSubjectId: string | null;
   room: string | null;
   reason: string | null;
   moveGroupId: string | null;
@@ -132,7 +137,16 @@ async function validatePlan(
   classNames: () => Promise<Map<string, string>>,
 ) {
   const classId = idStr(p.cls._id);
-  if (await LessonOverride.exists({ schoolId, classId, date: p.date, lessonNo: p.lessonNo })) {
+  // Bir darsga bitta o'zgarish (eski, targetsiz yozuv butun slotni egallaydi)
+  if (
+    await LessonOverride.exists({
+      schoolId,
+      classId,
+      date: p.date,
+      lessonNo: p.lessonNo,
+      $or: [{ targetTeacherId: p.targetTeacherId }, { targetTeacherId: null }],
+    })
+  ) {
     throw conflict("Bu darsga allaqachon o'zgartirish kiritilgan. Avval uni o'chiring");
   }
   if (p.type === 'extra') {
@@ -164,7 +178,14 @@ async function validatePlan(
         l.teacherId === p.teacherId &&
         l.lessonNo === p.lessonNo &&
         !l.cancelled &&
-        !(l.classId === classId && l.groupKey === null),
+        // Mo'ljallangan darsning o'zi band hisoblanmaydi (slotdagi boshqa parallel darslar hisoblanadi)
+        !(
+          base &&
+          p.type !== 'extra' &&
+          l.classId === classId &&
+          l.groupKey === null &&
+          (l.originalTeacherId ?? l.teacherId) === base.teacherId
+        ),
     );
     if (busy) {
       const name = (await classNames()).get(busy.classId) ?? '?';
@@ -195,12 +216,18 @@ async function toDtos(schoolId: string, rows: OverrideRec[]): Promise<OverrideDt
       .select('name')
       .lean(),
   ]);
-  const baseBy = new Map(
-    base.lessons
-      .filter((l) => l.groupKey === null)
-      .map((l) => [`${l.classId}|${l.date}|${l.lessonNo}`, l]),
-  );
-  const origOf = (r: OverrideRec) => baseBy.get(`${idStr(r.classId)}|${r.date}|${r.lessonNo}`);
+  const baseBy = new Map<string, ResolvedLesson[]>();
+  for (const l of base.lessons) {
+    if (l.groupKey !== null) continue;
+    const k = `${l.classId}|${l.date}|${l.lessonNo}`;
+    baseBy.set(k, [...(baseBy.get(k) ?? []), l]);
+  }
+  const origOf = (r: OverrideRec) => {
+    const at = baseBy.get(`${idStr(r.classId)}|${r.date}|${r.lessonNo}`) ?? [];
+    return r.targetTeacherId
+      ? at.find((l) => l.teacherId === idStr(r.targetTeacherId))
+      : (at[0] as ResolvedLesson | undefined);
+  };
   const subjectIds = uniq(
     rows.flatMap((r) => [r.subjectId, origOf(r)?.subjectId]).filter(Boolean) as unknown[],
   ).map(idStr);
@@ -236,6 +263,7 @@ async function toDtos(schoolId: string, rows: OverrideRec[]): Promise<OverrideDt
       teacher: user(r.teacherId),
       originalSubject: r.type === 'extra' ? null : subj(o?.subjectId),
       originalTeacher: r.type === 'extra' ? null : user(o?.teacherId),
+      targetTeacherId: r.targetTeacherId ? idStr(r.targetTeacherId) : null,
       room: r.room ?? null,
       reason: r.reason ?? null,
       moveGroupId: r.moveGroupId ?? null,
@@ -261,6 +289,7 @@ async function audit(
     teacherId: dto.teacher?.id ?? null,
     originalSubjectId: dto.originalSubject?.id ?? null,
     originalTeacherId: dto.originalTeacher?.id ?? null,
+    targetTeacherId: dto.targetTeacherId,
     room: dto.room,
     reason: dto.reason,
     moveGroupId: dto.moveGroupId,
@@ -292,6 +321,8 @@ function insertDoc(schoolId: string, ctx: Ctx, p: Plan) {
     date: p.date,
     lessonNo: p.lessonNo,
     groupKey: null,
+    targetTeacherId: p.targetTeacherId,
+    targetSubjectId: p.targetSubjectId,
     type: p.type,
     subjectId: p.subjectId,
     teacherId: p.teacherId,
@@ -300,6 +331,40 @@ function insertDoc(schoolId: string, ctx: Ctx, p: Plan) {
     reason: p.reason,
     createdBy: ctx.actor.id,
   });
+}
+
+/**
+ * Slotdagi jadval darslaridan o'zgartirish qaratilgan birini tanlaydi.
+ * extra uchun: tanlanmaydi (slotdagi birinchi dars faqat "slot band" tekshiruvi uchun).
+ * Bir nechta dars bor va target berilmagan bo'lsa — aniq xato.
+ */
+function pickTarget(
+  at: ResolvedLesson[],
+  type: LessonOverrideType,
+  targetTeacherId: string | null,
+  path: string,
+): ResolvedLesson | null {
+  if (type === 'extra') return at[0] ?? null;
+  if (targetTeacherId) {
+    const hit = at.find((l) => l.teacherId === targetTeacherId);
+    if (!hit) throw conflict("Bu o'qituvchining shu soatda jadvalda darsi yo'q", path);
+    return hit;
+  }
+  if (at.length > 1) {
+    throw fail(path, "Bu soatda bir nechta dars bor: qaysi o'qituvchining darsi ekanini tanlang");
+  }
+  return at[0] ?? null;
+}
+
+/** Plan nishoni: jadval darsi (asl o'qituvchi/fan), extra uchun yangi dars o'qituvchisi/fani */
+function setTarget(p: Plan, base: ResolvedLesson | null) {
+  if (p.type === 'extra') {
+    p.targetTeacherId = p.teacherId;
+    p.targetSubjectId = p.subjectId;
+  } else if (base) {
+    p.targetTeacherId = base.teacherId;
+    p.targetSubjectId = base.subjectId;
+  }
 }
 
 const dupConflict = () => conflict("Bu darsga allaqachon o'zgartirish kiritilgan");
@@ -325,7 +390,12 @@ export const overridesService = {
     await assertWorkday(schoolId, input.date);
     const classId = idStr(cls._id);
     const { lessons } = await baseLessons(schoolId, [classId], input.date, input.date);
-    const base = lessons.find((l) => l.lessonNo === input.lessonNo && l.groupKey === null) ?? null;
+    const base = pickTarget(
+      lessons.filter((l) => l.lessonNo === input.lessonNo && l.groupKey === null),
+      input.type,
+      input.targetTeacherId ?? null,
+      'targetTeacherId',
+    );
     const isCancel = input.type === 'cancel';
     const plan: Plan = {
       cls,
@@ -335,10 +405,13 @@ export const overridesService = {
       // O'rinbosarda fan o'zgarmaydi; bekor qilishda fan/o'qituvchi saqlanmaydi
       subjectId: isCancel || input.type === 'substitute' ? null : (input.subjectId ?? null),
       teacherId: isCancel ? null : (input.teacherId ?? null),
+      targetTeacherId: null,
+      targetSubjectId: null,
       room: isCancel ? null : (input.room ?? null),
       reason: input.reason ?? null,
       moveGroupId: null,
     };
+    setTarget(plan, base);
     const day = dayCache(schoolId, input.date);
     await validatePlan(schoolId, plan, base, day.lessons, day.classNames);
     let doc;
@@ -375,8 +448,13 @@ export const overridesService = {
       dates[1] as string,
     );
     const at = (d: string, n: number) =>
-      lessons.find((l) => l.date === d && l.lessonNo === n && l.groupKey === null) ?? null;
-    const source = at(from.date, from.lessonNo);
+      lessons.filter((l) => l.date === d && l.lessonNo === n && l.groupKey === null);
+    const source = pickTarget(
+      at(from.date, from.lessonNo),
+      'cancel',
+      from.targetTeacherId ?? null,
+      'from.targetTeacherId',
+    );
     if (!source) throw conflict("Ko'chiriladigan soatda jadvalda dars yo'q");
     const moveGroupId = new Types.ObjectId().toString();
     const cancelPlan: Plan = {
@@ -386,6 +464,8 @@ export const overridesService = {
       type: 'cancel',
       subjectId: null,
       teacherId: null,
+      targetTeacherId: source.teacherId,
+      targetSubjectId: source.subjectId,
       room: null,
       reason: input.reason ?? null,
       moveGroupId,
@@ -397,6 +477,8 @@ export const overridesService = {
       type: 'extra',
       subjectId: source.subjectId,
       teacherId: input.teacherId ?? source.teacherId,
+      targetTeacherId: input.teacherId ?? source.teacherId,
+      targetSubjectId: source.subjectId,
       room: null,
       reason: input.reason ?? null,
       moveGroupId,
@@ -407,7 +489,7 @@ export const overridesService = {
     await validatePlan(
       schoolId,
       extraPlan,
-      at(to.date, to.lessonNo),
+      at(to.date, to.lessonNo)[0] ?? null,
       toDay.lessons,
       toDay.classNames,
     );

@@ -38,7 +38,10 @@ export interface JournalSummaryRow {
 export interface JournalGrid {
   class: { id: string; name: string };
   subject: { id: string; name: string };
+  /** Jurnal egasi: tanlangan (fan, o'qituvchi) juftligidagi o'qituvchi; bir nechta bo'lib tanlanmasa null */
   teacher: { id: string; fullName: string } | null;
+  /** Shu sinfda shu fanga biriktirilgan barcha o'qituvchilar */
+  teachers: { id: string; fullName: string }[];
   school: { id: string; name: string };
   from: string;
   to: string;

@@ -10,6 +10,7 @@ import { uniq } from '../../utils/helpers';
 import { getAttendanceSettings } from '../attendance/attendance.service';
 import {
   loadVersionSlices,
+  resolveClassesRange,
   teacherLessons,
   type OverrideType,
   type LessonSource,
@@ -26,6 +27,8 @@ export interface TodayLesson {
   class: { id: string; name: string };
   subjectId: string;
   subject: { id: string; name: string };
+  /** Dars o'qituvchisi (bir soatda bir nechta dars bo'lishi mumkin) */
+  teacherId: string;
   room: string | null;
   source: LessonSource;
   overrideType: OverrideType | null;
@@ -86,23 +89,36 @@ export async function myTodayLessons(actor: Actor, schoolId: string) {
     studentId: { $in: students.map((s) => s._id) },
     lessonNo: settings.mode === 'daily' ? 0 : { $gte: 1 },
   })
-    .select('studentId lessonNo')
+    .select('studentId lessonNo teacherId')
     .lean();
-  // `${classId}:${lessonNo}` -> belgilangan o'quvchilar
-  const marked = new Map<string, Set<string>>();
+  // `${classId}:${lessonNo}` -> yozuvlar (parallel darslarda har bir o'qituvchi faqat o'z belgilarini sanaydi)
+  const marked = new Map<string, { studentId: string; teacherId: string | null }[]>();
   for (const r of records) {
     const cid = classOfStudent.get(String(r.studentId));
     if (!cid) continue;
     const key = `${cid}:${r.lessonNo}`;
-    const set = marked.get(key) ?? new Set<string>();
-    set.add(String(r.studentId));
-    marked.set(key, set);
+    marked.set(key, [
+      ...(marked.get(key) ?? []),
+      { studentId: String(r.studentId), teacherId: r.teacherId ? String(r.teacherId) : null },
+    ]);
+  }
+  // Soatda bir nechta dars bor-yo'qligi (sinf + dars raqami): sinfning barcha o'qituvchilari darslari
+  const lessonsInSlot = new Map<string, number>();
+  const classDay = await resolveClassesRange(schoolId, [...classMap.keys()], date, date);
+  for (const l of classDay.filter((x) => !x.cancelled)) {
+    const k = `${l.classId}:${l.lessonNo}`;
+    lessonsInSlot.set(k, (lessonsInSlot.get(k) ?? 0) + 1);
   }
 
   const out: TodayLesson[] = lessons.map((l) => {
     const total = totals.get(l.classId) ?? 0;
     const unit = settings.mode === 'daily' ? 0 : l.lessonNo;
-    const n = marked.get(`${l.classId}:${unit}`)?.size ?? 0;
+    const parallel =
+      settings.mode !== 'daily' && (lessonsInSlot.get(`${l.classId}:${l.lessonNo}`) ?? 0) > 1;
+    const own = (marked.get(`${l.classId}:${unit}`) ?? []).filter(
+      (m) => !parallel || !m.teacherId || m.teacherId === l.teacherId,
+    );
+    const n = new Set(own.map((m) => m.studentId)).size;
     let status: TodayAttendanceStatus = 'none';
     if (total > 0 && n >= total) status = 'taken';
     else if (n > 0) status = 'partial';
@@ -113,6 +129,7 @@ export async function myTodayLessons(actor: Actor, schoolId: string) {
       class: { id: l.classId, name: classMap.get(l.classId) ?? '' },
       subjectId: l.subjectId,
       subject: { id: l.subjectId, name: subjectName.get(l.subjectId) ?? '' },
+      teacherId: l.teacherId,
       room: l.room,
       source: l.source,
       overrideType: l.overrideType ?? null,
@@ -123,6 +140,11 @@ export async function myTodayLessons(actor: Actor, schoolId: string) {
       totalStudents: total,
     };
   });
-  out.sort((a, b) => a.lessonNo - b.lessonNo || a.class.name.localeCompare(b.class.name, 'uz'));
+  out.sort(
+    (a, b) =>
+      a.lessonNo - b.lessonNo ||
+      a.class.name.localeCompare(b.class.name, 'uz') ||
+      a.subject.name.localeCompare(b.subject.name, 'uz'),
+  );
   return { ...base, working, hasTimetable, lessons: out };
 }

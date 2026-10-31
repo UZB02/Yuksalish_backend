@@ -102,6 +102,8 @@ interface SubjectOpt {
   id: string;
   name: string;
   assigned: boolean;
+  /** Fanning shu sinfdagi o'qituvchilari (jurnal juftligi); biriktirilmagan fan uchun bo'sh */
+  teachers: { id: string; fullName: string }[];
 }
 
 export const journalService = {
@@ -150,31 +152,62 @@ export const journalService = {
         .lean(),
     ]);
     const subj = new Map(subjects.map((s) => [String(s._id), s.name]));
-    const opt = (id: string): SubjectOpt => ({ id, name: subj.get(id) ?? '', assigned: true });
+    const teacherNames = new Map(
+      (
+        await User.find({ _id: { $in: uniq(rows.map((r) => String(r.teacherId))) } })
+          .select('fullName')
+          .lean()
+      ).map((u) => [String(u._id), u.fullName]),
+    );
+    const teachersOf = (cid: string, sid: string, only?: string) =>
+      uniq(
+        rows
+          .filter(
+            (r) =>
+              String(r.classId) === cid &&
+              String(r.subjectId) === sid &&
+              (!only || String(r.teacherId) === only),
+          )
+          .map((r) => String(r.teacherId)),
+      )
+        .map((id) => ({ id, fullName: teacherNames.get(id) ?? '' }))
+        .sort((a, b) => a.fullName.localeCompare(b.fullName, 'uz'));
 
     const out = classes
       .map((c) => {
         const cid = String(c._id);
         const homeroom = !!c.homeroomTeacherId && String(c.homeroomTeacherId) === actor.id;
-        const assignedIds = rows
-          .filter((r) => String(r.classId) === cid)
-          .map((r) => String(r.subjectId))
-          .filter((i) => subj.has(i));
+        const assignedIds = uniq(
+          rows
+            .filter((r) => String(r.classId) === cid)
+            .map((r) => String(r.subjectId))
+            .filter((i) => subj.has(i)),
+        );
+        const opt = (id: string, only?: string): SubjectOpt => ({
+          id,
+          name: subj.get(id) ?? '',
+          assigned: true,
+          teachers: teachersOf(cid, id, only),
+        });
         let list: SubjectOpt[];
         if (actor.role === 'teacher') {
-          const ids = homeroom
-            ? assignedIds
-            : mine
-                .filter((m) => m.classId === cid && subj.has(m.subjectId))
-                .map((m) => m.subjectId);
-          list = ids.map(opt).sort(byName);
+          // Sinf rahbari barcha juftliklarni, oddiy o'qituvchi faqat o'z juftligini ko'radi
+          list = homeroom
+            ? assignedIds.map((i) => opt(i)).sort(byName)
+            : uniq(
+                mine
+                  .filter((m) => m.classId === cid && subj.has(m.subjectId))
+                  .map((m) => m.subjectId),
+              )
+                .map((i) => opt(i, actor.id))
+                .sort(byName);
         } else {
           const set = new Set(assignedIds);
           const rest = subjects
             .filter((s) => !set.has(String(s._id)))
-            .map((s) => ({ id: String(s._id), name: s.name, assigned: false }))
+            .map((s) => ({ id: String(s._id), name: s.name, assigned: false, teachers: [] }))
             .sort(byName);
-          list = [...assignedIds.map(opt).sort(byName), ...rest];
+          list = [...assignedIds.map((i) => opt(i)).sort(byName), ...rest];
         }
         return { id: cid, name: c.name, grade: c.grade, homeroom, subjects: list };
       })
@@ -188,23 +221,64 @@ export const journalService = {
     const subject = await loadSubject(schoolId, q.subjectId);
     await assertCanView(actor, cls, subject._id);
 
-    const [school, attendance, assignment] = await Promise.all([
+    const [school, attendance, assignments] = await Promise.all([
       School.findById(schoolId).select('name').lean(),
       settingsService.getEffective<AttendanceSettings>(ATTENDANCE_KEY, schoolId),
-      ClassSubject.findOne({ classId: cls._id, subjectId: subject._id }).lean(),
+      ClassSubject.find({ classId: cls._id, subjectId: subject._id }).lean(),
     ]);
-    const teacher = assignment
-      ? await User.findById(assignment.teacherId).select('fullName').lean()
-      : null;
+    const assignedIds = uniq(assignments.map((a) => String(a.teacherId)));
+    const teacherUsers = assignedIds.length
+      ? await User.find({ _id: { $in: assignedIds } })
+          .select('fullName')
+          .lean()
+      : [];
+    const teachers = teacherUsers
+      .map((t) => ({ id: String(t._id), fullName: t.fullName }))
+      .sort((a, b) => a.fullName.localeCompare(b.fullName, 'uz'));
+
+    // Jurnal juftligi (fan, o'qituvchi): fanning bir nechta o'qituvchisi bo'lsagina ustun/baho/davomat
+    // o'sha o'qituvchi bo'yicha ajratiladi; bitta o'qituvchi bo'lsa avvalgidek.
+    const multi = assignedIds.length > 1;
+    let pairId: string | null = null;
+    if (q.teacherId) {
+      if (actor.role === 'teacher' && !isHomeroom(cls, actor) && q.teacherId !== actor.id) {
+        throw AppError.forbidden("Boshqa o'qituvchining jurnalini ko'rishga ruxsat yo'q");
+      }
+      if (multi && !assignedIds.includes(q.teacherId)) {
+        throw AppError.validation("O'qituvchi noto'g'ri", [
+          { path: 'teacherId', message: "Bu o'qituvchi shu sinfda bu fanga biriktirilmagan" },
+        ]);
+      }
+      pairId = q.teacherId;
+    } else if (multi && actor.role === 'teacher' && assignedIds.includes(actor.id)) {
+      pairId = actor.id;
+    }
+    const filterTid = multi ? pairId : null;
+    const teacherDoc = pairId
+      ? (teachers.find((t) => t.id === pairId) ??
+        (await User.findById(pairId)
+          .select('fullName')
+          .lean()
+          .then((u) => (u ? { id: String(u._id), fullName: u.fullName } : null))))
+      : multi
+        ? null
+        : (teachers[0] ?? null);
+    const teacher = teacherDoc ? { _id: teacherDoc.id, fullName: teacherDoc.fullName } : null;
+    // Boshqa (bir kursdagi) o'qituvchilar: ularning baholari bu jurnalga tushmaydi
+    const rivals = new Set(assignedIds.filter((i) => i !== filterTid));
 
     const workDays = enumerateWorkingDays(q.from, q.to, attendance.workingWeekdays);
 
     // Jadval: shu fanning davrdagi darslari (bekor qilinganlari ham) va jadval qamragan kunlar
     const subjectKey = String(subject._id);
-    const [lessons, slices] = await Promise.all([
+    const [allLessons, slices] = await Promise.all([
       subjectLessonsInRange(schoolId, String(cls._id), subjectKey, q.from, q.to),
       loadVersionSlices(schoolId, { classIds: [String(cls._id)] }, q.from, q.to),
     ]);
+    // Juftlik jurnali: shu o'qituvchining darslari (o'rinbosar qo'yilgan asl darsi ham o'zinikida qoladi)
+    const lessons = filterTid
+      ? allLessons.filter((l) => l.teacherId === filterTid || l.originalTeacherId === filterTid)
+      : allLessons;
     const colMap = new Map<string, JournalColumn>();
     const addCol = (c: JournalColumn) => {
       if (!colMap.has(c.key)) colMap.set(c.key, c);
@@ -243,15 +317,26 @@ export const journalService = {
       .lean();
 
     // Davrdagi baholar: shu sinf snapshotida yoki sinfning joriy o'quvchilariniki (bitta so'rov)
-    const grades = await SubjectGrade.find({
+    const allGrades = await SubjectGrade.find({
       schoolId,
       subjectId: subject._id,
       isDeleted: false,
       date: { $gte: q.from, $lte: q.to },
       $or: [{ classId: cls._id }, { studentId: { $in: active.map((s) => s._id) } }],
     })
-      .select('studentId value date lessonNo')
+      .select('studentId value date lessonNo teacherId')
       .lean();
+    // Juftlik jurnali: shu o'qituvchi qo'ygan baholar; o'rinbosar/admin qo'ygan baho esa
+    // (boshqa kurs o'qituvchisi bo'lmasa) shu o'qituvchining dars ustuniga mos kelsa
+    const lessonKeys = new Set(lessons.map((l) => keyOf(l.date, l.lessonNo)));
+    const grades = filterTid
+      ? allGrades.filter((g) => {
+          const tid = String(g.teacherId);
+          if (tid === filterTid) return true;
+          if (rivals.has(tid)) return false;
+          return (g.lessonNo ?? 0) > 0 && lessonKeys.has(keyOf(g.date, g.lessonNo ?? 0));
+        })
+      : allGrades;
     // Hech bir ustunga tushmagan baho yo'qolmasin: record ustuni
     for (const g of grades) {
       const lessonNo = g.lessonNo ?? 0;
@@ -309,7 +394,7 @@ export const journalService = {
           isDeleted: false,
           date: { $gte: q.from, $lte: q.to },
         })
-          .select('studentId date category lessonNo subjectId')
+          .select('studentId date category lessonNo subjectId teacherId')
           .lean()
       : [];
     type Tally = { total: number; unexcused: number; excused: number };
@@ -333,6 +418,8 @@ export const journalService = {
     const buckets = new Map<string, Bucket>();
     for (const r of att) {
       if (!colDates.has(r.date)) continue;
+      // Juftlik jurnali: boshqa o'qituvchi darsidagi davomat bu jurnalga tushmaydi
+      if (filterTid && r.teacherId && String(r.teacherId) !== filterTid && r.subjectId) continue;
       const k = `${r.studentId}|${r.date}`;
       let b = buckets.get(k);
       if (!b) {
@@ -413,6 +500,7 @@ export const journalService = {
       class: { id: cls.id as string, name: cls.name },
       subject: { id: subject.id as string, name: subject.name },
       teacher: teacher ? { id: String(teacher._id), fullName: teacher.fullName } : null,
+      teachers,
       school: { id: schoolId, name: school?.name ?? '' },
       from: q.from,
       to: q.to,
