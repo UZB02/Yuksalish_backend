@@ -46,6 +46,8 @@ export interface TelegramClient {
     onMessage: (m: IncomingMessage) => Promise<string | null>,
     onFatal: (err: Error) => void,
   ): Promise<BotInfo>;
+  /** Bot menyusidagi buyruqlar (setMyCommands). Ixtiyoriy: xato bot ishini to'xtatmaydi */
+  setCommands?(commands: { command: string; description: string }[]): Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -98,7 +100,13 @@ export const grammyClientFactory: ClientFactory = (token) => {
           text: ctx.message.text,
           username: ctx.from?.username ?? null,
         });
-        if (reply) await ctx.reply(reply, { link_preview_options: { is_disabled: true } });
+        if (reply) {
+          // Javoblar HTML parse mode da (dinamik qismlar handleIncoming da escapeHtml qilinadi)
+          await ctx.reply(reply, {
+            parse_mode: 'HTML',
+            link_preview_options: { is_disabled: true },
+          });
+        }
       });
       // Bitta xabarni qayta ishlashdagi xato botni to'xtatmasin
       bot.catch((e) =>
@@ -120,6 +128,9 @@ export const grammyClientFactory: ClientFactory = (token) => {
             else reject(e);
           });
       });
+    },
+    async setCommands(commands) {
+      await bot.api.setMyCommands(commands);
     },
     async stop() {
       await bot.stop().catch(() => undefined);

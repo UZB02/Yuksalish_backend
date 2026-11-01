@@ -27,6 +27,14 @@ export interface ResolvedToken {
 
 export const TOKEN_REENTER_MESSAGE = 'Token qayta kiritilishi kerak';
 
+export const BOT_COMMANDS = [
+  { command: 'bugun', description: 'Bugungi darslarim' },
+  { command: 'ertaga', description: 'Ertangi darslarim' },
+  { command: 'hafta', description: 'Haftalik jadval' },
+  { command: 'help', description: 'Yordam' },
+  { command: 'stop', description: 'Hisobni uzish' },
+];
+
 /** Bazadagi sozlama (bo'lsa) yoki .env zaxirasidan tokenni aniqlaydi */
 export async function resolveToken(): Promise<ResolvedToken> {
   const doc = await TelegramBotConfig.findOne({ key: 'platform' });
@@ -139,6 +147,11 @@ class TelegramManager {
           this.fail(`Bot to'xtadi: ${err.message}`);
         }
       });
+      void client
+        .setCommands?.(BOT_COMMANDS)
+        .catch((err) =>
+          logger.warn({ err: String(err) }, 'Telegram buyruqlarini o‘rnatib bo‘lmadi'),
+        );
       this.client = client;
       this.status = 'running';
       this.botUsername = info.username;

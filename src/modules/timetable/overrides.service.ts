@@ -13,6 +13,7 @@ import { User } from '../../models/User';
 import { isoWeekday } from '../../utils/dates';
 import { isDuplicateKeyError, isId, uniq } from '../../utils/helpers';
 import { auditService } from '../audit/audit.service';
+import { notifyOverrideChange } from '../telegram/telegram.notifications';
 import { loadOverridesForDate } from './overrides.loader';
 import type { CreateOverrideInput, MoveOverrideInput } from './timetable.schema';
 import {
@@ -423,6 +424,7 @@ export const overridesService = {
     }
     const [dto] = await toDtos(schoolId, [doc.toObject() as OverrideRec]);
     await audit(ctx, schoolId, 'timetable.override_created', dto as OverrideDto);
+    await notifyOverrideChange(schoolId, [dto as OverrideDto], 'created');
     return dto as OverrideDto;
   },
 
@@ -512,6 +514,7 @@ export const overridesService = {
     }
     const dtos = await toDtos(schoolId, [first.toObject(), second.toObject()] as OverrideRec[]);
     for (const d of dtos) await audit(ctx, schoolId, 'timetable.override_created', d);
+    await notifyOverrideChange(schoolId, dtos, 'created');
     // Javob tartibi: [bekor qilingan (manba), qo'shimcha (maqsad)]
     return { items: dtos };
   },
@@ -526,6 +529,7 @@ export const overridesService = {
     const dtos = await toDtos(schoolId, rows as OverrideRec[]);
     await LessonOverride.deleteMany({ schoolId, _id: { $in: rows.map((r) => r._id) } });
     for (const d of dtos) await audit(ctx, schoolId, 'timetable.override_deleted', d);
+    await notifyOverrideChange(schoolId, dtos, 'deleted');
   },
 
   /** Shu soatga o'qituvchilar: bo'shlar birinchi, fan o'qituvchilari, kam yuklanganlar */

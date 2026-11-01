@@ -7,6 +7,13 @@ import {
   attendanceValuesSchema,
   normalizeAttendance,
 } from './attendance.settings';
+import {
+  TELEGRAM_DEFAULTS,
+  TELEGRAM_KEY,
+  normalizeTelegram,
+  telegramValuesSchema,
+  validateTelegram,
+} from './telegram.settings';
 import { TIMETABLE_DEFAULTS, TIMETABLE_KEY, timetableValuesSchema } from './timetable.settings';
 import {
   PUBLIC_DEFAULTS,
@@ -110,6 +117,14 @@ export const SETTING_DEFS: Record<string, SettingDef> = {
     defaults: TIMETABLE_DEFAULTS as unknown as Obj,
     valuesSchema: timetableValuesSchema,
     validateMerged: () => undefined,
+    ...attendanceAccess,
+  },
+  [TELEGRAM_KEY]: {
+    key: TELEGRAM_KEY,
+    defaults: TELEGRAM_DEFAULTS as unknown as Obj,
+    valuesSchema: telegramValuesSchema,
+    normalize: normalizeTelegram,
+    validateMerged: validateTelegram,
     ...attendanceAccess,
   },
 };

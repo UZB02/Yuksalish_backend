@@ -19,6 +19,12 @@ import { isDuplicateKeyError, isId, uniq } from '../../utils/helpers';
 import { auditService } from '../audit/audit.service';
 import { setClassSubjects } from '../classes/class-subjects.service';
 import { rechain, rechainDetailed, versionsToReplace } from './timetable.chain';
+import { telegramManager } from '../telegram/telegram.manager';
+import {
+  notifyTimetableChanges,
+  type VersionChange,
+  type VersionEntryLite,
+} from '../telegram/telegram.notifications';
 import {
   analyzeTargets,
   blocking,
@@ -440,6 +446,41 @@ function checkForce(w: TimetableWarning[], o: { force?: boolean; note?: string |
   return true;
 }
 
+const liteEntries = (
+  entries: { weekday: number; lessonNo: number; subjectId: unknown; teacherId: unknown }[],
+): VersionEntryLite[] =>
+  entries.map((e) => ({
+    weekday: e.weekday,
+    lessonNo: e.lessonNo,
+    subjectId: idStr(e.subjectId),
+    teacherId: idStr(e.teacherId),
+  }));
+
+/**
+ * Telegram xabari uchun: faollashtirishdan OLDIN shu sinfda `validFrom` sanasida amal qilgan jadval darslari
+ * (almashtirilmagan, faollashtirilgan eng yaqin oldingi versiya). Xato bo'lsa null (faollashtirishni buzmaydi).
+ */
+async function effectiveEntriesAt(
+  v: TimetableVersionDoc,
+  validFrom: string,
+): Promise<VersionEntryLite[] | null> {
+  try {
+    const prev = await TimetableVersion.findOne({
+      classId: v.classId,
+      _id: { $ne: v._id },
+      activatedAt: { $type: 'date' },
+      status: { $ne: 'replaced' },
+      validFrom: { $lt: validFrom },
+    })
+      .sort({ validFrom: -1 })
+      .select('entries')
+      .lean();
+    return prev ? liteEntries(prev.entries) : [];
+  } catch {
+    return null;
+  }
+}
+
 async function commitActivation(
   ctx: Ctx,
   schoolId: string,
@@ -448,9 +489,12 @@ async function commitActivation(
   o: ActivateOpts,
   warnings: TimetableWarning[],
   today: string,
+  changes?: VersionChange[],
 ) {
   const forced = blocking(warnings).length > 0;
   const before = { status: v.status, validFrom: v.validFrom };
+  const prev =
+    changes && telegramManager.isRunning() ? await effectiveEntriesAt(v, o.validFrom) : null;
   v.status = 'active';
   v.validFrom = o.validFrom;
   v.validTo = null;
@@ -470,6 +514,15 @@ async function commitActivation(
   const replacedIds = chain.replaced.filter((r) => r.replacedBy === idStr(v._id)).map((r) => r.id);
   await addTeachersToClass(cls, v.entries);
   const synced = o.syncAssignments ? await syncAssignments(ctx, schoolId, cls, v.entries) : [];
+  if (changes && prev) {
+    changes.push({
+      versionId: idStr(v._id),
+      className: cls.name,
+      validFrom: o.validFrom,
+      before: prev,
+      after: liteEntries(v.entries),
+    });
+  }
   await auditService.log({
     userId: ctx.actor.id,
     schoolId,
@@ -787,7 +840,9 @@ export const timetableService = {
       idStr(v._id),
     ) as TimetableWarning[];
     checkForce(warnings, o);
-    const synced = await commitActivation(ctx, schoolId, v, cls, o, warnings, today);
+    const changes: VersionChange[] = [];
+    const synced = await commitActivation(ctx, schoolId, v, cls, o, warnings, today, changes);
+    await notifyTimetableChanges(schoolId, changes);
     const settings = await loadResolverSettings(schoolId);
     return {
       version: await dtoOf(v, settings, today),
@@ -836,10 +891,11 @@ export const timetableService = {
     const all = [...warn.values()].flat();
     checkForce(all, o);
     const out = [];
+    const changes: VersionChange[] = [];
     for (const v of versions) {
       const cls = classes.get(idStr(v.classId)) as ClassDoc;
       const w = warn.get(idStr(v._id)) ?? [];
-      const synced = await commitActivation(ctx, schoolId, v, cls, o, w, today);
+      const synced = await commitActivation(ctx, schoolId, v, cls, o, w, today, changes);
       out.push({
         versionId: idStr(v._id),
         classId: idStr(v.classId),
@@ -848,6 +904,7 @@ export const timetableService = {
         syncedAssignments: synced,
       });
     }
+    await notifyTimetableChanges(schoolId, changes);
     return { activated: out };
   },
 

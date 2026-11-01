@@ -1,6 +1,7 @@
 import cron from 'node-cron';
 import { env } from '../config/env';
 import { logger } from '../core/logger';
+import { runMorningDigests } from '../modules/telegram/telegram.digest';
 import { recalculateAll } from '../modules/ratings/ratings.service';
 import { runTimetablePurge } from '../modules/timetable/timetable.purge';
 
@@ -28,5 +29,15 @@ export function startJobs(): void {
     },
     { timezone: 'Asia/Tashkent' },
   );
-  logger.info('Vazifalar ishga tushdi: reyting 02:00, jadval tozalash 03:00 (Asia/Tashkent)');
+  // Har daqiqa: morningTime shu daqiqaga to'g'ri kelgan maktablar o'qituvchilariga "Bugungi darslarim"
+  cron.schedule(
+    '* * * * *',
+    () => {
+      runMorningDigests().catch((err) => logger.error({ err }, 'Ertalabki jadval xatosi'));
+    },
+    { timezone: 'Asia/Tashkent' },
+  );
+  logger.info(
+    'Vazifalar ishga tushdi: reyting 02:00, jadval tozalash 03:00, Telegram ertalabki jadval har daqiqa (Asia/Tashkent)',
+  );
 }
