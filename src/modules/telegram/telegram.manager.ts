@@ -31,6 +31,8 @@ export const BOT_COMMANDS = [
   { command: 'bugun', description: 'Bugungi darslarim' },
   { command: 'ertaga', description: 'Ertangi darslarim' },
   { command: 'hafta', description: 'Haftalik jadval' },
+  { command: 'hisobot', description: 'Kunlik hisobot (rahbariyat)' },
+  { command: 'haftalik', description: 'Haftalik hisobot (rahbariyat)' },
   { command: 'help', description: 'Yordam' },
   { command: 'stop', description: 'Hisobni uzish' },
 ];

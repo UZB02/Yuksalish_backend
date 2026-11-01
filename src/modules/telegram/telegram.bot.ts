@@ -3,6 +3,7 @@ import { todayTashkent } from '../../utils/clock';
 import type { IncomingMessage } from './telegram.client';
 import { escapeHtml } from './telegram.format';
 import { linkChat, unlinkUser } from './telegram.link.service';
+import { REPORT_COMMANDS, reportCommandReply, type ReportCommand } from './telegram.report';
 import { TEACHER_COMMANDS, teacherCommandReply, type TeacherCommand } from './telegram.teacher';
 
 export const HELP_TEXT = [
@@ -18,6 +19,10 @@ export const HELP_TEXT = [
   '/bugun — bugungi darslar',
   '/ertaga — ertangi (yoki keyingi ish kuni) darslar',
   '/hafta — haftalik jadval',
+  '',
+  'Rahbariyat uchun:',
+  '/hisobot — bugungi davomat hisoboti',
+  '/haftalik — haftalik xulosa (hafta boshidan)',
   '',
   'Hamma uchun:',
   '/help — yordam',
@@ -70,6 +75,23 @@ export async function handleIncoming(msg: IncomingMessage): Promise<string | nul
     return teacherCommandReply(
       { id: user.id, schoolId: user.schoolId ? String(user.schoolId) : null },
       cmd as TeacherCommand,
+      todayTashkent(),
+    );
+  }
+
+  if ((REPORT_COMMANDS as readonly string[]).includes(cmd)) {
+    const user = await User.findOne({ 'telegram.chatId': msg.chatId, isActive: true }).select(
+      'role schoolId',
+    );
+    if (!user) {
+      return 'Bu chat hisobga ulanmagan. Avval hisobingizni ulang: admin panelda profil sahifasidan havola oling (yordam: /help).';
+    }
+    if (user.role !== 'school_admin' && user.role !== 'superadmin') {
+      return 'Bu buyruq rahbariyat uchun.';
+    }
+    return reportCommandReply(
+      { role: user.role, schoolId: user.schoolId ? String(user.schoolId) : null },
+      cmd as ReportCommand,
       todayTashkent(),
     );
   }

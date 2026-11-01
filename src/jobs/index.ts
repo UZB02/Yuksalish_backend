@@ -2,6 +2,7 @@ import cron from 'node-cron';
 import { env } from '../config/env';
 import { logger } from '../core/logger';
 import { runMorningDigests } from '../modules/telegram/telegram.digest';
+import { runDailyReports, runWeeklyReports } from '../modules/telegram/telegram.report';
 import { recalculateAll } from '../modules/ratings/ratings.service';
 import { runTimetablePurge } from '../modules/timetable/timetable.purge';
 
@@ -37,7 +38,16 @@ export function startJobs(): void {
     },
     { timezone: 'Asia/Tashkent' },
   );
+  // Har daqiqa: dailyReportTime / weeklyReportTime shu daqiqaga to'g'ri kelgan maktablar rahbariyatiga hisobot
+  cron.schedule(
+    '* * * * *',
+    () => {
+      runDailyReports().catch((err) => logger.error({ err }, 'Kunlik hisobot xatosi'));
+      runWeeklyReports().catch((err) => logger.error({ err }, 'Haftalik hisobot xatosi'));
+    },
+    { timezone: 'Asia/Tashkent' },
+  );
   logger.info(
-    'Vazifalar ishga tushdi: reyting 02:00, jadval tozalash 03:00, Telegram ertalabki jadval har daqiqa (Asia/Tashkent)',
+    'Vazifalar ishga tushdi: reyting 02:00, jadval tozalash 03:00, Telegram ertalabki jadval va hisobotlar har daqiqa (Asia/Tashkent)',
   );
 }
