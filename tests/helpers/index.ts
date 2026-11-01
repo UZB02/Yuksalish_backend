@@ -14,6 +14,9 @@ import { SubjectGrade } from '../../src/models/SubjectGrade';
 import { TimetableVersion } from '../../src/models/TimetableVersion';
 import { LessonOverride } from '../../src/models/LessonOverride';
 import { Setting } from '../../src/models/Setting';
+import { TelegramBotConfig } from '../../src/models/TelegramBotConfig';
+import { TelegramLinkToken } from '../../src/models/TelegramLinkToken';
+import { TelegramOutbox } from '../../src/models/TelegramOutbox';
 import { Rating, RatingDailyRank, RatingState } from '../../src/models/Rating';
 import { publicCache } from '../../src/modules/public/public.cache';
 import { clock } from '../../src/utils/clock';
@@ -57,6 +60,9 @@ const ALL_MODELS: { init(): Promise<unknown>; deleteMany(f: object): PromiseLike
   TimetableVersion,
   LessonOverride,
   BrandingAsset,
+  TelegramBotConfig,
+  TelegramLinkToken,
+  TelegramOutbox,
 ];
 
 /** Har bir test fayli uchun alohida baza; har testdan oldin tozalanadi */

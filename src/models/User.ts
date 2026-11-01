@@ -1,6 +1,12 @@
 import { HydratedDocument, Schema, Types, model } from 'mongoose';
 import { ROLES, type Role } from '../constants/roles';
 
+export interface IUserTelegram {
+  chatId: number | null;
+  username: string | null;
+  linkedAt: Date | null;
+}
+
 export interface IUser {
   schoolId: Types.ObjectId | null;
   fullName: string;
@@ -15,6 +21,7 @@ export interface IUser {
   failedLoginCount: number;
   lockUntil: Date | null;
   passwordChangedAt: Date | null;
+  telegram: IUserTelegram;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -35,10 +42,21 @@ const userSchema = new Schema<IUser>(
     failedLoginCount: { type: Number, default: 0 },
     lockUntil: { type: Date, default: null },
     passwordChangedAt: { type: Date, default: null },
+    telegram: {
+      // chatId tasodifan API ga chiqib ketmasligi uchun select:false; servislar '+telegram.chatId' bilan oladi
+      chatId: { type: Number, default: null, select: false },
+      username: { type: String, default: null },
+      linkedAt: { type: Date, default: null },
+    },
   },
   { timestamps: true },
 );
 
 userSchema.index({ schoolId: 1, role: 1 });
+// Bitta Telegram chat faqat bitta foydalanuvchiga ulanishi mumkin
+userSchema.index(
+  { 'telegram.chatId': 1 },
+  { unique: true, partialFilterExpression: { 'telegram.chatId': { $type: 'number' } } },
+);
 
 export const User = model<IUser>('User', userSchema);

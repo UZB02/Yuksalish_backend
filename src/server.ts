@@ -3,6 +3,7 @@ import { connectDb, disconnectDb, ensureIndexes } from './config/db';
 import { env } from './config/env';
 import { logger } from './core/logger';
 import { startJobs } from './jobs';
+import { startTelegram, stopTelegram } from './modules/telegram';
 import { runTimetablePurge } from './modules/timetable/timetable.purge';
 
 async function main() {
@@ -12,6 +13,7 @@ async function main() {
   await runTimetablePurge();
   const app = createApp();
   startJobs();
+  startTelegram();
   const server = app.listen(env.PORT, () => {
     logger.info(`API ishga tushdi: http://localhost:${env.PORT}/api/v1 (docs: /api/docs)`);
   });
@@ -19,7 +21,7 @@ async function main() {
   const shutdown = (signal: string) => {
     logger.info(`${signal} qabul qilindi, to'xtatilmoqda`);
     server.close(() => {
-      void disconnectDb().finally(() => process.exit(0));
+      void stopTelegram().finally(() => disconnectDb().finally(() => process.exit(0)));
     });
     setTimeout(() => process.exit(1), 10_000).unref();
   };

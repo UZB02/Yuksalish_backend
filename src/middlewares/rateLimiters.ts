@@ -1,4 +1,4 @@
-import rateLimit from 'express-rate-limit';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { env } from '../config/env';
 import { AppError } from '../core/errors';
 
@@ -38,3 +38,15 @@ export const publicLimiter = make(
   env.PUBLIC_RATE_LIMIT_PER_MIN,
   "So'rovlar juda ko'p. Birozdan so'ng urinib ko'ring",
 );
+
+/** Telegram ulash havolasi: soatiga 10 ta, foydalanuvchi bo'yicha (authenticate dan keyin) */
+export const telegramLinkLimiter = rateLimit({
+  windowMs: 60 * 60_000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: () => !env.RATE_LIMIT_ENABLED,
+  keyGenerator: (req) => req.user?.id ?? ipKeyGenerator(req.ip ?? ''),
+  handler: (_req, _res, next) =>
+    next(AppError.rateLimited("Havola so'rovlari juda ko'p. Keyinroq urinib ko'ring")),
+});

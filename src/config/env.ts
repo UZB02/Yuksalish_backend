@@ -32,6 +32,8 @@ const schema = z.object({
     (v) => (v === '' ? undefined : v),
     z.coerce.number().int().min(1).optional(),
   ),
+  // Telegram bot tokeni (ixtiyoriy zaxira; asosiy token bazada, superadmin kiritadi)
+  TELEGRAM_BOT_TOKEN: z.preprocess((v) => (v === '' ? undefined : v), z.string().trim().optional()),
   RATING_DEBOUNCE_MS: z.coerce.number().int().min(0).default(5000),
 });
 

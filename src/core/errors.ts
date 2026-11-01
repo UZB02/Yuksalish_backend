@@ -5,6 +5,8 @@ export const ErrorCodes = {
   NOT_FOUND: 'NOT_FOUND',
   CONFLICT: 'CONFLICT',
   RATE_LIMITED: 'RATE_LIMITED',
+  BAD_GATEWAY: 'BAD_GATEWAY',
+  SERVICE_UNAVAILABLE: 'SERVICE_UNAVAILABLE',
   INTERNAL: 'INTERNAL',
 } as const;
 export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];
@@ -21,6 +23,8 @@ const STATUS: Record<ErrorCode, number> = {
   NOT_FOUND: 404,
   CONFLICT: 409,
   RATE_LIMITED: 429,
+  BAD_GATEWAY: 502,
+  SERVICE_UNAVAILABLE: 503,
   INTERNAL: 500,
 };
 
@@ -49,6 +53,12 @@ export class AppError extends Error {
   }
   static conflict(message: string, details?: ErrorDetail[]) {
     return new AppError('CONFLICT', message, details);
+  }
+  static badGateway(message: string) {
+    return new AppError('BAD_GATEWAY', message);
+  }
+  static unavailable(message: string) {
+    return new AppError('SERVICE_UNAVAILABLE', message);
   }
   static rateLimited(message = "So'rovlar juda ko'p. Keyinroq urinib ko'ring") {
     return new AppError('RATE_LIMITED', message);

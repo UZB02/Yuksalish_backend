@@ -23,6 +23,7 @@ import { schoolAdminsRouter } from './modules/school-admins/school-admins.routes
 import { schoolsRouter } from './modules/schools/schools.routes';
 import { teachersRouter } from './modules/teachers/teachers.routes';
 import { journalRouter } from './modules/journal/journal.routes';
+import { telegramRouter } from './modules/telegram/telegram.routes';
 import { timetableRouter } from './modules/timetable/timetable.routes';
 
 export const apiRouter = Router();
@@ -51,3 +52,4 @@ apiRouter.use('/ratings', ratingsRouter);
 apiRouter.use('/public', publicRouter);
 apiRouter.use('/journal', journalRouter);
 apiRouter.use('/timetable', timetableRouter);
+apiRouter.use('/telegram', telegramRouter);
