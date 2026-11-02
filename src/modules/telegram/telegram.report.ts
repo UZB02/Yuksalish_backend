@@ -179,6 +179,36 @@ export async function buildSuperadminSummary(date: string): Promise<string> {
   return lines.join('\n');
 }
 
+/** Superadmin uchun /haftalik: har bir faol maktab bo'yicha shu haftaning davomati va xulq qaydlari (bir qatordan) */
+export async function buildSuperadminWeeklySummary(date: string): Promise<string> {
+  const from = mondayOf(date);
+  const schools = await School.find({ isActive: true }).select('name').sort({ name: 1 }).lean();
+  const lines = [`📈 <b>Haftalik xulosa — ${dayMonthUz(from)} – ${dayMonthUz(date)}</b>`, ''];
+  for (const s of schools) {
+    const schoolId = String(s._id);
+    const [cur, prev, disc] = await Promise.all([
+      loadRangeAttendanceRate(schoolId, from, date),
+      loadRangeAttendanceRate(schoolId, addDaysStr(from, -7), addDaysStr(date, -7)),
+      loadDiscipline(schoolId, from, date),
+    ]);
+    if (cur.rate === null) {
+      lines.push(`${esc(s.name)}: davomat olinmagan`);
+      continue;
+    }
+    let delta = '';
+    if (prev.rate !== null) {
+      const d = Math.round((cur.rate - prev.rate) * 10) / 10;
+      if (d !== 0) delta = ` (${d > 0 ? '▲' : '▼'} ${fmtPct(Math.abs(d))} pp)`;
+    }
+    lines.push(
+      `${esc(s.name)}: ${fmtPct(cur.rate)}%${delta}` +
+        (disc.total > 0 ? ` · xulq: ${disc.total} ta qayd (salbiy: ${disc.negative})` : ''),
+    );
+  }
+  if (!schools.length) lines.push('Faol maktab yo‘q.');
+  return lines.join('\n');
+}
+
 // ---------- Cron ishga tushiruvchilar ----------
 
 export interface ReportRunResult {
@@ -245,7 +275,7 @@ async function runReports(kind: Kind, now: Date): Promise<ReportRunResult> {
 /**
  * Kunlik hisobot: dailyReportTime hozirgi Toshkent vaqtiga teng, bugun ish kuni va `notify.dailyReport` yoqilgan
  * maktablarning ulangan school_admin lariga. dedupeKey `daily:<maktab>:<foydalanuvchi>:<sana>`.
- * Superadminlarga rejali hisobot yuborilmaydi (faqat /hisobot orqali qisqa xulosa).
+ * Superadminlarga rejali hisobot yuborilmaydi (faqat /hisobot va /haftalik orqali qisqa xulosa).
  */
 export const runDailyReports = (now: Date = new Date()): Promise<ReportRunResult> =>
   runReports('daily', now);
@@ -266,9 +296,7 @@ export async function reportCommandReply(
   today: string,
 ): Promise<string> {
   if (user.role === 'superadmin') {
-    return cmd === 'hisobot'
-      ? buildSuperadminSummary(today)
-      : 'Haftalik hisobot maktab rahbariyati uchun. Maktablar bo‘yicha batafsil ma’lumotni admin paneldan ko‘ring.';
+    return cmd === 'hisobot' ? buildSuperadminSummary(today) : buildSuperadminWeeklySummary(today);
   }
   if (!user.schoolId) return 'Hisobingiz maktabga bog‘lanmagan.';
   const school = await School.findById(user.schoolId).select('name').lean();

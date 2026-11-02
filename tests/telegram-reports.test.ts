@@ -439,7 +439,10 @@ describe('buyruqlar', () => {
     expect(r).toContain('Kunlik xulosa — 4-noyabr (chorshanba)');
     expect(r).toContain('Maktab rep: 86,7% (13 / 15) · olinmagan sinflar: 2');
     expect(r).toContain('Maktab rep2: davomat olinmagan');
-    expect(await say(900, '/haftalik')).toContain('admin paneldan');
+    const w = (await say(900, '/haftalik'))!;
+    expect(w).toContain('Haftalik xulosa — 2-noyabr – 4-noyabr');
+    expect(w).toContain('Maktab rep: ');
+    expect(w).toContain('Maktab rep2: davomat olinmagan');
   });
 
   it('/help rahbariyat buyruqlarini ko‘rsatadi; bot menyusida bor', async () => {

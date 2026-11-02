@@ -21,8 +21,8 @@ export function commandsForRole(role: string): BotCommand[] {
     case 'school_admin':
       return [CMD.hisobot, CMD.haftalik, CMD.help, CMD.stop];
     case 'superadmin':
-      // /haftalik superadmin uchun faqat "admin paneldan" deydi
-      return [CMD.hisobot, CMD.help, CMD.stop];
+      // Superadmin uchun /hisobot va /haftalik barcha maktablar bo'yicha qisqa xulosa beradi
+      return [CMD.hisobot, CMD.haftalik, CMD.help, CMD.stop];
     default:
       return DEFAULT_COMMANDS;
   }

@@ -59,7 +59,7 @@ describe('rolga xos bot menyusi', () => {
     await linkAs('sup', 'superadmin', 13);
     expect(fake.menuOf(11)).toEqual(['bugun', 'ertaga', 'hafta', 'help', 'stop']);
     expect(fake.menuOf(12)).toEqual(['hisobot', 'haftalik', 'help', 'stop']);
-    expect(fake.menuOf(13)).toEqual(['hisobot', 'help', 'stop']);
+    expect(fake.menuOf(13)).toEqual(['hisobot', 'haftalik', 'help', 'stop']);
   });
 
   it('/stop chat menyusini o‘chiradi', async () => {
