@@ -8,7 +8,9 @@ import {
   type ClientFactory,
   type TelegramClient,
 } from './telegram.client';
+import { syncAllLinkedCommands } from './telegram.commands';
 import { decryptToken } from './telegram.crypto';
+import { DEFAULT_COMMANDS } from './telegram.menu';
 
 export type BotStatus = 'running' | 'stopped' | 'error';
 
@@ -27,15 +29,8 @@ export interface ResolvedToken {
 
 export const TOKEN_REENTER_MESSAGE = 'Token qayta kiritilishi kerak';
 
-export const BOT_COMMANDS = [
-  { command: 'bugun', description: 'Bugungi darslarim' },
-  { command: 'ertaga', description: 'Ertangi darslarim' },
-  { command: 'hafta', description: 'Haftalik jadval' },
-  { command: 'hisobot', description: 'Kunlik hisobot (rahbariyat)' },
-  { command: 'haftalik', description: 'Haftalik hisobot (rahbariyat)' },
-  { command: 'help', description: 'Yordam' },
-  { command: 'stop', description: 'Hisobni uzish' },
-];
+/** Default scope (ulanmagan chatlar). Rolga xos menyular telegram.commands.ts da, chat scope bilan */
+export const BOT_COMMANDS = DEFAULT_COMMANDS;
 
 /** Bazadagi sozlama (bo'lsa) yoki .env zaxirasidan tokenni aniqlaydi */
 export async function resolveToken(): Promise<ResolvedToken> {
@@ -149,13 +144,17 @@ class TelegramManager {
           this.fail(`Bot to'xtadi: ${err.message}`);
         }
       });
-      void client
-        .setCommands?.(BOT_COMMANDS)
-        .catch((err) =>
-          logger.warn({ err: String(err) }, 'Telegram buyruqlarini o‘rnatib bo‘lmadi'),
-        );
       this.client = client;
       this.status = 'running';
+      // Default menyu, so'ng ulangan chatlarni rolga moslab fonda qayta sinxronlash
+      void (async () => {
+        try {
+          await client.setCommands?.(BOT_COMMANDS);
+        } catch (err) {
+          logger.warn({ err: String(err) }, 'Telegram buyruqlarini o‘rnatib bo‘lmadi');
+        }
+        await syncAllLinkedCommands();
+      })();
       this.botUsername = info.username;
       this.botName = info.name;
       logger.info({ bot: info.username }, 'Telegram bot ishga tushdi');

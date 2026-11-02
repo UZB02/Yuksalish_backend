@@ -10,7 +10,8 @@ import { settingsStore } from '../src/modules/settings/settings.store';
 import type { AttendanceCategory } from '../src/modules/settings/attendance.settings';
 import { handleIncoming, HELP_TEXT } from '../src/modules/telegram/telegram.bot';
 import { encryptToken } from '../src/modules/telegram/telegram.crypto';
-import { BOT_COMMANDS, telegramManager } from '../src/modules/telegram/telegram.manager';
+import { commandsForRole } from '../src/modules/telegram/telegram.menu';
+import { telegramManager } from '../src/modules/telegram/telegram.manager';
 import { splitMessage } from '../src/modules/telegram/telegram.outbox';
 import { runDailyReports, runWeeklyReports } from '../src/modules/telegram/telegram.report';
 import { clock } from '../src/utils/clock';
@@ -445,7 +446,7 @@ describe('buyruqlar', () => {
     expect(HELP_TEXT).toContain('/hisobot');
     expect(HELP_TEXT).toContain('/haftalik');
     expect(await say(201, '/help')).toBe(HELP_TEXT);
-    expect(BOT_COMMANDS.map((c) => c.command)).toEqual(
+    expect(commandsForRole('school_admin').map((c) => c.command)).toEqual(
       expect.arrayContaining(['hisobot', 'haftalik']),
     );
   });

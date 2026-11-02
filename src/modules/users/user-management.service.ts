@@ -9,6 +9,7 @@ import { escapeRegex, isDuplicateKeyError, isId, uniq } from '../../utils/helper
 import { hashPassword } from '../../utils/password';
 import { auditService } from '../audit/audit.service';
 import { refreshTokenService } from '../auth/refresh-token.service';
+import { syncUserCommands } from '../telegram/telegram.commands';
 
 export type ManagedRole = Exclude<Role, 'superadmin'>;
 
@@ -153,6 +154,10 @@ export const userManagement = {
     if (patch.isActive !== undefined) user.isActive = patch.isActive;
     await user.save();
     if (patch.isActive === false) await refreshTokenService.revokeAll(user.id);
+    // Faolsizlantirilgan/qayta faollashtirilgan foydalanuvchining chat menyusi (xatosiz)
+    if (patch.isActive !== undefined && patch.isActive !== before.isActive) {
+      await syncUserCommands(user.id);
+    }
 
     await auditService.log({
       userId: ctx.actor.id,

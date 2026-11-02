@@ -37,6 +37,14 @@ export class TelegramApiError extends Error {
   }
 }
 
+export interface BotCommand {
+  command: string;
+  description: string;
+}
+
+/** Telegram BotCommandScope: default (berilmasa) yoki aniq chat */
+export type CommandScope = { type: 'chat'; chat_id: number };
+
 /** Telegram ga yupqa interfeys: testlarda soxtasi bilan almashtiriladi, tarmoqqa chiqmaydi */
 export interface TelegramClient {
   getMe(): Promise<BotInfo>;
@@ -47,7 +55,9 @@ export interface TelegramClient {
     onFatal: (err: Error) => void,
   ): Promise<BotInfo>;
   /** Bot menyusidagi buyruqlar (setMyCommands). Ixtiyoriy: xato bot ishini to'xtatmaydi */
-  setCommands?(commands: { command: string; description: string }[]): Promise<void>;
+  setCommands?(commands: BotCommand[], scope?: CommandScope): Promise<void>;
+  /** Scope uchun buyruqlarni o'chiradi (chat menyusi defaultga qaytadi). Ixtiyoriy */
+  deleteCommands?(scope: CommandScope): Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -129,8 +139,11 @@ export const grammyClientFactory: ClientFactory = (token) => {
           });
       });
     },
-    async setCommands(commands) {
-      await bot.api.setMyCommands(commands);
+    async setCommands(commands, scope) {
+      await bot.api.setMyCommands(commands, scope ? { scope } : undefined);
+    },
+    async deleteCommands(scope) {
+      await bot.api.deleteMyCommands({ scope });
     },
     async stop() {
       await bot.stop().catch(() => undefined);

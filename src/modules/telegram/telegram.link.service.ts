@@ -5,6 +5,7 @@ import { TelegramOutbox } from '../../models/TelegramOutbox';
 import { User } from '../../models/User';
 import { clock } from '../../utils/clock';
 import { auditService } from '../audit/audit.service';
+import { clearChatCommands, setChatCommands } from './telegram.commands';
 
 export const LINK_TTL_MS = 15 * 60_000;
 
@@ -52,6 +53,7 @@ export async function unlinkUser(
   const chatId = user?.telegram?.chatId ?? null;
   if (!user || chatId === null) return null;
   await cancelPending(user._id, 'unlinked');
+  await clearChatCommands(chatId);
   if (audit) {
     await auditService.log({
       userId: audit.actorId,
@@ -79,7 +81,7 @@ export async function linkChat(
     expiresAt: { $gt: clock.now() },
   });
   if (!row) return { ok: false, reason: 'invalid' };
-  const user = await User.findById(row.userId).select('fullName isActive schoolId');
+  const user = await User.findById(row.userId).select('fullName isActive schoolId role');
   if (!user || !user.isActive) return { ok: false, reason: 'inactive' };
 
   // Bu chat boshqa foydalanuvchiga ulangan bo'lsa — o'sha ulanish ko'chiriladi
@@ -100,6 +102,7 @@ export async function linkChat(
       },
     },
   );
+  await setChatCommands(chat.chatId, user.role);
   await auditService.log({
     userId: user._id.toString(),
     schoolId: user.schoolId?.toString() ?? null,
