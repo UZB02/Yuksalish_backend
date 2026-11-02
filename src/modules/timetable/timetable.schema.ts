@@ -18,6 +18,13 @@ export const entriesInput = z.array(entryInput).max(MAX_WEEKDAY * MAX_LESSON_NO)
 const note = optionalText(500);
 
 export const classIdParams = z.object({ classId: objectIdSchema });
+export const assignmentsBody = z.object({
+  pairs: z
+    .array(z.object({ subjectId: objectIdSchema, teacherId: objectIdSchema }))
+    .min(1)
+    .max(100),
+});
+
 export const versionIdParams = z.object({ id: objectIdSchema });
 export const teacherIdParams = z.object({ teacherId: objectIdSchema });
 

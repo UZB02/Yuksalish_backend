@@ -194,6 +194,31 @@ export async function setClassSubjects(
   }
 }
 
+/**
+ * Sinfga (fan, o'qituvchi) juftliklarini QO'SHADI (mavjudlarga tegmaydi, idempotent).
+ * Tekshiruvlar `setClassSubjects` bilan bir xil; o'qituvchi sinf `teacherIds` ga qo'shiladi.
+ * Haqiqatan qo'shilgan juftliklarni qaytaradi.
+ */
+export async function addClassSubjectPairs(
+  ctx: Ctx,
+  schoolId: string,
+  cls: ClassDoc,
+  pairs: { subjectId: string; teacherId: string }[],
+): Promise<{ subjectId: string; teacherId: string }[]> {
+  const wanted = new Map<string, { subjectId: string; teacherId: string }>();
+  for (const p of pairs) wanted.set(pairKey(p.subjectId, p.teacherId), p);
+  if (!wanted.size) return [];
+  const existing = await ClassSubject.find({ classId: cls._id }).lean();
+  const have = new Set(existing.map((e) => pairKey(String(e.subjectId), String(e.teacherId))));
+  const added = [...wanted.entries()].filter(([k]) => !have.has(k)).map(([, v]) => v);
+  // Barcha juftliklar mavjud bo'lsa ham o'qituvchilar sinf `teacherIds` da bo'lishi kerak (invariant)
+  await setClassSubjects(ctx, schoolId, cls, [
+    ...existing.map((e) => ({ subjectId: String(e.subjectId), teacherId: String(e.teacherId) })),
+    ...added,
+  ]);
+  return added;
+}
+
 /** Faol o'quv yilidagi (arxivlanmagan) sinflar bo'yicha o'qituvchilarning biriktirishlari */
 export async function assignmentsOfTeachers(schoolId: string, teacherIds: string[]) {
   const map = new Map<

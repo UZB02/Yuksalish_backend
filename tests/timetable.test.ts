@@ -536,7 +536,7 @@ describe('biriktirishlarni sinxronlash va ommaviy faollashtirish', () => {
   it("syncAssignments yetishmayotgan ClassSubject ni qo'shadi, mavjudiga tegmaydi, teacherIds invarianti", async () => {
     await assignSubject(school.id, c2 as never, math.id, t3.id);
     const d = await draft(c2.id, [
-      e(1, 1, math.id, t2.id), // mavjud biriktirish t3 — tegilmaydi
+      e(1, 1, math.id, t2.id), // mavjud t3 qoladi, t2 qo'shimcha o'qituvchi sifatida qo'shiladi
       e(1, 2, eng.id, t2.id),
       e(2, 2, eng.id, t2.id),
     ]);
@@ -545,10 +545,17 @@ describe('biriktirishlarni sinxronlash va ommaviy faollashtirish', () => {
       syncAssignments: true,
     });
     expect(r.status).toBe(200);
-    expect(r.body.data.syncedAssignments).toEqual([{ subjectId: eng.id, teacherId: t2.id }]);
+    expect(r.body.data.syncedAssignments).toEqual(
+      expect.arrayContaining([
+        { subjectId: math.id, teacherId: t2.id },
+        { subjectId: eng.id, teacherId: t2.id },
+      ]),
+    );
+    expect(r.body.data.syncedAssignments).toHaveLength(2);
     const cs = await ClassSubject.find({ classId: c2.id });
-    expect(cs).toHaveLength(2);
-    expect(String(cs.find((x) => String(x.subjectId) === math.id)?.teacherId)).toBe(t3.id);
+    expect(cs).toHaveLength(3);
+    const mathT = cs.filter((x) => String(x.subjectId) === math.id).map((x) => String(x.teacherId));
+    expect(mathT.sort()).toEqual([t2.id, t3.id].sort());
     expect(String(cs.find((x) => String(x.subjectId) === eng.id)?.teacherId)).toBe(t2.id);
     const cls = await ClassModel.findById(c2.id);
     expect(cls?.teacherIds.map(String)).toContain(t2.id);
@@ -594,6 +601,50 @@ describe('biriktirishlarni sinxronlash va ommaviy faollashtirish', () => {
     expect(
       (await p(viewer, '/activate-bulk', { versionIds: [a.id], validFrom: TODAY })).status,
     ).toBe(403);
+  });
+});
+
+describe('sinfga biriktirish endpointi (muharrirdan)', () => {
+  const url = (id: string) => `/classes/${id}/assignments`;
+
+  it("juftlik qo'shadi, idempotent, ko'p o'qituvchi, teacherIds, audit", async () => {
+    await assignSubject(school.id, c2 as never, math.id, t3.id);
+    const r = await p(admin, url(c2.id), {
+      pairs: [
+        { subjectId: math.id, teacherId: t2.id },
+        { subjectId: math.id, teacherId: t2.id },
+        { subjectId: math.id, teacherId: t3.id },
+      ],
+    });
+    expect(r.status).toBe(200);
+    expect(r.body.data.added).toEqual([{ subjectId: math.id, teacherId: t2.id }]);
+    expect(r.body.data.subjects).toHaveLength(2);
+    expect(r.body.data.subjects[0]).toHaveProperty('teacher.fullName');
+    const cls = await ClassModel.findById(c2.id);
+    expect(cls?.teacherIds.map(String)).toEqual(expect.arrayContaining([t2.id, t3.id]));
+    expect(await AuditLog.countDocuments({ action: 'class.subjects', entityId: c2.id })).toBe(1);
+    const again = await p(admin, url(c2.id), { pairs: [{ subjectId: math.id, teacherId: t2.id }] });
+    expect(again.status).toBe(200);
+    expect(again.body.data.added).toEqual([]);
+    expect(await ClassSubject.countDocuments({ classId: c2.id })).toBe(2);
+  });
+
+  it('ruxsat va tekshiruvlar', async () => {
+    const body = { pairs: [{ subjectId: math.id, teacherId: t2.id }] };
+    expect((await p(viewer, url(c2.id), body)).status).toBe(403);
+    expect((await p(teacher1, url(c2.id), body)).status).toBe(403);
+    expect((await p(admin, url(c2.id), { pairs: [] })).status).toBe(400);
+    // boshqa maktab o'qituvchisi va sinfi
+    expect(
+      (await p(admin, url(c2.id), { pairs: [{ subjectId: math.id, teacherId: tOther.id }] }))
+        .status,
+    ).toBe(400);
+    expect((await p(adminOther, url(c2.id), body)).status).toBe(404);
+    const nofan = '507f1f77bcf86cd799439011';
+    expect(
+      (await p(admin, url(c2.id), { pairs: [{ subjectId: nofan, teacherId: t2.id }] })).status,
+    ).toBe(400);
+    expect(await ClassSubject.countDocuments({ classId: c2.id })).toBe(0);
   });
 });
 

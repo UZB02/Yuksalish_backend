@@ -11,6 +11,7 @@ import { validate } from '../../middlewares/validate';
 import {
   activateBody,
   activateBulkBody,
+  assignmentsBody,
   bulkPreviewBody,
   busyTeachersQuery,
   classExportQuery,
@@ -314,6 +315,23 @@ timetableRouter.post(
         req.schoolId as string,
         req.params.classId as string,
         req.body,
+      ),
+    );
+  }),
+);
+
+timetableRouter.post(
+  '/classes/:classId/assignments',
+  ...manage,
+  validate({ params: classIdParams, body: assignmentsBody }),
+  asyncHandler(async (req, res) => {
+    ok(
+      res,
+      await timetableService.addAssignments(
+        getCtx(req),
+        req.schoolId as string,
+        req.params.classId as string,
+        req.body.pairs,
       ),
     );
   }),

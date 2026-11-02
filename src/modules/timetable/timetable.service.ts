@@ -17,7 +17,7 @@ import { purgeDateOf } from './timetable.purge';
 import { isoWeekday } from '../../utils/dates';
 import { isDuplicateKeyError, isId, uniq } from '../../utils/helpers';
 import { auditService } from '../audit/audit.service';
-import { setClassSubjects } from '../classes/class-subjects.service';
+import { addClassSubjectPairs, loadClassSubjects } from '../classes/class-subjects.service';
 import { rechain, rechainDetailed, versionsToReplace } from './timetable.chain';
 import { telegramManager } from '../telegram/telegram.manager';
 import {
@@ -297,9 +297,10 @@ async function addTeachersToClass(cls: ClassDoc, entries: ITimetableEntry[]) {
 }
 
 /**
- * Jadvalda bor, lekin ClassSubject'da umuman yo'q fanlarni biriktiradi (bir tomonlama sinxronlash).
- * Fan jadvalda bir nechta o'qituvchi bilan kelsa (parallel/ko'p o'qituvchi) hammasi biriktiriladi;
- * fanga allaqachon biror o'qituvchi biriktirilgan bo'lsa unga tegilmaydi.
+ * Jadvalda bor, lekin ClassSubject'da yo'q (fan, o'qituvchi) juftliklarini biriktiradi
+ * (bir tomonlama sinxronlash). Bir fanga bir nechta o'qituvchi biriktirilishi mumkin: fanda
+ * boshqa o'qituvchi bo'lsa ham jadvaldagi yangi juftlik qo'shimcha sifatida qo'shiladi.
+ * Nofaol fan/o'qituvchi juftliklari o'tkazib yuboriladi.
  */
 async function syncAssignments(
   ctx: Ctx,
@@ -308,48 +309,30 @@ async function syncAssignments(
   entries: ITimetableEntry[],
 ) {
   const existing = await ClassSubject.find({ classId: cls._id }).lean();
-  const have = new Set(existing.map((e) => idStr(e.subjectId)));
-  const wantedBy = new Map<string, Set<string>>();
+  const have = new Set(existing.map((e) => `${idStr(e.subjectId)}:${idStr(e.teacherId)}`));
+  const wanted = new Map<string, { subjectId: string; teacherId: string }>();
   for (const e of entries) {
-    const s = idStr(e.subjectId);
-    if (have.has(s)) continue;
-    const set = wantedBy.get(s) ?? new Set<string>();
-    set.add(idStr(e.teacherId));
-    wantedBy.set(s, set);
+    const pair = { subjectId: idStr(e.subjectId), teacherId: idStr(e.teacherId) };
+    const k = `${pair.subjectId}:${pair.teacherId}`;
+    if (!have.has(k)) wanted.set(k, pair);
   }
-  if (!wantedBy.size) return [] as { subjectId: string; teacherId: string }[];
-  // Nofaol fan/o'qituvchi biriktirilmaydi (setClassSubjects ularni rad etadi)
-  const activeSubjects = new Set(
-    (
-      await Subject.find({ _id: { $in: [...wantedBy.keys()] }, isActive: true })
-        .select('_id')
-        .lean()
-    ).map((s) => idStr(s._id)),
-  );
-  const added: { subjectId: string; teacherId: string }[] = [];
-  const activeTeachers = new Set(
-    (
-      await User.find({
-        _id: { $in: uniq([...wantedBy.values()].flatMap((m) => [...m])) },
-        isActive: true,
-      })
-        .select('_id')
-        .lean()
-    ).map((t) => idStr(t._id)),
-  );
-  for (const [subjectId, teachers] of wantedBy) {
-    if (!activeSubjects.has(subjectId)) continue;
-    for (const teacherId of teachers) {
-      if (activeTeachers.has(teacherId)) added.push({ subjectId, teacherId });
-    }
-  }
-  if (!added.length) return added;
-  const items = [
-    ...existing.map((e) => ({ subjectId: idStr(e.subjectId), teacherId: idStr(e.teacherId) })),
-    ...added,
-  ];
-  await setClassSubjects(ctx, schoolId, cls, items);
-  return added;
+  if (!wanted.size) return [] as { subjectId: string; teacherId: string }[];
+  const [activeSubjects, activeTeachers] = await Promise.all([
+    Subject.find({
+      _id: { $in: uniq([...wanted.values()].map((w) => w.subjectId)) },
+      isActive: true,
+    })
+      .select('_id')
+      .lean(),
+    User.find({ _id: { $in: uniq([...wanted.values()].map((w) => w.teacherId)) }, isActive: true })
+      .select('_id')
+      .lean(),
+  ]);
+  const sOk = new Set(activeSubjects.map((s) => idStr(s._id)));
+  const tOk = new Set(activeTeachers.map((t) => idStr(t._id)));
+  const todo = [...wanted.values()].filter((w) => sOk.has(w.subjectId) && tOk.has(w.teacherId));
+  if (!todo.length) return todo;
+  return addClassSubjectPairs(ctx, schoolId, cls, todo);
 }
 
 const compact = (entries: ITimetableEntry[]) =>
@@ -680,6 +663,23 @@ export const timetableService = {
         ? await hypotheticalValidTo(idStr(v.classId), from, idStr(v._id))
         : v.validTo;
     return { items: await busyTeachersAt(schoolId, idStr(v.classId), from, to, weekday, lessonNo) };
+  },
+
+  /**
+   * Muharrirdan "Sinfga biriktirish": (fan, o'qituvchi) juftliklarini sinfga qo'shadi (idempotent).
+   * Qaytaradi: haqiqatan qo'shilganlar va sinfning yangilangan biriktirishlari.
+   */
+  async addAssignments(
+    ctx: Ctx,
+    schoolId: string,
+    classId: string,
+    pairs: { subjectId: string; teacherId: string }[],
+  ) {
+    const cls = await loadClass(schoolId, classId);
+    assertWritable(cls);
+    const added = await addClassSubjectPairs(ctx, schoolId, cls, pairs);
+    const subjects = (await loadClassSubjects([cls._id])).get(idStr(cls._id)) ?? [];
+    return { added, subjects };
   },
 
   async createVersion(

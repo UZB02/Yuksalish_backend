@@ -226,6 +226,23 @@ export function buildPhase8(h: DocHelpers) {
         },
       ),
     },
+    '/timetable/classes/{classId}/assignments': {
+      post: op(
+        "Sinfga (fan, o'qituvchi) juftliklarini biriktirish (idempotent, timetable.manage)",
+        {
+          '200': okRes(
+            o({
+              added: arr(o({ subjectId: str, teacherId: str })),
+              subjects: arr(ref('ClassSubject')),
+            }),
+          ),
+        },
+        {
+          params: [classIdParam],
+          body: o({ pairs: arr(o({ subjectId: str, teacherId: str })) }, ['pairs']),
+        },
+      ),
+    },
     '/timetable/versions/{id}/busy-teachers': {
       get: op(
         "Katak (hafta kuni + dars) uchun boshqa sinflarda band o'qituvchilar (timetable.manage)",
