@@ -720,6 +720,43 @@ describe("ko'rinishlar", () => {
   });
 });
 
+describe("o'qituvchi haftasi: jadval kuchga kirmagan kunlar", () => {
+  it('timetableStartsOn: versiya seshanbadan boshlansa dushanba va oldingi hafta belgilanadi', async () => {
+    const a = await draft(c1.id, [e(1, 1, math.id, t1.id), e(2, 3, math.id, t1.id)]);
+    await p(admin, `/versions/${a.id}/activate`, { validFrom: '2026-11-03' });
+    const w = await g(admin, `/teachers/${t1.id}/week?date=2026-11-04`);
+    const days = w.body.data.days as {
+      date: string;
+      lessons: unknown[];
+      timetableStartsOn: string | null;
+    }[];
+    expect(days[0]).toMatchObject({ date: '2026-11-02', timetableStartsOn: '2026-11-03' });
+    expect(days[0].lessons).toHaveLength(0);
+    // versiya amalda: seshanba (dars bor) va dars yo'q chorshanba — belgisiz
+    expect(days[1].timetableStartsOn).toBeNull();
+    expect(days[2].timetableStartsOn).toBeNull();
+    // oldingi hafta to'liq belgilanadi
+    const prev = await g(admin, `/teachers/${t1.id}/week?date=2026-10-28`);
+    expect(
+      (prev.body.data.days as { timetableStartsOn: string | null }[]).every(
+        (d) => d.timetableStartsOn === '2026-11-03',
+      ),
+    ).toBe(true);
+    // /me/week ham shu maydonni beradi
+    const me = await g(teacher1, '/me/week?date=2026-11-02');
+    expect(me.body.data.days[0].timetableStartsOn).toBe('2026-11-03');
+  });
+
+  it("jadvali yo'q o'qituvchida maydon null", async () => {
+    const w = await g(admin, `/teachers/${t2.id}/week?date=2026-11-02`);
+    expect(
+      (w.body.data.days as { timetableStartsOn: string | null }[]).every(
+        (d) => d.timetableStartsOn === null,
+      ),
+    ).toBe(true);
+  });
+});
+
 describe('options', () => {
   it("faol fan/o'qituvchilar, sinf biriktirishlari va fan -> o'qituvchilar", async () => {
     await assignSubject(school.id, c1 as never, math.id, t1.id);

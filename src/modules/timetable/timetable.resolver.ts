@@ -368,3 +368,66 @@ export const subjectLessonsInRange = (
   from: string,
   to: string,
 ) => resolveClassesRange(schoolId, [classId], from, to, (l) => l.subjectId === subjectId);
+
+export interface VersionSpan {
+  classId: string;
+  validFrom: string;
+  validTo: string | null;
+}
+
+/**
+ * Sof hisob: har bir sana uchun "jadval hali kuchga kirmagan" belgisi.
+ * `spans` — o'qituvchining dolzarb sinflarining barcha faol/almashtirilgan versiyalari.
+ * Sana uchun hech bir dolzarb sinfda amaldagi versiya bo'lmasa va kechroq boshlanadigan versiya bo'lsa,
+ * eng yaqin boshlanish sanasi qaytadi; aks holda null (oddiy "dars yo'q" kuni).
+ */
+export function timetableStartsOnByDate(
+  spans: VersionSpan[],
+  dates: string[],
+): Record<string, string | null> {
+  const out: Record<string, string | null> = {};
+  for (const date of dates) {
+    const covered = spans.some(
+      (s) => s.validFrom <= date && (s.validTo === null || s.validTo >= date),
+    );
+    const later = spans.filter((s) => s.validFrom > date).map((s) => s.validFrom);
+    out[date] = !covered && later.length ? later.reduce((a, b) => (a < b ? a : b)) : null;
+  }
+  return out;
+}
+
+/**
+ * O'qituvchi haftasi uchun `timetableStartsOnByDate` ma'lumotlari.
+ * Dolzarb sinflar: o'qituvchi yozilgan, [from..] da hali tugamagan (haftada yoki keyinroq amal qiladigan)
+ * versiyali sinflar. Ularning barcha versiyalari olinadi (o'qituvchisiz versiya ham "amaldagi jadval" hisoblanadi).
+ */
+export async function teacherTimetableStarts(
+  schoolId: string,
+  teacherId: string,
+  from: string,
+  dates: string[],
+  liveClassIds?: (ids: string[]) => Promise<Set<string>>,
+): Promise<Record<string, string | null>> {
+  const base = {
+    schoolId,
+    status: { $in: ['active', 'superseded'] as ('active' | 'superseded')[] },
+    $or: [{ validTo: null }, { validTo: { $gte: from } }],
+  };
+  let classIds = (
+    await TimetableVersion.distinct('classId', { ...base, 'entries.teacherId': teacherId })
+  ).map(String);
+  if (liveClassIds) {
+    const live = await liveClassIds(classIds);
+    classIds = classIds.filter((c) => live.has(c));
+  }
+  if (!classIds.length) return timetableStartsOnByDate([], dates);
+  const rows = await TimetableVersion.find({ ...base, classId: { $in: classIds } })
+    .select('classId validFrom validTo')
+    .lean();
+  const spans = rows.map((v) => ({
+    classId: String(v.classId),
+    validFrom: v.validFrom,
+    validTo: v.validTo,
+  }));
+  return timetableStartsOnByDate(spans, dates);
+}

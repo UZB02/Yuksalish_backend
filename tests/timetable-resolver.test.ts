@@ -11,6 +11,7 @@ import {
   subjectLessonsInRange,
   teacherLessons,
   teacherLessonsInRange,
+  timetableStartsOnByDate,
   type VersionSlice,
 } from '../src/modules/timetable/timetable.resolver';
 import { makeClass, makeSchool, makeSubject, makeUser, makeYear, useTestDb } from './helpers';
@@ -176,5 +177,43 @@ describe('sof funksiyalar va override ilgagi', () => {
     expect(lessons).toHaveLength(2);
     expect(lessons[0].room).toBe('5');
     expect(applyOverrides(lessons, [])).toBe(lessons);
+  });
+});
+
+describe('timetableStartsOnByDate', () => {
+  const span = (classId: string, validFrom: string, validTo: string | null = null) => ({
+    classId,
+    validFrom,
+    validTo,
+  });
+  const dates = ['2026-11-02', '2026-11-03', '2026-11-04'];
+
+  it('versiya boshlanishidan oldingi kunlar boshlanish sanasini oladi', () => {
+    expect(timetableStartsOnByDate([span('a', '2026-11-03')], dates)).toEqual({
+      '2026-11-02': '2026-11-03',
+      '2026-11-03': null,
+      '2026-11-04': null,
+    });
+  });
+
+  it("versiya umuman yo'q yoki sinflardan biri qamrasa — null", () => {
+    expect(timetableStartsOnByDate([], dates)['2026-11-02']).toBeNull();
+    const r = timetableStartsOnByDate([span('a', '2026-11-03'), span('b', '2026-10-01')], dates);
+    expect(r['2026-11-02']).toBeNull();
+  });
+
+  it("tugagan versiyadan keyingi bo'shliq ham, eng yaqin keyingi boshlanish olinadi", () => {
+    const r = timetableStartsOnByDate(
+      [span('a', '2026-09-01', '2026-11-01'), span('a', '2026-11-04'), span('b', '2026-11-03')],
+      dates,
+    );
+    expect(r['2026-11-02']).toBe('2026-11-03');
+    expect(r['2026-11-04']).toBeNull();
+  });
+
+  it("faqat o'tmishda tugagan versiya (keyingisi yo'q) — null", () => {
+    expect(
+      timetableStartsOnByDate([span('a', '2026-09-01', '2026-10-31')], dates)['2026-11-02'],
+    ).toBeNull();
   });
 });

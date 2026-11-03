@@ -39,6 +39,7 @@ import {
   loadResolverSettings,
   resolveClassesRange,
   teacherLessonsInRange,
+  teacherTimetableStarts,
   type ResolvedLesson,
   type ResolverSettings,
 } from './timetable.resolver';
@@ -1017,9 +1018,16 @@ export const timetableService = {
     const base = date ?? today;
     const from = addDaysStr(base, -(isoWeekday(base) - 1));
     const to = addDaysStr(from, 6);
-    const [lessons, settings] = await Promise.all([
+    const weekDates = Array.from({ length: 7 }, (_, i) => addDaysStr(from, i));
+    const [lessons, settings, startsOn] = await Promise.all([
       teacherLessonsInRange(schoolId, teacherId, from, to),
       loadResolverSettings(schoolId),
+      teacherTimetableStarts(schoolId, teacherId, from, weekDates, async (ids) => {
+        const rows = await ClassModel.find({ _id: { $in: ids }, isArchived: false })
+          .select('_id')
+          .lean();
+        return new Set(rows.map((c) => idStr(c._id)));
+      }),
     ]);
     const classIds = uniq(lessons.map((l) => l.classId));
     const classes = await ClassModel.find({ _id: { $in: classIds }, isArchived: false })
@@ -1030,7 +1038,14 @@ export const timetableService = {
     const enriched = await enrich(visible, classes);
     const days = settings.workingWeekdays.map((weekday) => {
       const d = addDaysStr(from, weekday - 1);
-      return { date: d, weekday, lessons: enriched.filter((l) => l.date === d) };
+      const dayLessons = enriched.filter((l) => l.date === d);
+      // Faqat dars yo'q kunlar uchun: jadval hali kuchga kirmagan bo'lsa, boshlanish sanasi (aks holda null)
+      return {
+        date: d,
+        weekday,
+        lessons: dayLessons,
+        timetableStartsOn: dayLessons.length ? null : (startsOn[d] ?? null),
+      };
     });
     return {
       teacher: { id: teacherId, fullName: teacher.fullName },
