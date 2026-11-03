@@ -5,6 +5,7 @@ import { AppError } from '../../core/errors';
 import { created, ok } from '../../core/response';
 import { buildCredentialsFile, buildTeachersTemplate } from './teachers.excel';
 import { teachersImportService } from './teachers-import.service';
+import { teacherDeletion } from './teachers.delete';
 import { teachersService } from './teachers.service';
 
 const sid = (req: Request) => req.schoolId as string;
@@ -25,6 +26,14 @@ export const create = asyncHandler(async (req, res) => {
 
 export const update = asyncHandler(async (req, res) => {
   ok(res, await teachersService.update(getCtx(req), sid(req), id(req), req.body));
+});
+
+export const usage = asyncHandler(async (req, res) => {
+  ok(res, await teacherDeletion.usage(sid(req), id(req)));
+});
+
+export const remove = asyncHandler(async (req, res) => {
+  ok(res, await teacherDeletion.remove(getCtx(req), sid(req), id(req)));
 });
 
 export const setPhoto = asyncHandler(async (req, res) => {

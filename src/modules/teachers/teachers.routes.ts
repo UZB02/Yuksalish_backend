@@ -41,6 +41,8 @@ teachersRouter.get('/', validate({ query: listQuery }), c.list);
 teachersRouter.post('/', validate({ body: createBody }), c.create);
 teachersRouter.get('/:id', c.get);
 teachersRouter.patch('/:id', validate({ body: updateBody }), c.update);
+teachersRouter.get('/:id/usage', c.usage);
+teachersRouter.delete('/:id', c.remove);
 teachersRouter.put('/:id/photo', uploadPhoto, c.setPhoto);
 teachersRouter.delete('/:id/photo', c.removePhoto);
 teachersRouter.put('/:id/permissions', validate({ body: permissionsBody }), c.setPermissions);
