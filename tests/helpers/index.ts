@@ -14,6 +14,7 @@ import { SubjectGrade } from '../../src/models/SubjectGrade';
 import { TimetableVersion } from '../../src/models/TimetableVersion';
 import { LessonOverride } from '../../src/models/LessonOverride';
 import { Setting } from '../../src/models/Setting';
+import { PasswordResetCode } from '../../src/models/PasswordResetCode';
 import { TelegramBotConfig } from '../../src/models/TelegramBotConfig';
 import { TelegramLinkToken } from '../../src/models/TelegramLinkToken';
 import { TelegramOutbox } from '../../src/models/TelegramOutbox';
@@ -63,6 +64,7 @@ const ALL_MODELS: { init(): Promise<unknown>; deleteMany(f: object): PromiseLike
   TelegramBotConfig,
   TelegramLinkToken,
   TelegramOutbox,
+  PasswordResetCode,
 ];
 
 /** Har bir test fayli uchun alohida baza; har testdan oldin tozalanadi */

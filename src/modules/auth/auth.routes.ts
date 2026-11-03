@@ -4,12 +4,25 @@ import { uploadPhoto } from '../photos/photos.upload';
 import { authenticate } from '../../middlewares/authenticate';
 import {
   loginLimiter,
+  passwordResetCompleteLimiter,
+  passwordResetInfoLimiter,
+  passwordResetRequestIpLimiter,
+  passwordResetRequestUserLimiter,
+  passwordResetVerifyLimiter,
   profileUpdateLimiter,
   usernameCheckLimiter,
 } from '../../middlewares/rateLimiters';
 import { validate } from '../../middlewares/validate';
 import * as c from './auth.controller';
-import { changePasswordBody, loginBody, updateMeBody, usernameAvailableQuery } from './auth.schema';
+import {
+  changePasswordBody,
+  loginBody,
+  passwordResetCompleteBody,
+  passwordResetRequestBody,
+  passwordResetVerifyBody,
+  updateMeBody,
+  usernameAvailableQuery,
+} from './auth.schema';
 
 export const authRouter = Router();
 
@@ -51,4 +64,26 @@ authRouter.patch(
   authenticate,
   validate({ body: changePasswordBody }),
   c.changePassword,
+);
+
+// Parolni Telegram bot orqali tiklash (ommaviy; autentifikatsiyasiz)
+authRouter.get('/password-reset/info', passwordResetInfoLimiter, c.passwordResetInfo);
+authRouter.post(
+  '/password-reset/request',
+  passwordResetRequestIpLimiter,
+  validate({ body: passwordResetRequestBody }),
+  passwordResetRequestUserLimiter,
+  c.passwordResetRequest,
+);
+authRouter.post(
+  '/password-reset/verify',
+  passwordResetVerifyLimiter,
+  validate({ body: passwordResetVerifyBody }),
+  c.passwordResetVerify,
+);
+authRouter.post(
+  '/password-reset/complete',
+  passwordResetCompleteLimiter,
+  validate({ body: passwordResetCompleteBody }),
+  c.passwordResetComplete,
 );

@@ -4,6 +4,7 @@ import { asyncHandler } from '../../core/asyncHandler';
 import { getCtx, reqMeta } from '../../core/context';
 import { ok } from '../../core/response';
 import { authService } from './auth.service';
+import { passwordResetService } from './password-reset.service';
 
 export const REFRESH_COOKIE = 'refreshToken';
 
@@ -81,5 +82,24 @@ export const changePassword = asyncHandler(async (req, res) => {
     req.body,
     req.cookies?.[REFRESH_COOKIE],
   );
+  ok(res, data);
+});
+
+export const passwordResetInfo = asyncHandler(async (_req, res) => {
+  ok(res, passwordResetService.info());
+});
+
+export const passwordResetRequest = asyncHandler(async (req, res) => {
+  ok(res, await passwordResetService.request(req.body.username));
+});
+
+export const passwordResetVerify = asyncHandler(async (req, res) => {
+  ok(res, await passwordResetService.verify(req.body));
+});
+
+export const passwordResetComplete = asyncHandler(async (req, res) => {
+  // Barcha sessiyalar bekor qilinadi, shuning uchun mavjud refresh cookie ham tozalanadi
+  const data = await passwordResetService.complete(req.body, reqMeta(req));
+  clearRefreshCookie(res);
   ok(res, data);
 });

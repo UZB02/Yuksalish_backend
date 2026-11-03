@@ -23,3 +23,20 @@ export const updateMeBody = z
   .strict();
 
 export const usernameAvailableQuery = z.object({ username: usernameSchema });
+
+const resetUsername = z.string().trim().toLowerCase().min(1).max(64);
+
+export const passwordResetRequestBody = z.object({ username: resetUsername });
+
+export const passwordResetVerifyBody = z.object({
+  username: resetUsername,
+  code: z
+    .string()
+    .trim()
+    .regex(/^\d{6}$/, "Kod 6 ta raqamdan iborat bo'lishi kerak"),
+});
+
+export const passwordResetCompleteBody = z.object({
+  resetToken: z.string().min(20).max(128),
+  password: passwordSchema,
+});

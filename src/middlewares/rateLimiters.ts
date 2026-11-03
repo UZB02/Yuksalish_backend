@@ -86,3 +86,21 @@ export const superadminActionLimiter = perUser(
   30,
   "Urinishlar juda ko'p. Keyinroq urinib ko'ring",
 );
+
+/** Parolni tiklash (ommaviy): IP bo'yicha, 15 daqiqada */
+const RESET_MSG = "Urinishlar juda ko'p. Keyinroq urinib ko'ring";
+export const passwordResetRequestIpLimiter = make(15 * 60_000, 5, RESET_MSG);
+export const passwordResetVerifyLimiter = make(15 * 60_000, 20, RESET_MSG);
+export const passwordResetCompleteLimiter = make(15 * 60_000, 20, RESET_MSG);
+export const passwordResetInfoLimiter = make(60_000, 60, RESET_MSG);
+
+/** Kod so'rash: login bo'yicha, 15 daqiqada 5 ta (validate dan keyin, body.username normallashgan) */
+export const passwordResetRequestUserLimiter = rateLimit({
+  windowMs: 15 * 60_000,
+  limit: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: () => !env.RATE_LIMIT_ENABLED,
+  keyGenerator: (req) => `pr:${String(req.body?.username ?? '')}`,
+  handler: (_req, _res, next) => next(AppError.rateLimited(RESET_MSG)),
+});
