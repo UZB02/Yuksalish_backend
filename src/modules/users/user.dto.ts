@@ -22,7 +22,7 @@ type UserLike = Pick<
   | 'lastLoginAt'
   | 'createdAt'
   | 'phone'
-> & { id: string; photoId?: IUser['photoId'] };
+> & { id: string; photoId?: IUser['photoId']; isOwner?: boolean };
 
 export function toUserDto(u: UserLike) {
   return {
@@ -36,6 +36,8 @@ export function toUserDto(u: UserLike) {
     photo: photoUrl(u.photoId),
     permissions: effectivePermissions(u.role, u.permissions),
     isActive: u.isActive,
+    /** Asosiy superadmin belgisi (boshqa rollar uchun doim false) */
+    isOwner: u.role === 'superadmin' && !!u.isOwner,
     lastLoginAt: u.lastLoginAt,
     createdAt: u.createdAt,
   };

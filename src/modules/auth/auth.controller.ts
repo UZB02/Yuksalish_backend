@@ -58,6 +58,15 @@ export const me = asyncHandler(async (req, res) => {
   ok(res, await authService.me(getCtx(req).actor.id));
 });
 
+export const updateMe = asyncHandler(async (req, res) => {
+  ok(res, await authService.updateMe(getCtx(req), req.body));
+});
+
+export const usernameAvailable = asyncHandler(async (req, res) => {
+  const { username } = req.query as unknown as { username: string };
+  ok(res, await authService.usernameAvailable(getCtx(req).actor.id, username));
+});
+
 export const setOwnPhoto = asyncHandler(async (req, res) => {
   ok(res, await authService.setOwnPhoto(getCtx(req), req.file));
 });

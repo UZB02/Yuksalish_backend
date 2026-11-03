@@ -2,6 +2,7 @@ import { SubjectGrade, LEGACY_GRADE_INDEX } from '../models/SubjectGrade';
 import { ClassSubject, LEGACY_CLASS_SUBJECT_INDEX } from '../models/ClassSubject';
 import { LessonOverride, LEGACY_OVERRIDE_INDEX } from '../models/LessonOverride';
 import { logger } from '../core/logger';
+import { User } from '../models/User';
 import { rechainAllClasses } from '../modules/timetable/timetable.chain';
 
 /** MongoDB: NamespaceNotFound (26) yoki IndexNotFound (27) */
@@ -11,6 +12,33 @@ const isMissing = (e: unknown) => {
 };
 
 /**
+ * Asosiy superadmin (owner) invarianti: faol owner yo'q bo'lsa, eng eski faol superadmin owner bo'ladi.
+ * Idempotent: faol owner mavjud bo'lsa hech narsa qilmaydi. Faol bo'lmagan/superadmin bo'lmagan
+ * "owner" belgilari tozalanadi (unique indeks yangisini yozishga yo'l qo'ymasligi uchun).
+ * @returns yangi owner id si yoki null (o'zgarish bo'lmasa)
+ */
+export async function ensureOwnerSuperadmin(): Promise<string | null> {
+  if (await User.exists({ isOwner: true, role: 'superadmin', isActive: true })) {
+    // Ortiqcha belgilar (masalan roli o'zgargan) bo'lsa tozalanadi
+    await User.updateMany(
+      { isOwner: true, $or: [{ role: { $ne: 'superadmin' } }, { isActive: false }] },
+      { $set: { isOwner: false } },
+    );
+    return null;
+  }
+  await User.updateMany({ isOwner: true }, { $set: { isOwner: false } });
+  const oldest = await User.findOne({ role: 'superadmin', isActive: true }).sort({
+    createdAt: 1,
+    _id: 1,
+  });
+  if (!oldest) return null;
+  const r = await User.updateOne({ _id: oldest._id }, { $set: { isOwner: true } });
+  if (!r.modifiedCount) return null;
+  logger.info({ userId: oldest.id }, 'Asosiy superadmin (owner) belgilandi');
+  return oldest.id;
+}
+
+/**
  * Ishga tushishda bajariladigan idempotent migratsiyalar (ensureIndexes() chaqiradi).
  * P3: SubjectGrade kuniga bitta baho -> darsga bitta baho.
  *  1) eski hujjatlarga lessonNo = 0 yoziladi (yangi unique indeksda null va 0 farq qilmasligi uchun);
@@ -18,6 +46,7 @@ const isMissing = (e: unknown) => {
  *  3) yangi indeksni keyin ensureIndexes() yaratadi.
  */
 export async function runMigrations(): Promise<void> {
+  await ensureOwnerSuperadmin();
   const col = SubjectGrade.collection;
   try {
     const r = await col.updateMany({ lessonNo: { $exists: false } }, { $set: { lessonNo: 0 } });
@@ -62,7 +91,7 @@ export async function runMigrations(): Promise<void> {
   if (chain.replaced) {
     logger.info(
       { classes: chain.classes, replaced: chain.replaced },
-      "Dars jadvali zanjiri qayta hisoblandi: versiyalar almashtirildi",
+      'Dars jadvali zanjiri qayta hisoblandi: versiyalar almashtirildi',
     );
   }
 }

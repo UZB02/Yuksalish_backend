@@ -6,6 +6,7 @@ import { User } from '../../models/User';
 import { comparePassword, dummyCompare, hashPassword } from '../../utils/password';
 import { auditService } from '../audit/audit.service';
 import { photosService } from '../photos/photos.service';
+import { isDuplicateKeyError } from '../../utils/helpers';
 import { toUserDto } from '../users/user.dto';
 import { refreshTokenService } from './refresh-token.service';
 import { signAccessToken } from './tokens';
@@ -106,6 +107,94 @@ export const authService = {
     const user = await User.findById(userId);
     if (!user) throw AppError.unauthorized();
     return toUserDto(user);
+  },
+
+  /**
+   * Muhim amallar uchun joriy parolni tekshiradi (login o'zgartirish, superadminlarni boshqarish).
+   * Noto'g'ri parol login bilan bir xil xato hisobiga yoziladi (limitga yetsa hisob vaqtincha bloklanadi);
+   * bloklangan hisobda parol tekshirilmaydi.
+   */
+  async verifyCurrentPassword(
+    user: { id: string; passwordHash: string; lockUntil: Date | null },
+    password: string | undefined,
+    ip: string | undefined,
+  ) {
+    const invalid = () =>
+      AppError.validation("Joriy parol noto'g'ri", [
+        { path: 'currentPassword', message: "Joriy parol noto'g'ri" },
+      ]);
+    if (!password) {
+      throw AppError.validation('Joriy parolni kiriting', [
+        { path: 'currentPassword', message: 'Joriy parolni kiriting' },
+      ]);
+    }
+    if (user.lockUntil && user.lockUntil.getTime() > Date.now()) {
+      const mins = Math.ceil((user.lockUntil.getTime() - Date.now()) / 60_000);
+      throw AppError.rateLimited(
+        `Juda ko'p xato urinish. ${mins} daqiqadan so'ng qayta urinib ko'ring`,
+      );
+    }
+    if (!(await comparePassword(password, user.passwordHash))) {
+      await this.registerFailure(user.id, { ip });
+      throw invalid();
+    }
+  },
+
+  /** O'z ma'lumotlarini tahrirlash (barcha rollar). Login o'zgarsa joriy parol majburiy. */
+  async updateMe(
+    ctx: Ctx,
+    input: {
+      fullName?: string;
+      username?: string;
+      phone?: string | null;
+      currentPassword?: string;
+    },
+  ) {
+    const user = await User.findById(ctx.actor.id).select('+passwordHash');
+    if (!user) throw AppError.unauthorized();
+
+    const snap = () => ({ fullName: user.fullName, username: user.username, phone: user.phone });
+    const before = snap();
+    const usernameChanged = input.username !== undefined && input.username !== user.username;
+
+    if (usernameChanged) {
+      await this.verifyCurrentPassword(user, input.currentPassword, ctx.ip);
+      const taken = AppError.conflict('Bu login band', [
+        { path: 'username', message: 'Bu login band' },
+      ]);
+      if (await User.exists({ username: input.username, _id: { $ne: user._id } })) throw taken;
+      user.username = input.username!;
+    }
+    if (input.fullName !== undefined) user.fullName = input.fullName;
+    if (input.phone !== undefined) user.phone = input.phone;
+
+    if (!user.isModified()) return toUserDto(user);
+    try {
+      await user.save();
+    } catch (e) {
+      if (isDuplicateKeyError(e)) {
+        throw AppError.conflict('Bu login band', [{ path: 'username', message: 'Bu login band' }]);
+      }
+      throw e;
+    }
+    // Sessiyalar bekor qilinmaydi: access/refresh tokenlar foydalanuvchi id siga bog'liq, login ga emas
+    await auditService.log({
+      userId: user.id,
+      schoolId: ctx.actor.schoolId,
+      action: 'user.profile.update',
+      entity: 'user',
+      entityId: user.id,
+      before,
+      after: snap(),
+      ip: ctx.ip,
+    });
+    return toUserDto(user);
+  },
+
+  /** Login bandligi (o'zining joriy logini "band emas" hisoblanadi) */
+  async usernameAvailable(userId: string, username: string) {
+    const taken = await User.exists({ username, _id: { $ne: userId } });
+    return { username, available: !taken };
   },
 
   /** O'z profil rasmini yuklash/almashtirish (faqat maktab xodimi, faqat o'zi uchun) */

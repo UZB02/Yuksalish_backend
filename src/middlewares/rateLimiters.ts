@@ -50,3 +50,39 @@ export const telegramLinkLimiter = rateLimit({
   handler: (_req, _res, next) =>
     next(AppError.rateLimited("Havola so'rovlari juda ko'p. Keyinroq urinib ko'ring")),
 });
+
+/**
+ * Profil tahriri va login bandligini tekshirish: foydalanuvchi bo'yicha (authenticate dan keyin).
+ * Parolni taxmin qilish va login ro'yxatini skanerlashga qarshi.
+ */
+const perUser = (windowMs: number, limit: number, message: string) =>
+  rateLimit({
+    windowMs,
+    limit,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: () => !env.RATE_LIMIT_ENABLED,
+    keyGenerator: (req) => req.user?.id ?? ipKeyGenerator(req.ip ?? ''),
+    handler: (_req, _res, next) => next(AppError.rateLimited(message)),
+  });
+
+/** Profil tahriri: 15 daqiqada 20 ta */
+export const profileUpdateLimiter = perUser(
+  15 * 60_000,
+  20,
+  "Profilni o'zgartirish urinishlari juda ko'p. Keyinroq urinib ko'ring",
+);
+
+/** Login bandligini tekshirish: daqiqasiga 30 ta */
+export const usernameCheckLimiter = perUser(
+  60_000,
+  30,
+  "Tekshiruvlar juda ko'p. Birozdan so'ng urinib ko'ring",
+);
+
+/** Superadminlarni boshqarish (parol talab qiladi): 15 daqiqada 30 ta */
+export const superadminActionLimiter = perUser(
+  15 * 60_000,
+  30,
+  "Urinishlar juda ko'p. Keyinroq urinib ko'ring",
+);

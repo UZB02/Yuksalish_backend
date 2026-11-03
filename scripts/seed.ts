@@ -37,6 +37,7 @@ async function seed() {
     if (weak) throw new Error(weak);
     await User.create({
       role: 'superadmin',
+      isOwner: !(await User.exists({ role: 'superadmin', isOwner: true })),
       schoolId: null,
       fullName,
       username: username.data,

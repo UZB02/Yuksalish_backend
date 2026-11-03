@@ -17,6 +17,8 @@ export interface IUser {
   photoId: Types.ObjectId | null;
   permissions: string[];
   isActive: boolean;
+  /** Asosiy superadmin (faqat bittasi). Faqat role=superadmin uchun ma'noga ega */
+  isOwner: boolean;
   lastLoginAt: Date | null;
   failedLoginCount: number;
   lockUntil: Date | null;
@@ -38,6 +40,7 @@ const userSchema = new Schema<IUser>(
     photoId: { type: Schema.Types.ObjectId, ref: 'Photo', default: null },
     permissions: { type: [String], default: [] },
     isActive: { type: Boolean, default: true },
+    isOwner: { type: Boolean, default: false },
     lastLoginAt: { type: Date, default: null },
     failedLoginCount: { type: Number, default: 0 },
     lockUntil: { type: Date, default: null },
@@ -53,6 +56,8 @@ const userSchema = new Schema<IUser>(
 );
 
 userSchema.index({ schoolId: 1, role: 1 });
+// Asosiy superadmin faqat bitta bo'la oladi (ikkinchisini yozish DB darajasida rad etiladi)
+userSchema.index({ isOwner: 1 }, { unique: true, partialFilterExpression: { isOwner: true } });
 // Bitta Telegram chat faqat bitta foydalanuvchiga ulanishi mumkin
 userSchema.index(
   { 'telegram.chatId': 1 },
