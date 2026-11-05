@@ -37,6 +37,13 @@ export function buildPhase8(h: DocHelpers) {
     schema: { type: 'string' },
   };
 
+  const overlapParams = [
+    idParam,
+    { name: 'weekday', in: 'path', required: true, schema: { type: 'integer' } },
+    { name: 'lessonNo', in: 'path', required: true, schema: { type: 'integer' } },
+    teacherIdParam,
+  ];
+
   const tags = [
     {
       name: 'Timetable',
@@ -55,6 +62,15 @@ export function buildPhase8(h: DocHelpers) {
         teacherId: str,
         groupKey: { type: 'string', nullable: true, description: 'Hozircha doim null' },
         room: { type: 'string', nullable: true },
+        overlapApproval: {
+          nullable: true,
+          description:
+            "Bir vaqtda (boshqa sinfda) dars o'tishga superadmin ruxsati; yozuv o'zgarsa server olib tashlaydi",
+          ...o({
+            approvedBy: { nullable: true, ...o({ id: str, fullName: { ...str, nullable: true } }) },
+            approvedAt: { type: 'string', format: 'date-time' },
+          }),
+        },
         subject: { nullable: true, ...o({ id: str, name: str }) },
         teacher: { nullable: true, ...o({ id: str, fullName: str }) },
         outOfRange: {
@@ -90,13 +106,18 @@ export function buildPhase8(h: DocHelpers) {
         type: 'string',
         enum: [
           'teacher_double_booked',
+          'teacher_overlap_approved',
           'teacher_not_assigned',
           'subject_inactive',
           'teacher_inactive',
           'out_of_range',
         ],
       },
-      severity: { type: 'string', enum: ['error', 'warning'] },
+      severity: {
+        type: 'string',
+        enum: ['error', 'warning', 'info'],
+        description: "info (teacher_overlap_approved) faollashtirishga to'sqinlik qilmaydi",
+      },
       weekday: int,
       lessonNo: int,
       subjectId: str,
@@ -111,6 +132,17 @@ export function buildPhase8(h: DocHelpers) {
           validFrom: date,
           validTo: date,
           versions: arr(o({ versionId: str, validFrom: date, validTo: date })),
+        }),
+      },
+      approval: {
+        nullable: true,
+        description:
+          'Faqat teacher_overlap_approved: ruxsat kim tomonidan va qaysi yozuvga berilgan',
+        ...o({
+          side: { type: 'string', enum: ['self', 'other', 'both'] },
+          approvedBy: str,
+          approvedByName: { ...str, nullable: true },
+          approvedAt: { type: 'string', format: 'date-time' },
         }),
       },
     }),
@@ -150,6 +182,11 @@ export function buildPhase8(h: DocHelpers) {
           subjectId: str,
           teacherId: str,
           room: { type: 'string', nullable: true },
+          overlapApproved: {
+            ...bool,
+            description:
+              "Faqat superadmin uchun: bir vaqtda o'tishga ruxsat (true) yoki olib tashlash (false)",
+          },
         },
         ['weekday', 'lessonNo', 'subjectId', 'teacherId'],
       ),
@@ -317,6 +354,39 @@ export function buildPhase8(h: DocHelpers) {
               force: bool,
               note: { type: 'string', nullable: true },
               syncAssignments: bool,
+            },
+            ['entries'],
+          ),
+        },
+      ),
+    },
+    '/timetable/versions/{id}/entries/{weekday}/{lessonNo}/{teacherId}/overlap-approval': {
+      post: op(
+        "Yozuvga bir vaqtda o'tish ruxsatini berish (faqat superadmin; faol versiyada ham, jadval o'zgarmaydi). Idempotent. Audit: timetable.overlap_approve",
+        { '200': okRes(versionWithWarnings) },
+        { params: overlapParams },
+      ),
+      delete: op(
+        'Ruxsatni olib tashlash (faqat superadmin). Audit: timetable.overlap_revoke',
+        { '200': okRes(versionWithWarnings) },
+        { params: overlapParams },
+      ),
+    },
+    '/timetable/versions/{id}/overlap-approvals': {
+      post: op(
+        "Ommaviy ruxsat (faqat superadmin): ro'yxatdagi yozuvlardan haqiqatan band bo'lganlariga bir vaqtda o'tishga ruxsat. Javob: versiya + { approved, skipped }. Audit: har bir yangi ruxsat uchun timetable.overlap_approve",
+        { '200': okRes(anyObj) },
+        {
+          params: [idParam],
+          body: o(
+            {
+              entries: arr(
+                o({ weekday: int, lessonNo: int, teacherId: str }, [
+                  'weekday',
+                  'lessonNo',
+                  'teacherId',
+                ]),
+              ),
             },
             ['entries'],
           ),

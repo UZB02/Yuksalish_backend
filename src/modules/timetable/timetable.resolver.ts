@@ -152,6 +152,8 @@ export interface SliceEntry {
   teacherId: string;
   groupKey: string | null;
   room: string | null;
+  /** Bir vaqtda o'tishga superadmin ruxsati (to'qnashuv tekshiruvi uchun) */
+  overlapApproval?: { approvedBy: string; approvedAt: string } | null;
 }
 
 export interface VersionSlice {

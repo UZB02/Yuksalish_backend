@@ -25,6 +25,8 @@ import {
   lessonsQuery,
   moveOverrideBody,
   optionsQuery,
+  overlapApprovalParams,
+  overlapApprovalsBody,
   teacherDayQuery,
   overrideDateQuery,
   overrideIdParams,
@@ -407,6 +409,55 @@ timetableRouter.post(
   asyncHandler(async (req, res) => {
     const b = req.body as { versionIds: string[]; validFrom: string };
     ok(res, await timetableService.bulkPreview(req.schoolId as string, b.versionIds, b.validFrom));
+  }),
+);
+
+// Bir vaqtda dars o'tishga ruxsat: faqat superadmin (faol versiyada ham — jadvalning o'zi o'zgarmaydi)
+const overlapApprovalPath = '/versions/:id/entries/:weekday/:lessonNo/:teacherId/overlap-approval';
+for (const [method, approve] of [
+  ['post', true],
+  ['delete', false],
+] as const) {
+  timetableRouter[method](
+    overlapApprovalPath,
+    authorize('superadmin'),
+    validate({ params: overlapApprovalParams }),
+    asyncHandler(async (req, res) => {
+      const p = req.params as unknown as {
+        id: string;
+        weekday: number;
+        lessonNo: number;
+        teacherId: string;
+      };
+      ok(
+        res,
+        await timetableService.setOverlapApproval(
+          getCtx(req),
+          req.schoolId as string,
+          p.id,
+          { weekday: p.weekday, lessonNo: p.lessonNo, teacherId: p.teacherId },
+          approve,
+        ),
+      );
+    }),
+  );
+}
+
+// Ommaviy ruxsat: ro'yxatdagi yozuvlardan haqiqatan band bo'lganlariga (server qayta tekshiradi)
+timetableRouter.post(
+  '/versions/:id/overlap-approvals',
+  authorize('superadmin'),
+  validate({ params: versionIdParams, body: overlapApprovalsBody }),
+  asyncHandler(async (req, res) => {
+    ok(
+      res,
+      await timetableService.setOverlapApprovals(
+        getCtx(req),
+        req.schoolId as string,
+        req.params.id as string,
+        req.body.entries,
+      ),
+    );
   }),
 );
 

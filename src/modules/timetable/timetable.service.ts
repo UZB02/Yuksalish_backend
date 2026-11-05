@@ -29,6 +29,7 @@ import {
   analyzeTargets,
   blocking,
   busyTeachersAt,
+  countIssues,
   hypotheticalValidTo,
   isOutOfRange,
   type AnalysisTarget,
@@ -131,6 +132,12 @@ function slice(e: ITimetableEntry) {
     teacherId: idStr(e.teacherId),
     groupKey: e.groupKey ?? null,
     room: e.room ?? null,
+    overlapApproval: e.overlapApproval
+      ? {
+          approvedBy: idStr(e.overlapApproval.approvedBy),
+          approvedAt: new Date(e.overlapApproval.approvedAt).toISOString(),
+        }
+      : null,
   };
 }
 
@@ -203,7 +210,10 @@ function purgeAtOf(v: VersionLike): string | null {
 async function dtoOf(v: VersionLike, settings: ResolverSettings, today: string) {
   const names = await loadNames(
     v.entries.map((e) => idStr(e.subjectId)),
-    v.entries.map((e) => idStr(e.teacherId)),
+    [
+      ...v.entries.map((e) => idStr(e.teacherId)),
+      ...v.entries.flatMap((e) => (e.overlapApproval ? [idStr(e.overlapApproval.approvedBy)] : [])),
+    ],
   );
   return {
     ...summaryOf(v, today),
@@ -222,8 +232,97 @@ async function dtoOf(v: VersionLike, settings: ResolverSettings, today: string) 
         ? { id: idStr(e.teacherId), fullName: names.teachers.get(idStr(e.teacherId)) as string }
         : null,
       outOfRange: isOutOfRange(e, settings),
+      overlapApproval: e.overlapApproval
+        ? {
+            approvedBy: {
+              id: idStr(e.overlapApproval.approvedBy),
+              fullName: names.teachers.get(idStr(e.overlapApproval.approvedBy)) ?? null,
+            },
+            approvedAt: new Date(e.overlapApproval.approvedAt).toISOString(),
+          }
+        : null,
     })),
   };
+}
+
+const approvalKey = (e: {
+  weekday: number;
+  lessonNo: number;
+  teacherId: unknown;
+  subjectId: unknown;
+}) => `${e.weekday}:${e.lessonNo}:${idStr(e.teacherId)}:${idStr(e.subjectId)}`;
+
+/**
+ * Saqlanadigan yozuvlar uchun "bir vaqtda o'tish" ruxsatlari. Ruxsat yozuvga (kun, dars, o'qituvchi, fan)
+ * bog'liq: bu to'rtlikdan biri o'zgarsa eski ruxsat tushib qoladi — mijoz eskirgan ruxsatni saqlab qola olmaydi.
+ * Yangi ruxsat/olib tashlashni faqat superadmin bera oladi; boshqa rollarda `overlapApproved` e'tiborga olinmaydi.
+ */
+function resolveApprovals(
+  input: EntryInput[],
+  prev: ITimetableEntry[],
+  actor: Actor,
+): Map<string, NonNullable<ITimetableEntry['overlapApproval']> | null> {
+  const kept = new Map(
+    prev.filter((p) => p.overlapApproval).map((p) => [approvalKey(p), p.overlapApproval ?? null]),
+  );
+  const now = new Date();
+  const out = new Map<string, NonNullable<ITimetableEntry['overlapApproval']> | null>();
+  for (const e of input) {
+    const k = approvalKey(e);
+    const old = kept.get(k) ?? null;
+    let next = old;
+    if (actor.role === 'superadmin') {
+      if (e.overlapApproved === true)
+        next = old ?? { approvedBy: new Types.ObjectId(actor.id), approvedAt: now };
+      else if (e.overlapApproved === false) next = null;
+    }
+    out.set(k, next);
+  }
+  return out;
+}
+
+/** Ruxsati berilgan/olib tashlangan yozuvlar (auditga yoziladi) */
+function approvalChanges(prev: ITimetableEntry[], next: ITimetableEntry[]) {
+  const slot = (e: ITimetableEntry) => `${e.weekday}:${e.lessonNo}:${idStr(e.teacherId)}`;
+  const had = new Map(prev.map((p) => [slot(p), p]));
+  const has = new Map(next.map((p) => [slot(p), p]));
+  const approved = next.filter((e) => e.overlapApproval && !had.get(slot(e))?.overlapApproval);
+  const revoked = prev.filter((e) => e.overlapApproval && !has.get(slot(e))?.overlapApproval);
+  return { approved, revoked };
+}
+
+async function logApprovalChanges(
+  ctx: Ctx,
+  schoolId: string,
+  versionId: string,
+  classId: string,
+  prev: ITimetableEntry[],
+  next: ITimetableEntry[],
+) {
+  const { approved, revoked } = approvalChanges(prev, next);
+  const row = (e: ITimetableEntry) => ({
+    classId,
+    weekday: e.weekday,
+    lessonNo: e.lessonNo,
+    teacherId: idStr(e.teacherId),
+    subjectId: idStr(e.subjectId),
+  });
+  for (const [action, list] of [
+    ['timetable.overlap_approve', approved],
+    ['timetable.overlap_revoke', revoked],
+  ] as const) {
+    for (const e of list) {
+      await auditService.log({
+        userId: ctx.actor.id,
+        schoolId,
+        action,
+        entity: 'timetable',
+        entityId: versionId,
+        after: { ...row(e), via: 'save' },
+        ip: ctx.ip,
+      });
+    }
+  }
 }
 
 /** Yozuvlarni tekshiradi va saqlanadigan ko'rinishga keltiradi (qattiq xatolar -> 400) */
@@ -232,6 +331,7 @@ async function validateEntries(
   input: EntryInput[],
   settings: ResolverSettings,
   prev: ITimetableEntry[] = [],
+  actor?: Actor,
 ): Promise<ITimetableEntry[]> {
   const errs: ErrorDetail[] = [];
   const seen = new Set<string>();
@@ -277,6 +377,7 @@ async function validateEntries(
     }
   });
   if (errs.length) throw AppError.validation("Dars jadvali noto'g'ri", errs);
+  const approvals = actor ? resolveApprovals(input, prev, actor) : new Map();
   return [...input]
     .sort((a, b) => a.weekday - b.weekday || a.lessonNo - b.lessonNo)
     .map((e) => ({
@@ -286,6 +387,7 @@ async function validateEntries(
       teacherId: new Types.ObjectId(e.teacherId),
       groupKey: null,
       room: e.room ?? null,
+      overlapApproval: approvals.get(approvalKey(e)) ?? null,
     }));
 }
 
@@ -587,7 +689,7 @@ export const timetableService = {
           current: r.current ? summaryOf(r.current as VersionLike, today) : null,
           upcoming: r.upcoming ? summaryOf(r.upcoming as VersionLike, today) : null,
           draft: r.draft ? summaryOf(r.draft as VersionLike, today) : null,
-          warningsCount: w.length,
+          warningsCount: countIssues(w),
           errorsCount: w.filter((x) => x.severity === 'error').length,
         };
       }),
@@ -776,7 +878,10 @@ export const timetableService = {
     assertWritable(cls);
     const settings = await loadResolverSettings(schoolId);
     if (body.validFrom) checkInYear(await loadYear(cls), body.validFrom);
-    const entries = await validateEntries(schoolId, body.entries, settings, v.entries);
+    const prevEntries = v.entries.map((x) =>
+      (x as unknown as { toObject(): ITimetableEntry }).toObject(),
+    );
+    const entries = await validateEntries(schoolId, body.entries, settings, v.entries, ctx.actor);
     const before = { entryCount: v.entries.length, validFrom: v.validFrom };
     v.entries = entries as typeof v.entries;
     if (body.validFrom) v.validFrom = body.validFrom;
@@ -793,6 +898,7 @@ export const timetableService = {
       after: { classId: cls.id, entryCount: entries.length, validFrom: v.validFrom },
       ip: ctx.ip,
     });
+    await logApprovalChanges(ctx, schoolId, v.id, cls.id, prevEntries, entries);
     return {
       version: await dtoOf(v, settings, todayTashkent()),
       warnings: await warningsFor(schoolId, v),
@@ -901,7 +1007,7 @@ export const timetableService = {
         versionId: idStr(v._id),
         classId: idStr(v.classId),
         className: cls.name,
-        warningsCount: w.length,
+        warningsCount: countIssues(w),
         syncedAssignments: synced,
       });
     }
@@ -977,7 +1083,10 @@ export const timetableService = {
     const cls = await loadClass(schoolId, idStr(v.classId));
     assertWritable(cls);
     const settings = await loadResolverSettings(schoolId);
-    const entries = await validateEntries(schoolId, body.entries, settings, v.entries);
+    const prevEntries = v.entries.map((x) =>
+      (x as unknown as { toObject(): ITimetableEntry }).toObject(),
+    );
+    const entries = await validateEntries(schoolId, body.entries, settings, v.entries, ctx.actor);
     const before = compact(v.entries);
     const draftLike = { ...v.toObject(), entries } as unknown as VersionLike;
     const warnings = (
@@ -1004,7 +1113,144 @@ export const timetableService = {
       },
       ip: ctx.ip,
     });
+    await logApprovalChanges(ctx, schoolId, v.id, cls.id, prevEntries, entries);
     return { version: await dtoOf(v, settings, today), warnings, syncedAssignments: synced };
+  },
+
+  /**
+   * Yozuvga "bir vaqtda o'tish" ruxsatini berish/olib tashlash — faqat superadmin (marshrutda ham tekshiriladi).
+   * Faol versiyada ham ishlaydi: jadvalning o'zi o'zgarmaydi, faqat ruxsat metama'lumoti. Idempotent.
+   */
+  async setOverlapApproval(
+    ctx: Ctx,
+    schoolId: string,
+    id: string,
+    slot: { weekday: number; lessonNo: number; teacherId: string },
+    approve: boolean,
+  ) {
+    if (ctx.actor.role !== 'superadmin') {
+      throw AppError.forbidden("Bir vaqtda dars qo'yishga faqat superadmin ruxsat bera oladi");
+    }
+    const v = await loadVersion(schoolId, id);
+    if (v.status === 'replaced') {
+      throw AppError.conflict("Almashtirilgan versiya uchun ruxsat berib bo'lmaydi");
+    }
+    const cls = await loadClass(schoolId, idStr(v.classId));
+    assertWritable(cls);
+    const entry = v.entries.find(
+      (e) =>
+        e.weekday === slot.weekday &&
+        e.lessonNo === slot.lessonNo &&
+        idStr(e.teacherId) === slot.teacherId,
+    );
+    if (!entry) throw AppError.notFound('Jadvalda bunday dars topilmadi');
+    if (!!entry.overlapApproval !== approve) {
+      const value = approve
+        ? { approvedBy: new Types.ObjectId(ctx.actor.id), approvedAt: new Date() }
+        : null;
+      await TimetableVersion.updateOne(
+        { _id: v._id },
+        { $set: { 'entries.$[e].overlapApproval': value } },
+        {
+          arrayFilters: [
+            {
+              'e.weekday': slot.weekday,
+              'e.lessonNo': slot.lessonNo,
+              'e.teacherId': new Types.ObjectId(slot.teacherId),
+            },
+          ],
+        },
+      );
+      await auditService.log({
+        userId: ctx.actor.id,
+        schoolId,
+        action: approve ? 'timetable.overlap_approve' : 'timetable.overlap_revoke',
+        entity: 'timetable',
+        entityId: idStr(v._id),
+        after: {
+          classId: idStr(v.classId),
+          weekday: slot.weekday,
+          lessonNo: slot.lessonNo,
+          teacherId: slot.teacherId,
+          subjectId: idStr(entry.subjectId),
+          status: v.status,
+          via: 'endpoint',
+        },
+        ip: ctx.ip,
+      });
+    }
+    return timetableService.getVersion(ctx.actor, schoolId, id);
+  },
+
+  /**
+   * Ommaviy ruxsat (faqat superadmin): berilgan yozuvlardan hozir haqiqatan boshqa sinf bilan
+   * to'qnashayotganlariga (teacher_double_booked) ruxsat beradi. Mavjud emas, to'qnashmaydigan yoki
+   * allaqachon ruxsatli yozuvlar o'tkazib yuboriladi. Idempotent; har bir yangi ruxsat uchun bitta audit yozuvi.
+   */
+  async setOverlapApprovals(
+    ctx: Ctx,
+    schoolId: string,
+    id: string,
+    slots: { weekday: number; lessonNo: number; teacherId: string }[],
+  ) {
+    if (ctx.actor.role !== 'superadmin') {
+      throw AppError.forbidden("Bir vaqtda dars qo'yishga faqat superadmin ruxsat bera oladi");
+    }
+    const v = await loadVersion(schoolId, id);
+    if (v.status === 'replaced') {
+      throw AppError.conflict("Almashtirilgan versiya uchun ruxsat berib bo'lmaydi");
+    }
+    const cls = await loadClass(schoolId, idStr(v.classId));
+    assertWritable(cls);
+    const slotKey = (s: { weekday: number; lessonNo: number; teacherId: unknown }) =>
+      `${s.weekday}:${s.lessonNo}:${idStr(s.teacherId)}`;
+    const wanted = new Set(slots.map(slotKey));
+    const busy = new Set(
+      (await warningsFor(schoolId, v))
+        .filter((w) => w.code === 'teacher_double_booked')
+        .map(slotKey),
+    );
+    const targets = v.entries.filter(
+      (e) => !e.overlapApproval && wanted.has(slotKey(e)) && busy.has(slotKey(e)),
+    );
+    const approvedAt = new Date();
+    for (const e of targets) {
+      await TimetableVersion.updateOne(
+        { _id: v._id },
+        {
+          $set: {
+            'entries.$[e].overlapApproval': {
+              approvedBy: new Types.ObjectId(ctx.actor.id),
+              approvedAt,
+            },
+          },
+        },
+        {
+          arrayFilters: [
+            { 'e.weekday': e.weekday, 'e.lessonNo': e.lessonNo, 'e.teacherId': e.teacherId },
+          ],
+        },
+      );
+      await auditService.log({
+        userId: ctx.actor.id,
+        schoolId,
+        action: 'timetable.overlap_approve',
+        entity: 'timetable',
+        entityId: idStr(v._id),
+        after: {
+          classId: idStr(v.classId),
+          weekday: e.weekday,
+          lessonNo: e.lessonNo,
+          teacherId: idStr(e.teacherId),
+          subjectId: idStr(e.subjectId),
+          status: v.status,
+          via: 'batch',
+        },
+        ip: ctx.ip,
+      });
+    }
+    const result = await timetableService.getVersion(ctx.actor, schoolId, id);
+    return { ...result, approved: targets.length, skipped: wanted.size - targets.length };
   },
 
   /** O'qituvchining haftasi: sana ttushgan hafta (dushanba..yakshanba), ish kunlari bo'yicha */

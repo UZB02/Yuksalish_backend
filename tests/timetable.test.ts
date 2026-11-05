@@ -417,7 +417,9 @@ describe("to'qnashuvlar", () => {
     const q = (t: string, qs: string) => g(t, `/versions/${b.id}/busy-teachers?${qs}`);
     const r = await q(admin, 'weekday=1&lessonNo=1');
     expect(r.status).toBe(200);
-    expect(r.body.data.items).toEqual([{ teacherId: t1.id, classId: c1.id, className: '5-A' }]);
+    expect(r.body.data.items).toEqual([
+      { teacherId: t1.id, classId: c1.id, className: '5-A', approved: false },
+    ]);
     expect((await q(admin, 'weekday=1&lessonNo=5')).body.data.items).toEqual([]);
     expect((await q(admin, 'weekday=2&lessonNo=3')).body.data.items[0].teacherId).toBe(t2.id);
     // o'z sinfi hisobga olinmaydi

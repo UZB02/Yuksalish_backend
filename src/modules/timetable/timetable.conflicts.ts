@@ -8,6 +8,7 @@ import { loadResolverSettings, type ResolverSettings, type SliceEntry } from './
 
 export const WARNING_CODES = [
   'teacher_double_booked',
+  'teacher_overlap_approved',
   'teacher_not_assigned',
   'subject_inactive',
   'teacher_inactive',
@@ -20,7 +21,8 @@ export const BLOCKING_CODES: WarningCode[] = ['teacher_double_booked'];
 
 export interface TimetableWarning {
   code: WarningCode;
-  severity: 'error' | 'warning';
+  /** info — ma'lumot uchun (to'sqinlik qilmaydi, xato sifatida sanalmaydi) */
+  severity: 'error' | 'warning' | 'info';
   weekday: number;
   lessonNo: number;
   subjectId: string;
@@ -35,6 +37,14 @@ export interface TimetableWarning {
     /** Shu sinfning to'qnashayotgan barcha versiyalari (bitta ogohlantirishga jamlanadi) */
     versions: { versionId: string; validFrom: string; validTo: string | null }[];
   };
+  /** teacher_overlap_approved: ruxsatni kim va qaysi tomondagi yozuvga bergan */
+  approval?: {
+    /** self — shu yozuvning o'zida; other — ikkinchi sinfdagi yozuvda; both — ikkalasida */
+    side: 'self' | 'other' | 'both';
+    approvedBy: string;
+    approvedByName: string | null;
+    approvedAt: string;
+  };
 }
 
 /** Tahlil qilinadigan (haqiqiy yoki virtual) versiya */
@@ -46,6 +56,28 @@ export interface AnalysisTarget {
   /** Faollashtirilgandan keyingi taxminiy tugash sanasi */
   validTo: string | null;
   entries: SliceEntry[];
+}
+
+type Approval = { side: 'self' | 'other'; approvedBy: string; approvedAt: string };
+
+function otherOf(
+  classId: string,
+  className: string,
+  first: AnalysisTarget,
+  versions: AnalysisTarget[],
+): NonNullable<TimetableWarning['other']> {
+  return {
+    classId,
+    className,
+    versionId: first.versionId ?? first.key,
+    validFrom: first.validFrom,
+    validTo: first.validTo,
+    versions: versions.map((v) => ({
+      versionId: v.versionId ?? v.key,
+      validFrom: v.validFrom,
+      validTo: v.validTo,
+    })),
+  };
 }
 
 const FAR = '9999-12-31';
@@ -132,6 +164,12 @@ export async function analyzeTargets(
         teacherId: String(e.teacherId),
         groupKey: e.groupKey ?? null,
         room: e.room ?? null,
+        overlapApproval: e.overlapApproval
+          ? {
+              approvedBy: String(e.overlapApproval.approvedBy),
+              approvedAt: new Date(e.overlapApproval.approvedAt).toISOString(),
+            }
+          : null,
       })),
     })),
     ...extras,
@@ -143,6 +181,21 @@ export async function analyzeTargets(
         .select('name')
         .lean()
     ).map((c) => [String(c._id), c.name]),
+  );
+
+  // Ruxsat bergan superadminlar nomlari (faqat tegishli yozuvlardan)
+  const approverIds = uniq(
+    [...targets, ...pool].flatMap((t) =>
+      t.entries.flatMap((x) => (x.overlapApproval ? [x.overlapApproval.approvedBy] : [])),
+    ),
+  );
+  const approverNames = new Map(
+    (approverIds.length
+      ? await User.find({ _id: { $in: approverIds } })
+          .select('fullName')
+          .lean()
+      : []
+    ).map((u) => [String(u._id), u.fullName]),
   );
 
   for (const t of targets) {
@@ -171,9 +224,14 @@ export async function analyzeTargets(
       }
       // Har bir boshqa sinf uchun bitta ogohlantirish: sinfning bir nechta versiyasi
       // (masalan ketma-ket faol versiyalar) bir vaqtda to'qnashsa ham takrorlanmaydi
+      // Ruxsat berilgan juftlik (ikki yozuvdan biri superadmin ruxsatiga ega) xato emas, info
       const clashes = new Map<string, AnalysisTarget[]>();
+      const approvedClashes = new Map<
+        string,
+        { versions: AnalysisTarget[]; approvals: Approval[] }
+      >();
       for (const r of rivals) {
-        const hit = r.entries.some(
+        const hit = r.entries.find(
           (x) =>
             x.teacherId === e.teacherId &&
             x.weekday === e.weekday &&
@@ -181,7 +239,34 @@ export async function analyzeTargets(
             !isOutOfRange(x, settings),
         );
         if (!hit) continue;
+        if (e.overlapApproval || hit.overlapApproval) {
+          const cur = approvedClashes.get(r.classId) ?? { versions: [], approvals: [] };
+          cur.versions.push(r);
+          if (e.overlapApproval) cur.approvals.push({ side: 'self', ...e.overlapApproval });
+          if (hit.overlapApproval) cur.approvals.push({ side: 'other', ...hit.overlapApproval });
+          approvedClashes.set(r.classId, cur);
+          continue;
+        }
         clashes.set(r.classId, [...(clashes.get(r.classId) ?? []), r]);
+      }
+      for (const [otherClassId, { versions, approvals }] of approvedClashes) {
+        const first = versions[0] as AnalysisTarget;
+        const name = classNames.get(otherClassId) ?? '?';
+        const sides = new Set(approvals.map((a) => a.side));
+        const main = approvals.find((a) => a.side === 'self') ?? (approvals[0] as Approval);
+        list.push({
+          ...base,
+          code: 'teacher_overlap_approved',
+          severity: 'info',
+          message: `Ruxsat berilgan: o'qituvchi shu vaqtda ${name} sinfida ham dars beradi`,
+          other: otherOf(otherClassId, name, first, versions),
+          approval: {
+            side: sides.size > 1 ? 'both' : main.side,
+            approvedBy: main.approvedBy,
+            approvedByName: approverNames.get(main.approvedBy) ?? null,
+            approvedAt: main.approvedAt,
+          },
+        });
       }
       for (const [otherClassId, versions] of clashes) {
         const first = versions[0] as AnalysisTarget;
@@ -191,18 +276,7 @@ export async function analyzeTargets(
           code: 'teacher_double_booked',
           severity: 'error',
           message: `O'qituvchi shu vaqtda ${name} sinfida ham dars beradi`,
-          other: {
-            classId: otherClassId,
-            className: name,
-            versionId: first.versionId ?? first.key,
-            validFrom: first.validFrom,
-            validTo: first.validTo,
-            versions: versions.map((v) => ({
-              versionId: v.versionId ?? v.key,
-              validFrom: v.validFrom,
-              validTo: v.validTo,
-            })),
-          },
+          other: otherOf(otherClassId, name, first, versions),
         });
       }
       const assignedTeachers = assignment.get(`${t.classId}:${e.subjectId}`);
@@ -250,12 +324,17 @@ export function dedupeWarnings(list: TimetableWarning[]): TimetableWarning[] {
   });
 }
 
+/** Ogohlantirishlar soni (faqat ma'lumot beruvchi info kodlarisiz) */
+export const countIssues = (w: TimetableWarning[]) => w.filter((x) => x.severity !== 'info').length;
+
 export const blocking = (w: TimetableWarning[]) => w.filter((x) => BLOCKING_CODES.includes(x.code));
 
 export interface BusyTeacher {
   teacherId: string;
   classId: string;
   className: string;
+  /** Boshqa sinfdagi shu yozuvda bir vaqtda o'tishga ruxsat berilgan (juftlik ruxsat bilan qoplangan) */
+  approved: boolean;
 }
 
 /**
@@ -298,6 +377,7 @@ export async function busyTeachersAt(
         teacherId: String(e.teacherId),
         classId: String(v.classId),
         className: classNames.get(String(v.classId)) ?? '?',
+        approved: !!e.overlapApproval,
       });
     }
   }

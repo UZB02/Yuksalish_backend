@@ -10,6 +10,12 @@ export const entryInput = z.object({
   /** Guruhlar hozircha qo'llab-quvvatlanmaydi: faqat null */
   groupKey: z.null({ error: "Guruhlar hozircha qo'llab-quvvatlanmaydi" }).optional(),
   room: optionalText(30),
+  /**
+   * Bir vaqtda o'tishga ruxsat so'rovi (faqat superadmin uchun amal qiladi): true — ruxsat berish,
+   * false — ruxsatni olib tashlash, yo'q — mavjud ruxsat (o'zgarmagan yozuvda) saqlanadi.
+   * Boshqa rollarda e'tiborga olinmaydi.
+   */
+  overlapApproved: z.boolean().optional(),
 });
 export type EntryInput = z.infer<typeof entryInput>;
 
@@ -26,6 +32,12 @@ export const assignmentsBody = z.object({
 });
 
 export const versionIdParams = z.object({ id: objectIdSchema });
+export const overlapApprovalParams = z.object({
+  id: objectIdSchema,
+  weekday: z.coerce.number().int().min(1).max(MAX_WEEKDAY),
+  lessonNo: z.coerce.number().int().min(1).max(MAX_LESSON_NO),
+  teacherId: objectIdSchema,
+});
 export const teacherIdParams = z.object({ teacherId: objectIdSchema });
 
 export const createVersionBody = z.object({
@@ -40,6 +52,19 @@ export const updateVersionBody = z.object({
   entries: entriesInput,
   validFrom: dateStrSchema.optional(),
   note,
+});
+
+export const overlapApprovalsBody = z.object({
+  entries: z
+    .array(
+      z.object({
+        weekday: z.number().int().min(1).max(MAX_WEEKDAY),
+        lessonNo: z.number().int().min(1).max(MAX_LESSON_NO),
+        teacherId: objectIdSchema,
+      }),
+    )
+    .min(1)
+    .max(MAX_WEEKDAY * MAX_LESSON_NO),
 });
 
 export const busyTeachersQuery = z.object({

@@ -6,6 +6,12 @@ export type TimetableStatus = (typeof TIMETABLE_STATUSES)[number];
 export const MAX_WEEKDAY = 7;
 export const MAX_LESSON_NO = 12;
 
+/** Bir vaqtda (boshqa sinfda) dars o'tishga superadmin bergan ruxsat */
+export interface IOverlapApproval {
+  approvedBy: Types.ObjectId;
+  approvedAt: Date;
+}
+
 export interface ITimetableEntry {
   /** ISO hafta kuni: 1 = dushanba */
   weekday: number;
@@ -15,6 +21,11 @@ export interface ITimetableEntry {
   /** Guruh kaliti (hozircha doim null; guruhlar P5 da) */
   groupKey: string | null;
   room: string | null;
+  /**
+   * O'qituvchi boshqa sinfda ham shu vaqtda dars bersa: superadmin ruxsati. Yozuvga bog'liq —
+   * o'qituvchi, fan, hafta kuni yoki dars raqami o'zgarsa server ruxsatni olib tashlaydi.
+   */
+  overlapApproval?: IOverlapApproval | null;
 }
 
 /**
@@ -47,6 +58,14 @@ export interface ITimetableVersion {
 }
 export type TimetableVersionDoc = HydratedDocument<ITimetableVersion>;
 
+const overlapApprovalSchema = new Schema<IOverlapApproval>(
+  {
+    approvedBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    approvedAt: { type: Date, required: true },
+  },
+  { _id: false },
+);
+
 const entrySchema = new Schema<ITimetableEntry>(
   {
     weekday: { type: Number, required: true, min: 1, max: MAX_WEEKDAY },
@@ -55,6 +74,7 @@ const entrySchema = new Schema<ITimetableEntry>(
     teacherId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     groupKey: { type: String, default: null },
     room: { type: String, trim: true, default: null },
+    overlapApproval: { type: overlapApprovalSchema, default: null },
   },
   { _id: false },
 );
