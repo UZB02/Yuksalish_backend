@@ -58,7 +58,7 @@ export async function runMorningDigests(now: Date = new Date()): Promise<DigestR
           kind: 'morning',
           parseMode: 'HTML',
           dedupeKey: `morning:${userId}:${date}`,
-          text: dayMessage('Bugun', date, dayLines),
+          text: dayMessage('Bugun', date, dayLines, { greeting: true }),
         });
       }
       result.sent += await telegramNotify.enqueueMany(items);

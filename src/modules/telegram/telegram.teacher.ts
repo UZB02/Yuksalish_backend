@@ -11,15 +11,20 @@ import {
   resolveClassesRange,
   type ResolvedLesson,
 } from '../timetable/timetable.resolver';
-import { dateLongUz, dayMonthUz, escapeHtml as esc, weekdayShortUz } from './telegram.format';
+import { dateLongUz, dayMonthUz, escapeHtml as esc, weekdayCapUz } from './telegram.format';
 import { getTelegramSettings, nextWorkday } from './telegram.schedule';
 
-/** O'qituvchining bitta kundagi bitta dars qatori (matn allaqachon HTML-xavfsiz) */
+/**
+ * O'qituvchining bitta kundagi bitta dars qatori. `className`/`subjectName` — xom matn (render paytida escape
+ * qilinadi); `suffix` — allaqachon HTML-xavfsiz belgi ("  ❌ bekor qilindi" va h.k.).
+ */
 export interface DayLine {
   date: string;
   lessonNo: number;
   className: string;
-  text: string;
+  subjectName: string;
+  suffix: string;
+  cancelled: boolean;
 }
 
 const idStr = (v: unknown) => String(v);
@@ -83,12 +88,23 @@ export async function loadTeacherLines(
   const sName = new Map(subjects.map((s) => [idStr(s._id), s.name]));
   const uName = new Map(users.map((u) => [idStr(u._id), u.fullName]));
 
-  const push = (teacherId: string, l: ResolvedLesson, subjectId: string, suffix: string) => {
+  const push = (
+    teacherId: string,
+    l: ResolvedLesson,
+    subjectId: string,
+    suffix: string,
+    cancelled = false,
+  ) => {
     const className = cName.get(l.classId) ?? '?';
-    const text =
-      `${l.lessonNo}-soat · ${esc(className)} · ${esc(sName.get(subjectId) ?? '?')}` + suffix;
     const list = out.get(teacherId) ?? [];
-    list.push({ date: l.date, lessonNo: l.lessonNo, className, text });
+    list.push({
+      date: l.date,
+      lessonNo: l.lessonNo,
+      className,
+      subjectName: sName.get(subjectId) ?? '?',
+      suffix,
+      cancelled,
+    });
     out.set(teacherId, list);
   };
 
@@ -103,7 +119,7 @@ export async function loadTeacherLines(
         const was = l.originalSubjectId ? sName.get(l.originalSubjectId) : null;
         suffix = was ? `  🔄 ${esc(was)} o'rniga` : '  🔄 dars o‘zgargan';
       } else if (l.overrideType === 'extra') suffix = "  ➕ qo'shimcha dars";
-      push(l.teacherId, l, l.subjectId, suffix);
+      push(l.teacherId, l, l.subjectId, suffix, !!l.cancelled);
     }
     // Asl o'qituvchi: darsiga boshqasi kiradi
     if (orig && orig !== l.teacherId && (!want || want.has(orig))) {
@@ -126,9 +142,57 @@ export async function loadTeacherLines(
   return out;
 }
 
-/** Bir kun xabari: sarlavha + darslar */
-export function dayMessage(title: string, date: string, lines: DayLine[]): string {
-  return [`📅 <b>${esc(title)}, ${dateLongUz(date)}</b>`, ...lines.map((l) => l.text)].join('\n');
+const lineText = (l: DayLine) => `${l.lessonNo}-soat ─ ${esc(l.className)}${l.suffix}`;
+
+/** Bir kunlik qatorlarni fan bo'yicha guruhlaydi: guruhlar birinchi dars soati bo'yicha, ichida soat/sinf bo'yicha */
+function groupBySubject(lines: DayLine[]): { subject: string; lines: DayLine[] }[] {
+  const sorted = [...lines].sort(
+    (a, b) => a.lessonNo - b.lessonNo || a.className.localeCompare(b.className, 'uz'),
+  );
+  const groups: { subject: string; lines: DayLine[] }[] = [];
+  for (const l of sorted) {
+    const g = groups.find((x) => x.subject === l.subjectName);
+    if (g) g.lines.push(l);
+    else groups.push({ subject: l.subjectName, lines: [l] });
+  }
+  return groups;
+}
+
+const subjectHeader = (name: string) => `📘 <b>${esc(name)}</b>`;
+
+/** Fan guruhlari bloki: "📘 Fan" + qatorlar, guruhlar orasida bo'sh qator */
+function groupedBlock(lines: DayLine[]): string[] {
+  const out: string[] = [];
+  for (const g of groupBySubject(lines)) {
+    if (out.length) out.push('');
+    out.push(subjectHeader(g.subject), ...g.lines.map(lineText));
+  }
+  return out;
+}
+
+/**
+ * Bir kun xabari (ixcham ro'yxat): sana, darslar soni, fan bo'yicha guruhlangan darslar.
+ * `title` — "Bugun" / "Ertaga" bo'lsa sanoq qatorida ko'rsatiladi. `greeting` — faqat ertalabki xabar uchun.
+ */
+export function dayMessage(
+  title: string,
+  date: string,
+  lines: DayLine[],
+  opts: { greeting?: boolean } = {},
+): string {
+  const active = lines.filter((l) => !l.cancelled).length;
+  const cancelled = lines.length - active;
+  const when = title === 'Bugun' || title === 'Ertaga' ? `${title} ` : '';
+  const count =
+    `📚 ${when}${active} ta dars` + (cancelled ? ` (${cancelled} tasi bekor qilingan)` : '');
+  const parts = [
+    `📅 ${weekdayCapUz(date)}, ${dayMonthUz(date)}`,
+    count,
+    '',
+    ...groupedBlock(lines),
+  ];
+  if (opts.greeting) parts.push('', 'Yaxshi kun tilaymiz! 🌤');
+  return parts.join('\n');
 }
 
 export type TeacherCommand = 'bugun' | 'ertaga' | 'hafta';
@@ -150,14 +214,22 @@ export async function teacherCommandReply(
     const end = addDaysStr(monday, last - 1);
     const lines = (await loadTeacherLines(schoolId, [user.id], monday, end)).get(user.id) ?? [];
     const parts = [`🗓 <b>Hafta jadvali (${dayMonthUz(monday)} – ${dayMonthUz(end)})</b>`];
+    // Hafta davomida bitta fan bo'lsa — fan bir marta tepada, kunlarda faqat soat va sinf
+    const subjects = uniq(lines.map((l) => l.subjectName));
+    const single = subjects.length === 1;
+    if (single) parts.push('', subjectHeader(subjects[0] as string));
     for (let d = monday; d <= end; d = addDaysStr(d, 1)) {
       const wd = isoWeekday(d);
       if (!workdays.includes(wd)) continue;
       const day = lines.filter((l) => l.date === d);
       parts.push(
         '',
-        `<b>${weekdayShortUz(wd)}, ${dayMonthUz(d)}</b>${d === today ? ' · bugun' : ''}`,
-        ...(day.length ? day.map((l) => l.text) : ['dars yo‘q']),
+        `<b>${weekdayCapUz(d)}, ${dayMonthUz(d)}</b>${d === today ? ' · bugun' : ''}`,
+        ...(!day.length
+          ? ['dars yo‘q']
+          : subjects.length > 1
+            ? groupedBlock(day)
+            : day.map(lineText)),
       );
     }
     return parts.join('\n');

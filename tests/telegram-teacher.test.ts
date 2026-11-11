@@ -135,17 +135,27 @@ describe('ertalabki jadval', () => {
     expect(await textOf(103)).toEqual([]);
     expect(await textOf(101)).toEqual([
       [
-        '📅 <b>Bugun, 4-noyabr (chorshanba)</b>',
-        '1-soat · 5-A · Matematika',
-        '3-soat · 6-A · Matematika',
+        '📅 Chorshanba, 4-noyabr',
+        '📚 Bugun 2 ta dars',
+        '',
+        '📘 <b>Matematika</b>',
+        '1-soat ─ 5-A',
+        '3-soat ─ 6-A',
+        '',
+        'Yaxshi kun tilaymiz! 🌤',
       ].join('\n'),
     ]);
     expect((await rows())[0]!.parseMode).toBe('HTML');
     expect(await textOf(102)).toEqual([
       [
-        '📅 <b>Bugun, 4-noyabr (chorshanba)</b>',
-        '1-soat · 6-A · Fizika',
-        '2-soat · 5-A · Fizika',
+        '📅 Chorshanba, 4-noyabr',
+        '📚 Bugun 2 ta dars',
+        '',
+        '📘 <b>Fizika</b>',
+        '1-soat ─ 6-A',
+        '2-soat ─ 5-A',
+        '',
+        'Yaxshi kun tilaymiz! 🌤',
       ].join('\n'),
     ]);
   });
@@ -204,12 +214,15 @@ describe('ertalabki jadval', () => {
     });
     await runMorningDigests(MORNING);
     expect(await textOf(103)).toEqual([
-      "📅 <b>Bugun, 4-noyabr (chorshanba)</b>\n1-soat · 5-A · Mat &lt;b&gt;&amp;  🔁 Test tt_t1 o'rniga",
+      "📅 Chorshanba, 4-noyabr\n📚 Bugun 1 ta dars\n\n📘 <b>Mat &lt;b&gt;&amp;</b>\n1-soat ─ 5-A  🔁 Test tt_t1 o'rniga\n\nYaxshi kun tilaymiz! 🌤",
     ]);
     const t1text = (await textOf(101))[0]!;
-    expect(t1text).toContain('1-soat · 5-A · Mat &lt;b&gt;&amp;  🔁 Test tt_t3 kiradi');
-    expect(t1text).toContain('3-soat · 6-A · Mat &lt;b&gt;&amp;');
-    expect((await textOf(102))[0]).toContain('2-soat · 5-A · Fizika  ❌ bekor qilindi');
+    expect(t1text).toContain(
+      '📘 <b>Mat &lt;b&gt;&amp;</b>\n1-soat ─ 5-A  🔁 Test tt_t3 kiradi\n3-soat ─ 6-A',
+    );
+    const t2text = (await textOf(102))[0]!;
+    expect(t2text).toContain('📚 Bugun 1 ta dars (1 tasi bekor qilingan)');
+    expect(t2text).toContain('📘 <b>Fizika</b>\n1-soat ─ 6-A\n2-soat ─ 5-A  ❌ bekor qilindi');
   });
 
   it('faqat bekor qilingan darsi bor o‘qituvchiga ham yuboriladi', async () => {
@@ -230,8 +243,48 @@ describe('ertalabki jadval', () => {
     });
     await runMorningDigests(MORNING);
     const [m] = await textOf(102);
-    expect(m).toContain('1-soat · 6-A · Fizika  ❌ bekor qilindi');
-    expect(m).toContain('2-soat · 5-A · Fizika  ❌ bekor qilindi');
+    expect(m).toContain('📚 Bugun 0 ta dars (2 tasi bekor qilingan)');
+    expect(m).toContain('1-soat ─ 6-A  ❌ bekor qilindi');
+    expect(m).toContain('2-soat ─ 5-A  ❌ bekor qilindi');
+  });
+
+  it('bir necha fan: fan bo‘yicha guruhlanadi, guruhlar birinchi soat bo‘yicha tartiblanadi', async () => {
+    await startBot();
+    await link(t1.id, 101);
+    // t1: 1-soat Matematika(5-A), 2-soat Fizika (5-A), 3-soat Matematika (6-A), 4-soat Fizika (6-A)
+    await TimetableVersion.deleteMany({});
+    await version(c1.id, [e(3, 1, math.id, t1.id), e(3, 2, phys.id, t1.id)]);
+    await version(c2.id, [e(3, 3, math.id, t1.id), e(3, 4, phys.id, t1.id)]);
+    await runMorningDigests(MORNING);
+    const m = (await textOf(101))[0]!;
+    expect(m).toContain('📚 Bugun 4 ta dars');
+    expect(m).toContain(
+      '📘 <b>Matematika</b>\n1-soat ─ 5-A\n3-soat ─ 6-A\n\n📘 <b>Fizika</b>\n2-soat ─ 5-A\n4-soat ─ 6-A',
+    );
+    expect(m.match(/📘/g)).toHaveLength(2);
+  });
+
+  it('almashtirilgan dars yangi fan guruhida, asl o‘qituvchida eski fan ostida', async () => {
+    await startBot();
+    await linkAll();
+    await LessonOverride.create({
+      schoolId: school.id,
+      date: WED,
+      groupKey: null,
+      classId: c1.id,
+      lessonNo: 1,
+      type: 'replace',
+      subjectId: eng.id,
+      teacherId: t3.id,
+      targetTeacherId: t1.id,
+    });
+    await runMorningDigests(MORNING);
+    expect((await textOf(103))[0]).toContain(
+      "📘 <b>Ingliz tili</b>\n1-soat ─ 5-A  🔄 Matematika o'rniga",
+    );
+    expect((await textOf(101))[0]).toContain(
+      '📘 <b>Matematika</b>\n1-soat ─ 5-A  🔁 Test tt_t3 kiradi',
+    );
   });
 
   it('outbox orqali haqiqatan yuboriladi (HTML parse mode)', async () => {
@@ -485,14 +538,17 @@ describe('o‘qituvchi buyruqlari', () => {
     expect(await say(101, '/bugun')).toBe('Bugun dam olish kuni.');
     clock.set(() => new Date(MORNING));
     const r = await say(101, '/bugun');
-    expect(r).toContain('<b>Bugun, 4-noyabr (chorshanba)</b>');
-    expect(r).toContain('3-soat · 6-A · Matematika');
+    expect(r).toBe(
+      '📅 Chorshanba, 4-noyabr\n📚 Bugun 2 ta dars\n\n📘 <b>Matematika</b>\n1-soat ─ 5-A\n3-soat ─ 6-A',
+    );
+    expect(r).not.toContain('Yaxshi kun');
   });
 
   it('/ertaga: ertangi kun, ertaga dam kuni bo‘lsa keyingi ish kuni', async () => {
     const r = await say(102, '/ertaga');
-    expect(r).toContain('<b>Ertaga, 4-noyabr (chorshanba)</b>');
-    expect(r).toContain('1-soat · 6-A · Fizika');
+    expect(r).toContain('📅 Chorshanba, 4-noyabr\n📚 Ertaga 2 ta dars');
+    expect(r).toContain('📘 <b>Fizika</b>\n1-soat ─ 6-A');
+    expect(r).not.toContain('Yaxshi kun');
     clock.set(() => new Date('2026-11-07T05:00:00Z')); // shanba -> ertaga yakshanba
     expect(await say(102, '/ertaga')).toBe(
       'Ertaga dam olish kuni. Keyingi ish kuni — 9-noyabr (dushanba).\n\n9-noyabr (dushanba) uchun darsingiz yo‘q.',
@@ -502,14 +558,26 @@ describe('o‘qituvchi buyruqlari', () => {
   it('/hafta: dushanbadan oxirgi ish kunigacha, kunlar bo‘yicha', async () => {
     const r = await say(101, '/hafta@yuksalish_test_bot');
     expect(r).toContain('Hafta jadvali (2-noyabr – 7-noyabr)');
-    expect(r).toContain(
-      '<b>Ch, 4-noyabr</b>\n1-soat · 5-A · Matematika\n3-soat · 6-A · Matematika',
-    );
-    expect(r).toContain('<b>Du, 2-noyabr</b>\ndars yo‘q');
-    expect(r).toContain('<b>Se, 3-noyabr</b> · bugun');
-    expect(r).not.toContain('Ya,');
+    // bitta fan: tepada bir marta
+    expect(r).toContain('🗓 <b>Hafta jadvali (2-noyabr – 7-noyabr)</b>\n\n📘 <b>Matematika</b>\n');
+    expect(r!.match(/📘/g)).toHaveLength(1);
+    expect(r).toContain('<b>Chorshanba, 4-noyabr</b>\n1-soat ─ 5-A\n3-soat ─ 6-A');
+    expect(r).toContain('<b>Dushanba, 2-noyabr</b>\ndars yo‘q');
+    expect(r).toContain('<b>Seshanba, 3-noyabr</b> · bugun');
+    expect(r).not.toContain('Yakshanba');
     await setTg({ workdays: [1, 2, 3, 4, 5] });
-    expect(await say(101, '/hafta')).not.toContain('Sh, 7-noyabr');
+    expect(await say(101, '/hafta')).not.toContain('Shanba, 7-noyabr');
+  });
+
+  it('/hafta: bir necha fan bo‘lsa har kunda fan bo‘yicha guruhlanadi', async () => {
+    await TimetableVersion.deleteMany({});
+    await version(c1.id, [e(3, 1, math.id, t1.id), e(3, 2, phys.id, t1.id)]);
+    await version(c2.id, [e(3, 3, math.id, t1.id)]);
+    const r = await say(101, '/hafta');
+    expect(r).toContain(
+      '<b>Chorshanba, 4-noyabr</b>\n📘 <b>Matematika</b>\n1-soat ─ 5-A\n3-soat ─ 6-A\n\n📘 <b>Fizika</b>\n2-soat ─ 5-A',
+    );
+    expect(r).toContain('</b>' + String.fromCharCode(10, 10) + '<b>Dushanba, 2-noyabr</b>');
   });
 
   it('/help buyruqlar ro‘yxatini ko‘rsatadi', async () => {

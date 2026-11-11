@@ -30,6 +30,12 @@ export function dayMonthUz(date: string): string {
 /** "2026-11-04" -> "seshanba" */
 export const weekdayUz = (date: string): string => WEEKDAYS[isoWeekday(date) - 1] as string;
 
+/** "2026-11-04" -> "Chorshanba" */
+export const weekdayCapUz = (date: string): string => {
+  const w = weekdayUz(date);
+  return w.charAt(0).toUpperCase() + w.slice(1);
+};
+
 /** ISO hafta kuni (1..7) -> "Du" */
 export const weekdayShortUz = (weekday: number): string => WEEKDAYS_SHORT[weekday - 1] as string;
 
