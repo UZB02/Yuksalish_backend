@@ -23,6 +23,7 @@ export const createBody = z.object({
   order: z.number().int().min(0).max(10000).optional(),
   minScore: score.nullish(),
   maxScore: score.nullish(),
+  defaultScore: score.nullish(),
 });
 
 export const updateBody = z.object({
@@ -32,4 +33,5 @@ export const updateBody = z.object({
   order: z.number().int().min(0).max(10000).optional(),
   minScore: score.nullable().optional(),
   maxScore: score.nullable().optional(),
+  defaultScore: score.nullable().optional(),
 });

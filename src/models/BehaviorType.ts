@@ -13,6 +13,8 @@ export interface IBehaviorType {
   order: number;
   minScore: number | null;
   maxScore: number | null;
+  /** Baholash varag'ida xulq turi tanlanganda oldindan to'ldiriladigan ball (null = yo'q) */
+  defaultScore: number | null;
   isActive: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -29,6 +31,7 @@ const behaviorTypeSchema = new Schema<IBehaviorType>(
     order: { type: Number, default: 0 },
     minScore: { type: Number, default: null },
     maxScore: { type: Number, default: null },
+    defaultScore: { type: Number, default: null },
     isActive: { type: Boolean, default: true },
   },
   { timestamps: true },

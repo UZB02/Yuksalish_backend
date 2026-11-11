@@ -58,6 +58,7 @@ export function buildPhase3(h: DocHelpers) {
     editWindowHours: int,
     backdateDays: int,
     dailyAggregation: { type: 'string', enum: ['average', 'min', 'last'] },
+    autoFillScoreFromBehaviorType: bool,
   };
 
   const schemas: Obj = {
@@ -70,6 +71,7 @@ export function buildPhase3(h: DocHelpers) {
       order: int,
       minScore: { type: 'integer', nullable: true },
       maxScore: { type: 'integer', nullable: true },
+      defaultScore: { type: 'integer', nullable: true },
       isActive: bool,
       createdAt: dateTime,
     }),
@@ -113,6 +115,7 @@ export function buildPhase3(h: DocHelpers) {
     order: int,
     minScore: { type: 'integer', nullable: true },
     maxScore: { type: 'integer', nullable: true },
+    defaultScore: { type: 'integer', nullable: true },
   };
   const itemFields = { studentId: str, value: int, behaviorTypeId: strNull, comment: strNull };
 

@@ -13,6 +13,8 @@ export interface ScoringSettings {
   editWindowHours: number;
   backdateDays: number;
   dailyAggregation: DailyAggregation;
+  /** Xulq turi tanlanganda turning standart balli varaqda avtomatik qo'yiladi (faqat UI; reytingga ta'sir qilmaydi) */
+  autoFillScoreFromBehaviorType: boolean;
 }
 
 export const SCORING_DEFAULTS: ScoringSettings = {
@@ -23,6 +25,7 @@ export const SCORING_DEFAULTS: ScoringSettings = {
   editWindowHours: 24,
   backdateDays: 3,
   dailyAggregation: 'average',
+  autoFillScoreFromBehaviorType: false,
 };
 
 const int = (min: number, max: number) => z.number().int().min(min).max(max);
@@ -36,6 +39,7 @@ export const scoringValuesSchema = z.object({
   editWindowHours: int(0, 720).optional(),
   backdateDays: int(0, 30).optional(),
   dailyAggregation: z.enum(['average', 'min', 'last']).optional(),
+  autoFillScoreFromBehaviorType: z.boolean().optional(),
 });
 export type ScoringValues = z.infer<typeof scoringValuesSchema>;
 

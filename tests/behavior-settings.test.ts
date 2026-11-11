@@ -204,6 +204,68 @@ describe('Xulq turlari', () => {
   });
 });
 
+describe('Xulq turi standart balli (defaultScore)', () => {
+  const body = { name: 'Ballli tur', kind: 'positive', color: '#aabbcc' };
+  const patch = (t: string, id: string, b: object) =>
+    request(app).patch(`/api/v1/behavior-types/${id}`).set(bearer(t)).send(b);
+
+  it('yaratish/yangilash/null; standart null; audit before/after', async () => {
+    const created = await post(root, body);
+    expect(created.status).toBe(201);
+    expect(created.body.data.defaultScore).toBeNull();
+    const id = created.body.data.id;
+
+    const set = await patch(root, id, { defaultScore: 90 });
+    expect(set.status).toBe(200);
+    expect(set.body.data.defaultScore).toBe(90);
+    // boshqa maydonni o'zgartirish defaultScore ni saqlaydi
+    expect((await patch(root, id, { name: 'Boshqa nom' })).body.data.defaultScore).toBe(90);
+    const log = await AuditLog.findOne({ action: 'behavior_type.update' }).sort({ createdAt: 1 });
+    expect(log!.before).toMatchObject({ defaultScore: null });
+    expect(log!.after).toMatchObject({ defaultScore: 90 });
+
+    expect((await patch(root, id, { defaultScore: null })).body.data.defaultScore).toBeNull();
+    const withDef = await post(root, { ...body, name: 'Yana tur', defaultScore: 0 });
+    expect(withDef.body.data.defaultScore).toBe(0);
+  });
+
+  it("validatsiya: butun 0–100, min..max oralig'ida", async () => {
+    for (const v of [-1, 101, 50.5, 'x']) {
+      expect((await post(root, { ...body, defaultScore: v })).status).toBe(400);
+    }
+    expect(
+      (await post(root, { ...body, minScore: 80, maxScore: 90, defaultScore: 95 })).status,
+    ).toBe(400);
+    expect(
+      (await post(root, { ...body, minScore: 80, maxScore: 90, defaultScore: 70 })).status,
+    ).toBe(400);
+    const ok = await post(root, { ...body, minScore: 80, maxScore: 90, defaultScore: 85 });
+    expect(ok.status).toBe(201);
+    const id = ok.body.data.id;
+    expect((await patch(root, id, { defaultScore: 91 })).status).toBe(400);
+    expect((await patch(root, id, { minScore: 86 })).status).toBe(400); // 85 < 86
+    expect((await patch(root, id, { minScore: 50, maxScore: 100, defaultScore: 99 })).status).toBe(
+      200,
+    );
+  });
+
+  it("faqat superadmin yozadi; eski hujjat (maydonsiz) null o'qiladi; defaultlar qayta ishga tushganda tegilmaydi", async () => {
+    expect((await post(admin, { ...body, defaultScore: 50 })).status).toBe(403);
+
+    await ensureDefaultBehaviorTypes();
+    const first = await BehaviorType.findOne({ schoolId: null }).sort({ order: 1 });
+    // eski hujjat: maydonni butunlay olib tashlaymiz
+    await BehaviorType.collection.updateOne({ _id: first!._id }, { $unset: { defaultScore: '' } });
+    const list = await request(app).get('/api/v1/behavior-types').set(bearer(teacher));
+    expect(list.body.data[0].defaultScore).toBeNull();
+
+    await patch(root, first!.id, { defaultScore: 77 });
+    expect(await ensureDefaultBehaviorTypes()).toBe(0);
+    const after = await request(app).get('/api/v1/behavior-types').set(bearer(teacher));
+    expect(after.body.data[0].defaultScore).toBe(77);
+  });
+});
+
 describe('Baholash sozlamalari', () => {
   const get = (t: string, h: Record<string, string> = {}) =>
     request(app).get('/api/v1/settings/scoring').set(bearer(t)).set(h);
@@ -221,6 +283,7 @@ describe('Baholash sozlamalari', () => {
       editWindowHours: 24,
       backdateDays: 3,
       dailyAggregation: 'average',
+      autoFillScoreFromBehaviorType: false,
     });
     expect(res.body.data.override).toBeNull();
   });
@@ -271,6 +334,32 @@ describe('Baholash sozlamalari', () => {
     });
     expect(log!.before).toMatchObject({ scope: 'school', values: null });
     expect(log!.after).toMatchObject({ values: { editWindowHours: 2 } });
+  });
+
+  it("autoFillScoreFromBehaviorType: standart false, global + maktab override, noto'g'ri tur 400", async () => {
+    expect((await get(admin)).body.data.effective.autoFillScoreFromBehaviorType).toBe(false);
+    expect(
+      (await put({ scope: 'global', values: { autoFillScoreFromBehaviorType: true } })).status,
+    ).toBe(200);
+    expect((await get(admin)).body.data.effective.autoFillScoreFromBehaviorType).toBe(true);
+    await put({
+      scope: 'school',
+      schoolId: a.id,
+      values: { autoFillScoreFromBehaviorType: false },
+    });
+    expect((await get(admin)).body.data.effective.autoFillScoreFromBehaviorType).toBe(false);
+    expect((await get(admin)).body.data.global.autoFillScoreFromBehaviorType).toBe(true);
+    expect(
+      (await put({ scope: 'global', values: { autoFillScoreFromBehaviorType: 'yes' } })).status,
+    ).toBe(400);
+    // admin/o'qituvchi yozolmaydi
+    for (const t of [admin, teacher]) {
+      const r = await request(app)
+        .put('/api/v1/settings/scoring')
+        .set(bearer(t))
+        .send({ scope: 'global', values: { autoFillScoreFromBehaviorType: true } });
+      expect(r.status).toBe(403);
+    }
   });
 
   it("faqat superadmin yozadi (admin/o'qituvchi 403)", async () => {

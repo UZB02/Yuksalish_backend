@@ -449,7 +449,11 @@ describe("Baholash varag'i (scoring-sheet)", () => {
     expect(res.status).toBe(200);
     const data = res.body.data;
     expect(data).toMatchObject({ class: { id: c5.id, name: '5-A' }, date: today() });
-    expect(data.settings).toMatchObject({ dailyAggregation: 'average', editWindowHours: 24 });
+    expect(data.settings).toMatchObject({
+      dailyAggregation: 'average',
+      editWindowHours: 24,
+      autoFillScoreFromBehaviorType: false,
+    });
     expect(data.students.map((x: { fullName: string }) => x.fullName)).toEqual([
       'Aliyev Ali',
       'Valiyev Vali',

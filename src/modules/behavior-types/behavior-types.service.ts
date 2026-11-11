@@ -15,6 +15,7 @@ export const toBehaviorTypeDto = (b: BehaviorTypeDoc) => ({
   order: b.order,
   minScore: b.minScore ?? null,
   maxScore: b.maxScore ?? null,
+  defaultScore: b.defaultScore ?? null,
   isActive: b.isActive,
   createdAt: b.createdAt,
 });
@@ -37,6 +38,22 @@ function assertRange(min: number | null | undefined, max: number | null | undefi
   }
 }
 
+function assertDefaultScore(
+  def: number | null | undefined,
+  min: number | null | undefined,
+  max: number | null | undefined,
+) {
+  if (def == null) return;
+  if ((min != null && def < min) || (max != null && def > max)) {
+    throw AppError.validation("Standart ball oralig'i noto'g'ri", [
+      {
+        path: 'defaultScore',
+        message: "Standart ball minimal va maksimal ball oralig'ida bo'lishi kerak",
+      },
+    ]);
+  }
+}
+
 async function findOrFail(id: string): Promise<BehaviorTypeDoc> {
   const doc = isId(id) ? await BehaviorType.findById(id) : null;
   if (!doc) throw AppError.notFound('Xulq turi topilmadi');
@@ -50,6 +67,7 @@ export interface BehaviorInput {
   order?: number;
   minScore?: number | null;
   maxScore?: number | null;
+  defaultScore?: number | null;
 }
 
 export const behaviorTypesService = {
@@ -72,6 +90,7 @@ export const behaviorTypesService = {
 
   async create(ctx: Ctx, input: BehaviorInput & { schoolId?: string | null }) {
     assertRange(input.minScore, input.maxScore);
+    assertDefaultScore(input.defaultScore, input.minScore, input.maxScore);
     const schoolId = input.schoolId ?? null;
     if (schoolId && !(isId(schoolId) && (await School.exists({ _id: schoolId })))) {
       throw AppError.validation('Maktab topilmadi', [
@@ -98,6 +117,7 @@ export const behaviorTypesService = {
         order,
         minScore: input.minScore ?? null,
         maxScore: input.maxScore ?? null,
+        defaultScore: input.defaultScore ?? null,
       });
     } catch (e) {
       if (isDuplicateKeyError(e)) throw nameTaken();
@@ -132,7 +152,9 @@ export const behaviorTypesService = {
     if (patch.order !== undefined) doc.order = patch.order;
     if (patch.minScore !== undefined) doc.minScore = patch.minScore;
     if (patch.maxScore !== undefined) doc.maxScore = patch.maxScore;
+    if (patch.defaultScore !== undefined) doc.defaultScore = patch.defaultScore;
     assertRange(doc.minScore, doc.maxScore);
+    assertDefaultScore(doc.defaultScore, doc.minScore, doc.maxScore);
     try {
       await doc.save();
     } catch (e) {
