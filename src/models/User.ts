@@ -5,6 +5,11 @@ export interface IUserTelegram {
   chatId: number | null;
   username: string | null;
   linkedAt: Date | null;
+  /**
+   * Faqat superadmin: rejali kunlik/haftalik hisobotlar qaysi maktab bo'yicha yuborilsin.
+   * null/yo'q = o'chiq (default), 'all' = barcha maktablar, aks holda maktab _id si (hex satr)
+   */
+  reportScope?: string | null;
 }
 
 export interface IUser {
@@ -50,6 +55,7 @@ const userSchema = new Schema<IUser>(
       chatId: { type: Number, default: null, select: false },
       username: { type: String, default: null },
       linkedAt: { type: Date, default: null },
+      reportScope: { type: String, default: null },
     },
   },
   { timestamps: true },

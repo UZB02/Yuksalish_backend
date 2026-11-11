@@ -1,4 +1,4 @@
-import { Bot, GrammyError, HttpError } from 'grammy';
+import { Bot, GrammyError, HttpError, InlineKeyboard } from 'grammy';
 import { env } from '../../config/env';
 import { logger } from '../../core/logger';
 
@@ -12,6 +12,30 @@ export interface IncomingMessage {
   chatType: string;
   text: string;
   username: string | null;
+}
+
+export interface InlineButton {
+  text: string;
+  /** Telegram cheklovi: <= 64 bayt */
+  data: string;
+}
+
+/** Matn (HTML) va ixtiyoriy inline klaviatura (qatorlar bo'yicha) */
+export interface BotReply {
+  text: string;
+  keyboard?: InlineButton[][];
+}
+
+export interface IncomingCallback {
+  chatId: number;
+  chatType: string;
+  data: string;
+}
+
+/** Callback natijasi: answer = tugma bosilganda qisqa bildirishnoma, edit = xabarni yangilash */
+export interface CallbackResult {
+  answer?: string;
+  edit?: BotReply;
 }
 
 export interface SendOptions {
@@ -51,8 +75,9 @@ export interface TelegramClient {
   sendMessage(chatId: number, text: string, opts?: SendOptions): Promise<void>;
   /** Long polling ni boshlaydi; getMe tayyor bo'lgach qaytadi. Keyingi halokatli xato onFatal ga */
   start(
-    onMessage: (m: IncomingMessage) => Promise<string | null>,
+    onMessage: (m: IncomingMessage) => Promise<string | BotReply | null>,
     onFatal: (err: Error) => void,
+    onCallback?: (c: IncomingCallback) => Promise<CallbackResult | null>,
   ): Promise<BotInfo>;
   /** Bot menyusidagi buyruqlar (setMyCommands). Ixtiyoriy: xato bot ishini to'xtatmaydi */
   setCommands?(commands: BotCommand[], scope?: CommandScope): Promise<void>;
@@ -76,6 +101,15 @@ function toApiError(err: unknown, token: string): TelegramApiError {
   }
   const msg = err instanceof Error ? err.message : String(err);
   return new TelegramApiError(scrub(msg), { network: true });
+}
+
+function toInlineKeyboard(rows: InlineButton[][]): InlineKeyboard {
+  const kb = new InlineKeyboard();
+  rows.forEach((row, i) => {
+    for (const b of row) kb.text(b.text, b.data);
+    if (i < rows.length - 1) kb.row();
+  });
+  return kb;
 }
 
 export const grammyClientFactory: ClientFactory = (token) => {
@@ -102,7 +136,7 @@ export const grammyClientFactory: ClientFactory = (token) => {
         throw toApiError(err, token);
       }
     },
-    async start(onMessage, onFatal) {
+    async start(onMessage, onFatal, onCallback) {
       bot.on('message:text', async (ctx) => {
         const reply = await onMessage({
           chatId: ctx.chat.id,
@@ -111,13 +145,40 @@ export const grammyClientFactory: ClientFactory = (token) => {
           username: ctx.from?.username ?? null,
         });
         if (reply) {
+          const r = typeof reply === 'string' ? { text: reply } : reply;
           // Javoblar HTML parse mode da (dinamik qismlar handleIncoming da escapeHtml qilinadi)
-          await ctx.reply(reply, {
+          await ctx.reply(r.text, {
             parse_mode: 'HTML',
             link_preview_options: { is_disabled: true },
+            ...(r.keyboard ? { reply_markup: toInlineKeyboard(r.keyboard) } : {}),
           });
         }
       });
+      if (onCallback) {
+        bot.on('callback_query:data', async (ctx) => {
+          const chat = ctx.callbackQuery.message?.chat;
+          const res = chat
+            ? await onCallback({
+                chatId: chat.id,
+                chatType: chat.type,
+                data: ctx.callbackQuery.data,
+              })
+            : null;
+          if (res?.edit) {
+            try {
+              await ctx.editMessageText(res.edit.text, {
+                parse_mode: 'HTML',
+                link_preview_options: { is_disabled: true },
+                ...(res.edit.keyboard ? { reply_markup: toInlineKeyboard(res.edit.keyboard) } : {}),
+              });
+            } catch (err) {
+              // Matn o'zgarmagan bo'lsa Telegram xato qaytaradi: e'tiborsiz
+              if (!(err instanceof GrammyError && /not modified/i.test(err.description))) throw err;
+            }
+          }
+          await ctx.answerCallbackQuery(res?.answer ? { text: res.answer } : undefined);
+        });
+      }
       // Bitta xabarni qayta ishlashdagi xato botni to'xtatmasin
       bot.catch((e) =>
         logger.error({ err: toApiError(e.error, token).message }, 'Telegram handler xatosi'),
@@ -126,7 +187,7 @@ export const grammyClientFactory: ClientFactory = (token) => {
         let started = false;
         bot
           .start({
-            allowed_updates: ['message'],
+            allowed_updates: onCallback ? ['message', 'callback_query'] : ['message'],
             onStart: (me) => {
               started = true;
               resolve({ username: me.username, name: me.first_name });

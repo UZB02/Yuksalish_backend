@@ -7,6 +7,7 @@ const CMD = {
   hisobot: { command: 'hisobot', description: 'Kunlik hisobot (rahbariyat)' },
   haftalik: { command: 'haftalik', description: 'Haftalik hisobot (rahbariyat)' },
   help: { command: 'help', description: 'Yordam' },
+  sozlamalar: { command: 'sozlamalar', description: 'Hisobot sozlamalari (superadmin)' },
   stop: { command: 'stop', description: 'Hisobni uzish' },
 } satisfies Record<string, BotCommand>;
 
@@ -22,7 +23,7 @@ export function commandsForRole(role: string): BotCommand[] {
       return [CMD.hisobot, CMD.haftalik, CMD.help, CMD.stop];
     case 'superadmin':
       // Superadmin uchun /hisobot va /haftalik barcha maktablar bo'yicha qisqa xulosa beradi
-      return [CMD.hisobot, CMD.haftalik, CMD.help, CMD.stop];
+      return [CMD.hisobot, CMD.haftalik, CMD.sozlamalar, CMD.help, CMD.stop];
     default:
       return DEFAULT_COMMANDS;
   }

@@ -1,9 +1,10 @@
 import { User } from '../../models/User';
 import { todayTashkent } from '../../utils/clock';
-import type { IncomingMessage } from './telegram.client';
+import type { BotReply, IncomingMessage } from './telegram.client';
 import { escapeHtml } from './telegram.format';
 import { linkChat, unlinkUser } from './telegram.link.service';
 import { REPORT_COMMANDS, reportCommandReply, type ReportCommand } from './telegram.report';
+import { settingsCommandReply } from './telegram.superadmin';
 import { TEACHER_COMMANDS, teacherCommandReply, type TeacherCommand } from './telegram.teacher';
 
 export const HELP_TEXT = [
@@ -23,6 +24,9 @@ export const HELP_TEXT = [
   'Rahbariyat uchun:',
   '/hisobot — bugungi davomat hisoboti',
   '/haftalik — haftalik xulosa (hafta boshidan)',
+  '',
+  'Faqat superadmin uchun:',
+  '/sozlamalar — rejali hisobotlar qaysi maktab bo‘yicha yuborilishini tanlash',
   '',
   'Hamma uchun:',
   '/help — yordam',
@@ -97,4 +101,16 @@ export async function handleIncoming(msg: IncomingMessage): Promise<string | nul
   }
 
   return HELP_TEXT;
+}
+
+/**
+ * Bot klienti uchun: inline klaviaturali javoblar (/sozlamalar) va oddiy matnli javoblar.
+ * handleIncoming o'zgarishsiz qoladi.
+ */
+export async function handleIncomingRich(msg: IncomingMessage): Promise<string | BotReply | null> {
+  if (msg.chatType === 'private') {
+    const m = /^\/([A-Za-z_]+)(?:@\w+)?/.exec(msg.text.trim());
+    if (m && m[1]!.toLowerCase() === 'sozlamalar') return settingsCommandReply(msg.chatId);
+  }
+  return handleIncoming(msg);
 }

@@ -14,6 +14,7 @@ import {
   type DayAttendance,
 } from './telegram.report.data';
 import { getTelegramSettings } from './telegram.schedule';
+import { REPORT_SCOPE_ALL } from './telegram.superadmin';
 
 const MAX_LISTED_CLASSES = 15;
 
@@ -229,6 +230,22 @@ async function leadershipOf(schoolId: string): Promise<string[]> {
   return users.map((u) => String(u._id));
 }
 
+/**
+ * Rejali hisobotni olishni tanlagan superadminlar: faol, Telegram ulangan va reportScope 'all' yoki shu maktab.
+ * Maydoni yo'q (eski) hujjatlar mos kelmaydi: default o'chiq.
+ */
+async function subscribedSuperadmins(schoolId: string): Promise<string[]> {
+  const users = await User.find({
+    role: 'superadmin',
+    isActive: true,
+    'telegram.chatId': { $ne: null },
+    'telegram.reportScope': { $in: [REPORT_SCOPE_ALL, schoolId] },
+  })
+    .select('_id')
+    .lean();
+  return users.map((u) => String(u._id));
+}
+
 type Kind = 'daily' | 'weekly';
 
 async function runReports(kind: Kind, now: Date): Promise<ReportRunResult> {
@@ -248,8 +265,16 @@ async function runReports(kind: Kind, now: Date): Promise<ReportRunResult> {
           : s.notify.weeklyReport && s.weeklyReportTime === hhmm && s.weeklyReportDay === weekday;
       if (!due) continue;
       result.schools++;
-      const userIds = await leadershipOf(schoolId);
-      if (!userIds.length) continue;
+      const userIds = [
+        ...new Set([...(await leadershipOf(schoolId)), ...(await subscribedSuperadmins(schoolId))]),
+      ];
+      if (!userIds.length) {
+        logger.warn(
+          { schoolId, hhmm, kind },
+          'Telegram hisobot vaqti keldi, lekin qabul qiluvchi yo‘q',
+        );
+        continue;
+      }
       const text =
         kind === 'daily'
           ? await buildDailyReport(schoolId, school.name, date, {
@@ -264,7 +289,12 @@ async function runReports(kind: Kind, now: Date): Promise<ReportRunResult> {
         dedupeKey: `${kind}:${schoolId}:${userId}:${period}`,
         text,
       }));
-      result.sent += await telegramNotify.enqueueMany(items);
+      const enqueued = await telegramNotify.enqueueMany(items);
+      result.sent += enqueued;
+      logger.info(
+        { schoolId, hhmm, kind, recipients: userIds.length, enqueued },
+        'Telegram rejali hisobot navbatga qo‘yildi',
+      );
     } catch (err) {
       logger.error({ err, schoolId }, `Telegram ${kind} hisobotini yuborishda xato`);
     }
@@ -275,7 +305,8 @@ async function runReports(kind: Kind, now: Date): Promise<ReportRunResult> {
 /**
  * Kunlik hisobot: dailyReportTime hozirgi Toshkent vaqtiga teng, bugun ish kuni va `notify.dailyReport` yoqilgan
  * maktablarning ulangan school_admin lariga. dedupeKey `daily:<maktab>:<foydalanuvchi>:<sana>`.
- * Superadminlarga rejali hisobot yuborilmaydi (faqat /hisobot va /haftalik orqali qisqa xulosa).
+ * Shuningdek, /sozlamalar orqali shu maktabni (yoki barcha maktablarni) tanlagan faol superadminlarga:
+ * qachon va yuborilish-yuborilmasligini maktabning o'z sozlamasi hal qiladi, matn bir xil.
  */
 export const runDailyReports = (now: Date = new Date()): Promise<ReportRunResult> =>
   runReports('daily', now);

@@ -1,7 +1,7 @@
 import { env } from '../../config/env';
 import { logger } from '../../core/logger';
 import { TelegramBotConfig } from '../../models/TelegramBotConfig';
-import { handleIncoming } from './telegram.bot';
+import { handleIncomingRich } from './telegram.bot';
 import {
   grammyClientFactory,
   TelegramApiError,
@@ -11,6 +11,7 @@ import {
 import { syncAllLinkedCommands } from './telegram.commands';
 import { decryptToken } from './telegram.crypto';
 import { DEFAULT_COMMANDS } from './telegram.menu';
+import { handleSettingsCallback } from './telegram.superadmin';
 
 export type BotStatus = 'running' | 'stopped' | 'error';
 
@@ -137,13 +138,17 @@ class TelegramManager {
 
     try {
       const client = this.factory(r.token);
-      const info = await client.start(handleIncoming, (err) => {
-        // Polling halokatli to'xtadi (masalan, boshqa nusxa ham polling qilyapti)
-        if (this.client === client) {
-          logger.error({ err: err.message }, 'Telegram polling to‘xtadi');
-          this.fail(`Bot to'xtadi: ${err.message}`);
-        }
-      });
+      const info = await client.start(
+        handleIncomingRich,
+        (err) => {
+          // Polling halokatli to'xtadi (masalan, boshqa nusxa ham polling qilyapti)
+          if (this.client === client) {
+            logger.error({ err: err.message }, 'Telegram polling to‘xtadi');
+            this.fail(`Bot to'xtadi: ${err.message}`);
+          }
+        },
+        handleSettingsCallback,
+      );
       this.client = client;
       this.status = 'running';
       // Default menyu, so'ng ulangan chatlarni rolga moslab fonda qayta sinxronlash
