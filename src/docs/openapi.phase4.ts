@@ -86,6 +86,16 @@ export function buildPhase4(h: DocHelpers) {
       description: "'alphabetical' doim oxirida",
     },
     refreshMode: { type: 'string', enum: ['realtime', 'nightly'] },
+    resultsEnabled: bool,
+    resultsWeekday: { type: 'integer', minimum: 1, maximum: 7 },
+    resultsMonthDay: { type: 'integer', minimum: 0, maximum: 31, description: '0 = oxirgi kun' },
+    resultsDate: {
+      ...date,
+      nullable: true,
+      description:
+        "quarter/academic_year/custom: e'lon sanasi; davrdan tashqarida bo'lsa oxirgi kun",
+    },
+    resultsTime: { type: 'string', description: 'HH:mm (Asia/Tashkent)' },
   };
   const pubSettings = {
     enabled: bool,
@@ -275,6 +285,84 @@ export function buildPhase4(h: DocHelpers) {
         {
           '200': okRes(o({ recalculatedAt: dateTime })),
         },
+      ),
+    },
+    '/ratings/results': {
+      get: internal(
+        "Muzlatilgan (e'lon qilingan) davr natijalari arxivi, yangisi birinchi",
+        {
+          '200': okRes({
+            type: 'array',
+            items: o({
+              id: str,
+              periodType: str,
+              periodKey: str,
+              label: str,
+              from: str,
+              to: str,
+              periodTo: str,
+              announcedAt: dateTime,
+              manual: bool,
+              studentsCount: int,
+              classesCount: int,
+            }),
+          }),
+        },
+        { params: [q('page', 'integer'), q('limit', 'integer')] },
+      ),
+    },
+    '/ratings/results/{id}': {
+      get: internal(
+        "Bitta arxiv: o'quvchilar va sinflar (o'qituvchi faqat o'z sinflarini ko'radi, o'rinlar maktab bo'yicha)",
+        {
+          '200': okRes(
+            o({
+              id: str,
+              label: str,
+              from: str,
+              to: str,
+              announcedAt: dateTime,
+              students: { type: 'array', items: o({ rank: int, fullName: str, score: num }) },
+              classes: { type: 'array', items: o({ rank: int, name: str, score: num }) },
+            }),
+          ),
+        },
+        { params: [{ name: 'id', in: 'path', required: true, schema: str }] },
+      ),
+    },
+    '/ratings/results/announce': {
+      post: internal(
+        "Joriy davr natijasini hoziroq e'lon qilish (faqat superadmin, X-School-Id shart; takror 409)",
+        { '200': okRes(o({ id: str, periodKey: str, from: str, to: str, manual: bool })) },
+      ),
+    },
+    '/public/{schoolSlug}/rating/results/latest': {
+      get: pub(
+        "Oxirgi e'lon qilingan davr g'oliblari (e'lon o'chiq yoki arxiv yo'q bo'lsa data=null). Jonli reytingdagi oq ro'yxat va sozlamalar; o'quvchilar <=10, sinflar <=3",
+        {
+          type: 'object',
+          nullable: true,
+          properties: {
+            period: publicPeriod,
+            announcedAt: dateTime,
+            students: {
+              type: 'array',
+              items: o({
+                rank: int,
+                studentKey: str,
+                fullName: str,
+                className: strNull,
+                score: num,
+                photoUrl: strNull,
+              }),
+            },
+            classes: {
+              type: 'array',
+              items: o({ rank: int, className: str, grade: int, score: num }),
+            },
+          },
+        },
+        [{ name: 'schoolSlug', in: 'path', required: true, schema: str }],
       ),
     },
     '/public/schools': {

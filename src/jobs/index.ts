@@ -3,6 +3,7 @@ import { env } from '../config/env';
 import { logger } from '../core/logger';
 import { runMorningDigests } from '../modules/telegram/telegram.digest';
 import { runDailyReports, runWeeklyReports } from '../modules/telegram/telegram.report';
+import { runRatingResults } from '../modules/ratings/rating.results';
 import { recalculateAll } from '../modules/ratings/ratings.service';
 import { runTimetablePurge } from '../modules/timetable/timetable.purge';
 
@@ -35,6 +36,16 @@ export function startJobs(): void {
     '* * * * *',
     () => {
       runMorningDigests().catch((err) => logger.error({ err }, 'Ertalabki jadval xatosi'));
+    },
+    { timezone: 'Asia/Tashkent' },
+  );
+  // Har daqiqa: reyting davri yakuniy natijasini e'lon qilish (e'lon vaqti kelgan maktablar uchun)
+  cron.schedule(
+    '* * * * *',
+    () => {
+      runRatingResults().catch((err) =>
+        logger.error({ err }, 'Reyting yakunini e‘lon qilish xatosi'),
+      );
     },
     { timezone: 'Asia/Tashkent' },
   );

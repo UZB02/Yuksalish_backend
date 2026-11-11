@@ -1,6 +1,7 @@
 import type { Ctx } from '../../core/context';
 import { AppError } from '../../core/errors';
 import { buildMeta, skipOf } from '../../core/pagination';
+import { RatingResult } from '../../models/RatingResult';
 import { School } from '../../models/School';
 import { addDaysStr, clock, todayTashkent } from '../../utils/clock';
 import { escapeRegex } from '../../utils/helpers';
@@ -8,6 +9,8 @@ import { auditService } from '../audit/audit.service';
 import { allowedClassIds } from '../classes/classes.service';
 import { settingsService } from '../settings/settings.service';
 import { rankChange } from './rating.calc';
+import { createRatingResult } from './rating.results';
+import { notifyRatingResults } from '../telegram/telegram.rating-results';
 import {
   computeLive,
   findClassRatings,
@@ -60,7 +63,86 @@ const periodOut = (p: {
   ...(p.fallback ? { fallback: true } : {}),
 });
 
+const resultMeta = (r: {
+  _id: unknown;
+  periodType: string;
+  periodKey: string;
+  label: string;
+  from: string;
+  to: string;
+  periodTo: string;
+  announcedAt: Date;
+  manual: boolean;
+  studentsCount: number;
+  classesCount: number;
+}) => ({
+  id: String(r._id),
+  periodType: r.periodType,
+  periodKey: r.periodKey,
+  label: r.label,
+  from: r.from,
+  to: r.to,
+  periodTo: r.periodTo,
+  announcedAt: r.announcedAt,
+  manual: r.manual,
+  studentsCount: r.studentsCount,
+  classesCount: r.classesCount,
+});
+
 export const ratingsApi = {
+  /** Muzlatilgan (e'lon qilingan) davr natijalari arxivi, yangisi birinchi */
+  async resultsList(schoolId: string, q: { page: number; limit: number }) {
+    const filter = { schoolId };
+    const [docs, total] = await Promise.all([
+      RatingResult.find(filter)
+        .select('-students -classes')
+        .sort({ announcedAt: -1, from: -1 })
+        .skip(skipOf(q.page, q.limit))
+        .limit(q.limit)
+        .lean(),
+      RatingResult.countDocuments(filter),
+    ]);
+    return { data: docs.map(resultMeta), meta: buildMeta(q.page, q.limit, total) };
+  },
+
+  /** Bitta arxiv. O'qituvchi faqat o'z sinflari qatorlarini ko'radi (o'rinlar maktab bo'yicha) */
+  async resultDetail(actor: Actor, schoolId: string, id: string) {
+    const doc = await RatingResult.findOne({ _id: id, schoolId }).lean();
+    if (!doc) throw AppError.notFound('Yakuniy natija topilmadi');
+    const scope = await allowedClassIds(actor, schoolId);
+    const inScope = (classId: unknown) => !scope || scope.includes(String(classId));
+    return {
+      ...resultMeta(doc),
+      settings: doc.settings,
+      students: doc.students
+        .filter((s) => inScope(s.classId))
+        .map((s) => ({ ...s, studentId: String(s.studentId), classId: String(s.classId) })),
+      classes: doc.classes
+        .filter((c) => inScope(c.classId))
+        .map((c) => ({ ...c, classId: String(c.classId) })),
+    };
+  },
+
+  /** Joriy davr natijasini hoziroq (qo'lda) e'lon qilish — faqat superadmin */
+  async announceNow(ctx: Ctx, schoolId: string) {
+    const { period } = await resolveSchoolPeriod(schoolId);
+    const today = todayTashkent();
+    const to = today < period.to ? today : period.to;
+    const doc = await createRatingResult(schoolId, period, to, { manual: true });
+    if (!doc) throw AppError.conflict("Bu davr natijasi allaqachon e'lon qilingan");
+    await notifyRatingResults(schoolId, doc);
+    await auditService.log({
+      userId: ctx.actor.id,
+      schoolId,
+      action: 'ratings.announce',
+      entity: 'rating_result',
+      entityId: String(doc._id),
+      after: { periodKey: period.key, from: period.from, to },
+      ip: ctx.ip,
+    });
+    return resultMeta(doc as never);
+  },
+
   async config(schoolId: string) {
     const { rating, period } = await resolveSchoolPeriod(schoolId);
     const snap = await peekSnapshot(schoolId);

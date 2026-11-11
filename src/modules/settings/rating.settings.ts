@@ -25,6 +25,16 @@ export interface RatingSettings {
   tieBreak: TieBreak[];
   refreshMode: 'realtime' | 'nightly';
   weights: RatingWeights;
+  /** Davr yakuniy natijasini e'lon qilish (muzlatib arxivlash). Standart: o'chiq */
+  resultsEnabled: boolean;
+  /** Faqat periodType=week uchun: e'lon kuni (ISO 1=Du..7=Ya). Boshqa turlarda davrning oxirgi kuni */
+  resultsWeekday: number;
+  /** E'lon vaqti "HH:mm" (Asia/Tashkent) */
+  resultsTime: string;
+  /** Faqat month: e'lon kuni 1–31; 0 = oyning oxirgi kuni (oyda kun yetmasa ham oxirgi kun) */
+  resultsMonthDay: number;
+  /** quarter/academic_year/custom: aniq e'lon sanasi (YYYY-MM-DD). null yoki davrdan tashqarida bo'lsa davrning oxirgi kuni */
+  resultsDate: string | null;
 }
 
 export const RATING_DEFAULTS: RatingSettings = {
@@ -36,7 +46,21 @@ export const RATING_DEFAULTS: RatingSettings = {
   tieBreak: ['daysCount', 'alphabetical'],
   refreshMode: 'realtime',
   weights: { conduct: 50, subjects: 50 },
+  resultsEnabled: false,
+  resultsWeekday: 6,
+  resultsTime: '18:00',
+  resultsMonthDay: 0,
+  resultsDate: null,
 };
+
+/** Qayta hisoblashni talab qilmaydigan (faqat e'lon jadvaliga tegishli) sozlama kalitlari */
+export const RATING_RESULTS_KEYS = [
+  'resultsEnabled',
+  'resultsWeekday',
+  'resultsTime',
+  'resultsMonthDay',
+  'resultsDate',
+] as const;
 
 export const ratingValuesSchema = z.object({
   periodType: z.enum(PERIOD_TYPES).optional(),
@@ -57,6 +81,14 @@ export const ratingValuesSchema = z.object({
       conduct: z.number("Ulush butun son bo'lishi kerak").int().min(0).max(100),
       subjects: z.number("Ulush butun son bo'lishi kerak").int().min(0).max(100),
     })
+    .optional(),
+  resultsEnabled: z.boolean().optional(),
+  resultsWeekday: z.number().int().min(1).max(7).optional(),
+  resultsMonthDay: z.number().int().min(0).max(31).optional(),
+  resultsDate: dateStrSchema.nullable().optional(),
+  resultsTime: z
+    .string()
+    .regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Vaqt HH:mm ko‘rinishida bo‘lishi kerak (00:00–23:59)')
     .optional(),
 });
 

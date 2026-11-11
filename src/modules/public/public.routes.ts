@@ -75,6 +75,11 @@ publicRouter.get(
 );
 
 publicRouter.get(
+  '/:slug/rating/results/latest',
+  asyncHandler((req, res) => respond(req, res, () => publicService.resultsLatest(slug(req)))),
+);
+
+publicRouter.get(
   '/:slug/rating/students',
   validate({
     query: z.object({

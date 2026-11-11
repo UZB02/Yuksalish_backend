@@ -548,6 +548,11 @@ describe('Sozlamalar: rating va public', () => {
       tieBreak: ['daysCount', 'alphabetical'],
       refreshMode: 'realtime',
       weights: { conduct: 50, subjects: 50 },
+      resultsEnabled: false,
+      resultsWeekday: 6,
+      resultsTime: '18:00',
+      resultsMonthDay: 0,
+      resultsDate: null,
     });
     const p = await get(rep, '/settings/public');
     expect(p.body.data.effective).toEqual({

@@ -4,6 +4,7 @@ import { logger } from '../../core/logger';
 import { School } from '../../models/School';
 import { publicCache } from '../public/public.cache';
 import { ATTENDANCE_KEY, type AttendanceSettings } from '../settings/attendance.settings';
+import { RATING_RESULTS_KEYS } from '../settings/rating.settings';
 import { settingsService } from '../settings/settings.service';
 import { Debouncer } from './debouncer';
 import { ratingHooks, recalculateSchool, recalculateSchools } from './ratings.service';
@@ -71,7 +72,13 @@ settingsHooks.on(async (e) => {
   if (e.key === 'attendance') {
     // Faqat jarima yoki ish kunlari o'zgarganda qayta hisoblanadi
     if (!e.changed?.some((k) => k === 'ratingImpact' || k === 'workingWeekdays')) return;
-  } else if (e.key !== 'rating' && e.key !== 'scoring') return;
+  } else if (e.key === 'rating') {
+    // Faqat yakuniy natija e'loni sozlamalari o'zgarganda qayta hisoblash shart emas
+    const onlyResults =
+      !!e.changed?.length &&
+      e.changed.every((k) => (RATING_RESULTS_KEYS as readonly string[]).includes(k));
+    if (onlyResults) return;
+  } else if (e.key !== 'scoring') return;
   if (e.scope === 'school' && e.schoolId) {
     debouncer.schedule(e.schoolId);
   } else {

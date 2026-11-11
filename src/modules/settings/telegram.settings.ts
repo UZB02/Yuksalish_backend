@@ -9,6 +9,7 @@ export interface TelegramNotifyToggles {
   timetableChanges: boolean;
   dailyReport: boolean;
   weeklyReport: boolean;
+  ratingResults: boolean;
 }
 
 /** Maktabning Telegram bot sozlamalari (saqlangan ko'rinish; null = avtomatik) */
@@ -33,6 +34,7 @@ export const NOTIFY_DEFAULTS: TelegramNotifyToggles = {
   timetableChanges: true,
   dailyReport: true,
   weeklyReport: true,
+  ratingResults: true,
 };
 
 export const TELEGRAM_DEFAULTS: TelegramSettings = {
@@ -71,6 +73,7 @@ export const telegramValuesSchema = z.object({
       timetableChanges: z.boolean().optional(),
       dailyReport: z.boolean().optional(),
       weeklyReport: z.boolean().optional(),
+      ratingResults: z.boolean().optional(),
     })
     .optional(),
   dailyReportAbsentNames: z.boolean().optional(),

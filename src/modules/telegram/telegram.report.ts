@@ -246,6 +246,13 @@ async function subscribedSuperadmins(schoolId: string): Promise<string[]> {
   return users.map((u) => String(u._id));
 }
 
+/** Rejali xabarlar qabul qiluvchilari: maktab rahbariyati + tanlagan superadminlar (takrorsiz) */
+export async function reportRecipients(schoolId: string): Promise<string[]> {
+  return [
+    ...new Set([...(await leadershipOf(schoolId)), ...(await subscribedSuperadmins(schoolId))]),
+  ];
+}
+
 type Kind = 'daily' | 'weekly';
 
 async function runReports(kind: Kind, now: Date): Promise<ReportRunResult> {
@@ -265,9 +272,7 @@ async function runReports(kind: Kind, now: Date): Promise<ReportRunResult> {
           : s.notify.weeklyReport && s.weeklyReportTime === hhmm && s.weeklyReportDay === weekday;
       if (!due) continue;
       result.schools++;
-      const userIds = [
-        ...new Set([...(await leadershipOf(schoolId)), ...(await subscribedSuperadmins(schoolId))]),
-      ];
+      const userIds = await reportRecipients(schoolId);
       if (!userIds.length) {
         logger.warn(
           { schoolId, hhmm, kind },

@@ -3,6 +3,7 @@ import { env } from '../../config/env';
 import { AppError } from '../../core/errors';
 import { buildMeta, skipOf } from '../../core/pagination';
 import { Photo } from '../../models/Photo';
+import { RatingResult } from '../../models/RatingResult';
 import { School } from '../../models/School';
 import { Student } from '../../models/Student';
 import { escapeRegex, isId } from '../../utils/helpers';
@@ -24,6 +25,8 @@ import { settingsService } from '../settings/settings.service';
  * Rasm faqat `showPhotos` yoqilganda va faqat faol o'quvchilar uchun, opaque `photoUrl` sifatida chiqadi.
  * O'qituvchi rasmlari hech qachon chiqmaydi.
  */
+const RESULTS_TOP_STUDENTS = 10;
+const RESULTS_TOP_CLASSES = 3;
 const NOT_FOUND = () => AppError.notFound('Reyting topilmadi');
 
 /** O'quvchi uchun barqaror, lekin ichki id ni oshkor qilmaydigan kalit */
@@ -174,6 +177,63 @@ export const publicService = {
         })),
       },
       meta: buildMeta(q.page, q.limit, total),
+    };
+  },
+
+  /**
+   * Oxirgi e'lon qilingan davr yakuni (muzlatilgan g'oliblar). E'lon o'chiq yoki arxiv yo'q bo'lsa data=null.
+   * Jonli reytingdagi bilan bir xil oq ro'yxat va sozlamalar (showStudents/showClasses/showScores/showPhotos);
+   * o'quvchilar soni topStudents bilan cheklanadi, lekin 10 tadan oshmaydi, sinflar — 3 ta.
+   */
+  async resultsLatest(slug: string) {
+    const { school, id, settings } = await resolveSchool(slug);
+    const rating = await settingsService.getEffectiveRating(id);
+    if (!rating.resultsEnabled) return { data: null };
+    const doc = await RatingResult.findOne({ schoolId: id, studentsCount: { $gt: 0 } })
+      .sort({ announcedAt: -1, from: -1 })
+      .lean();
+    if (!doc) return { data: null };
+    const cap = Math.min(settings.topStudents ?? RESULTS_TOP_STUDENTS, RESULTS_TOP_STUDENTS);
+    const top = settings.showStudents
+      ? [...doc.students].sort((a, b) => a.rank - b.rank).slice(0, cap)
+      : [];
+    const photoOf =
+      settings.showPhotos && top.length
+        ? await publicPhotoIds(
+            id,
+            top.map((s) => String(s.studentId)),
+          )
+        : null;
+    return {
+      data: {
+        period: { type: doc.periodType, from: doc.from, to: doc.periodTo, label: doc.label },
+        announcedAt: doc.announcedAt,
+        students: top.map((s) => ({
+          rank: s.rank,
+          ...(photoOf
+            ? {
+                photoUrl: photoOf.has(String(s.studentId))
+                  ? `/api/v1/public/${school.slug}/photos/${photoOf.get(String(s.studentId))}`
+                  : null,
+              }
+            : {}),
+          studentKey: studentKey(String(s.studentId)),
+          fullName: s.fullName,
+          className: s.className,
+          ...(settings.showScores ? { score: s.score } : {}),
+        })),
+        classes: settings.showClasses
+          ? [...doc.classes]
+              .sort((a, b) => a.rank - b.rank)
+              .slice(0, RESULTS_TOP_CLASSES)
+              .map((c) => ({
+                rank: c.rank,
+                className: c.name,
+                grade: c.grade,
+                ...(settings.showScores ? { score: c.score } : {}),
+              }))
+          : [],
+      },
     };
   },
 

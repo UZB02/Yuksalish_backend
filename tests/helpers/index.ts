@@ -19,6 +19,7 @@ import { TelegramBotConfig } from '../../src/models/TelegramBotConfig';
 import { TelegramLinkToken } from '../../src/models/TelegramLinkToken';
 import { TelegramOutbox } from '../../src/models/TelegramOutbox';
 import { Rating, RatingDailyRank, RatingState } from '../../src/models/Rating';
+import { RatingResult } from '../../src/models/RatingResult';
 import { publicCache } from '../../src/modules/public/public.cache';
 import { clock } from '../../src/utils/clock';
 import { AttendanceRecord } from '../../src/models/AttendanceRecord';
@@ -53,6 +54,7 @@ const ALL_MODELS: { init(): Promise<unknown>; deleteMany(f: object): PromiseLike
   Rating,
   RatingState,
   RatingDailyRank,
+  RatingResult,
   AttendanceRecord,
   AttendanceStatus,
   Subject,

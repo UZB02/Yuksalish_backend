@@ -36,6 +36,36 @@ ratingsRouter.get(
   asyncHandler(async (req, res) => ok(res, await ratingsApi.config(sid(req)))),
 );
 
+// Yakuniy natijalar arxivi
+ratingsRouter.get(
+  '/results',
+  ...read,
+  validate({ query: z.object(paginationQuery) }),
+  asyncHandler(async (req, res) => {
+    const { data, meta } = await ratingsApi.resultsList(sid(req), req.query as never);
+    ok(res, data, meta);
+  }),
+);
+
+ratingsRouter.get(
+  '/results/:id',
+  ...read,
+  validate({ params: z.object({ id: objectIdSchema }) }),
+  asyncHandler(async (req, res) => {
+    ok(res, await ratingsApi.resultDetail(getCtx(req).actor, sid(req), String(req.params.id)));
+  }),
+);
+
+// Joriy davr natijasini qo'lda e'lon qilish: faqat superadmin (X-School-Id bilan)
+ratingsRouter.post(
+  '/results/announce',
+  authorize('superadmin'),
+  tenant,
+  asyncHandler(async (req, res) => {
+    ok(res, await ratingsApi.announceNow(getCtx(req), sid(req)));
+  }),
+);
+
 ratingsRouter.get(
   '/students',
   ...read,
