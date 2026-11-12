@@ -383,6 +383,85 @@ export function buildPhase2(h: DocHelpers) {
         },
       ),
     },
+    '/dashboard/unscored-classes': {
+      get: op(
+        'Dashboard',
+        "Bugun xulq bahosi tugallanmagan sinflar (dashboard.view). Admin: tugallanmaganlar; o'qituvchi: o'z sinf rahbarligi. Maktab majburiy (superadmin: X-School-Id)",
+        {
+          '200': okRes(
+            o({
+              date: str,
+              scope: str,
+              workingDay: { type: 'boolean' },
+              totalClasses: int,
+              classes: {
+                type: 'array',
+                items: o({
+                  classId: str,
+                  className: str,
+                  homeroomTeacher: o({ id: str, fullName: str }),
+                  graded: int,
+                  total: int,
+                }),
+              },
+            }),
+          ),
+        },
+      ),
+    },
+    '/dashboard/attention-students': {
+      get: op(
+        'Dashboard',
+        "E'tibor talab qiladigan o'quvchilar: ball pasayishi, salbiy xulq, sababsiz yo'q kunlar (dashboard.view; maks 10)",
+        {
+          '200': okRes(
+            o({
+              current: o({ from: str, to: str }),
+              previous: o({ from: str, to: str }),
+              total: int,
+              students: {
+                type: 'array',
+                items: o({
+                  studentId: str,
+                  fullName: str,
+                  classId: str,
+                  className: str,
+                  reasons: { type: 'array', items: { type: 'object' } },
+                }),
+              },
+            }),
+          ),
+        },
+      ),
+    },
+    '/dashboard/attendance-trend': {
+      get: op(
+        'Dashboard',
+        'Oxirgi 30 kunlik kunlik davomat foizi (dashboard.view); faqat davomat olingan ish kunlari',
+        {
+          '200': okRes(
+            o({
+              from: str,
+              to: str,
+              average: { type: 'number', nullable: true },
+              days: {
+                type: 'array',
+                items: o({
+                  date: str,
+                  rate: { type: 'number' },
+                  present: int,
+                  late: int,
+                  partial: int,
+                  absentExcused: int,
+                  absentUnexcused: int,
+                  total: int,
+                }),
+              },
+            }),
+          ),
+        },
+      ),
+    },
   };
 
   return { tags, schemas, paths };
