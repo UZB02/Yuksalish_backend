@@ -167,7 +167,8 @@ export async function buildStudentReport(ctx: ReportCtx, studentId: string) {
       const t = s.behaviorTypeId ? types.get(String(s.behaviorTypeId)) : undefined;
       return {
         date: s.date,
-        value: s.value,
+        value: s.value ?? null,
+        behaviorPenalty: s.behaviorPenalty ?? 0,
         behaviorType: t ? { name: t.name, kind: t.kind, color: t.color } : null,
         comment: commentFor(ctx, String(s.teacherId), s.comment),
         teacher: { id: String(s.teacherId), fullName: tMap.get(String(s.teacherId)) ?? '' },
@@ -232,7 +233,8 @@ export function studentLayout(d: StudentReport): ReportLayout {
         ],
         rows: d.entries.map((e) => ({
           date: e.date,
-          value: e.value,
+          // Faqat jarima qaydi: ball o'rniga jarima ko'rsatiladi
+          value: e.value ?? (e.behaviorPenalty > 0 ? `−${e.behaviorPenalty} (jarima)` : null),
           behavior: e.behaviorType?.name ?? '',
           color: e.behaviorType?.color ?? null,
           teacher: e.teacher.fullName,

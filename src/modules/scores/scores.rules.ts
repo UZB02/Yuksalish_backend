@@ -37,28 +37,45 @@ export function checkDate(s: ScoringSettings, date: string, today: string): Erro
   return [];
 }
 
+/** Ball bo'sh (faqat jarima qaydi) bo'lishi mumkinmi: tur bor, jarimasi > 0 va jarima yoqilgan */
+export function isPenaltyOnlyAllowed(
+  behaviorTypeId: string | null,
+  types: Map<string, BehaviorTypeDoc>,
+  penaltyEnabled: boolean,
+): boolean {
+  if (!penaltyEnabled || !behaviorTypeId) return false;
+  return (types.get(behaviorTypeId)?.ratingPenalty ?? 0) > 0;
+}
+
 export interface ScoreValues {
-  value: number;
+  /** null = faqat jarima qaydi */
+  value: number | null;
   behaviorTypeId: string | null;
   comment: string | null;
 }
 
 /**
  * Ball, xulq turi va izoh qoidalarini tekshiradi.
+ * Ball (value) faqat "faqat jarima qaydi" bo'lganda bo'sh (null) bo'lishi mumkin: xulq turi tanlangan,
+ * turning ratingPenalty > 0 va jarima (rating.behaviorPenaltyEnabled) yoqilgan. Aks holda ball majburiy.
  * @param keepInactiveId tahrirda o'zgarmagan (eski, nofaol bo'lib qolgan) tur ruxsat etiladi
+ * @param penaltyEnabled rating.behaviorPenaltyEnabled (maktab uchun yakuniy qiymat)
  */
 export function checkValues(
   s: ScoringSettings,
   v: ScoreValues,
   types: Map<string, BehaviorTypeDoc>,
   keepInactiveId: string | null = null,
+  penaltyEnabled = false,
 ): ErrorDetail[] {
   const errs: ErrorDetail[] = [];
-  if (!Number.isInteger(v.value) || v.value < s.minScore || v.value > s.maxScore) {
-    errs.push({
-      path: 'value',
-      message: `Ball ${s.minScore} dan ${s.maxScore} gacha butun son bo'lishi kerak`,
-    });
+  const rangeMsg = `Ball ${s.minScore} dan ${s.maxScore} gacha butun son bo'lishi kerak`;
+  if (v.value !== null && v.value !== undefined) {
+    if (!Number.isInteger(v.value) || v.value < s.minScore || v.value > s.maxScore) {
+      errs.push({ path: 'value', message: rangeMsg });
+    }
+  } else if (!isPenaltyOnlyAllowed(v.behaviorTypeId, types, penaltyEnabled)) {
+    errs.push({ path: 'value', message: rangeMsg });
   }
   if (!v.behaviorTypeId) {
     if (s.requireBehaviorType) errs.push({ path: 'behaviorTypeId', message: 'Xulq turi majburiy' });
@@ -69,7 +86,12 @@ export function checkValues(
       errs.push({ path: 'behaviorTypeId', message: 'Xulq turi faol emas' });
     }
   }
-  if (s.commentRequiredBelow !== null && v.value < s.commentRequiredBelow && !v.comment) {
+  if (
+    v.value !== null &&
+    s.commentRequiredBelow !== null &&
+    v.value < s.commentRequiredBelow &&
+    !v.comment
+  ) {
     errs.push({
       path: 'comment',
       message: `Ball ${s.commentRequiredBelow} dan past bo'lganda izoh majburiy`,

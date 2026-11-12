@@ -3,6 +3,8 @@ import { paginationQuery } from '../../core/pagination';
 import { dateStrSchema, objectIdSchema } from '../../core/validators';
 
 const value = z.number("Ball butun son bo'lishi kerak").int("Ball butun son bo'lishi kerak");
+/** null/yo'q = faqat jarima qaydi; shartli qoida servisda (scores.rules checkValues) */
+const optionalValue = value.nullish();
 const comment = z
   .string()
   .trim()
@@ -14,13 +16,13 @@ const behaviorTypeId = objectIdSchema.nullish();
 export const createBody = z.object({
   studentId: objectIdSchema,
   date: dateStrSchema.optional(),
-  value,
+  value: optionalValue,
   behaviorTypeId,
   comment,
 });
 
 export const updateBody = z.object({
-  value: value.optional(),
+  value: optionalValue,
   behaviorTypeId,
   comment,
 });
@@ -32,7 +34,7 @@ export const bulkBody = z.object({
     .array(
       z.object({
         studentId: objectIdSchema,
-        value,
+        value: optionalValue,
         behaviorTypeId,
         comment,
       }),

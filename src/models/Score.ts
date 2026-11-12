@@ -10,7 +10,8 @@ export interface IScore {
   behaviorTypeId: Types.ObjectId | null;
   /** Baho qo'yilgan paytdagi xulq turi reyting jarimasi (snapshot). Eski hujjatlarda yo'q = 0 */
   behaviorPenalty: number;
-  value: number;
+  /** 0..100 ball. null = faqat jarima qaydi (penalty-only): xulq turi jarimasi bor va jarima yoqilgan bo'lsa. Eski hujjatlarda doim son */
+  value: number | null;
   comment: string | null;
   /** Asia/Tashkent bo'yicha kun: YYYY-MM-DD */
   date: string;
@@ -29,7 +30,7 @@ const scoreSchema = new Schema<IScore>(
     academicYearId: { type: Schema.Types.ObjectId, ref: 'AcademicYear', required: true },
     behaviorTypeId: { type: Schema.Types.ObjectId, ref: 'BehaviorType', default: null },
     behaviorPenalty: { type: Number, default: 0 },
-    value: { type: Number, required: true },
+    value: { type: Number, default: null },
     comment: { type: String, default: null },
     date: { type: String, required: true },
     isDeleted: { type: Boolean, default: false },

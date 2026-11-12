@@ -68,7 +68,9 @@ export async function toScoreDtos(
       behaviorType: bt
         ? { id: bt.id as string, name: bt.name, kind: bt.kind, color: bt.color }
         : null,
-      value: d.value,
+      /** null = faqat jarima qaydi (behaviorPenalty > 0) */
+      value: d.value ?? null,
+      behaviorPenalty: d.behaviorPenalty ?? 0,
       comment: opts.hideOthersComments && !own ? null : (d.comment ?? null),
       date: d.date,
       editable: isEditable(d, opts.actor, opts.settings, now),
@@ -84,7 +86,7 @@ const snapshot = (d: ScoreDoc) => ({
   teacherId: String(d.teacherId),
   behaviorTypeId: d.behaviorTypeId ? String(d.behaviorTypeId) : null,
   behaviorPenalty: d.behaviorPenalty ?? 0,
-  value: d.value,
+  value: d.value ?? null,
   comment: d.comment,
   date: d.date,
 });
@@ -104,6 +106,10 @@ async function loadTypes(schoolId: string): Promise<Map<string, BehaviorTypeDoc>
 /** Tanlangan xulq turining joriy reyting jarimasi (snapshot uchun); tur yo'q/eski = 0 */
 const penaltyOfType = (types: Map<string, BehaviorTypeDoc>, typeId: string | null): number =>
   typeId ? (types.get(typeId)?.ratingPenalty ?? 0) : 0;
+
+/** Maktab uchun xulq jarimasi yoqilganmi (global + override); faqat shunda ball bo'sh bo'lishi mumkin */
+const isPenaltyEnabled = async (schoolId: string): Promise<boolean> =>
+  (await settingsService.getEffectiveRating(schoolId)).behaviorPenaltyEnabled === true;
 
 async function activeYearId(schoolId: string): Promise<string | null> {
   const y = await AcademicYear.findOne({ schoolId, isActive: true }).select('_id');
@@ -155,12 +161,13 @@ export const scoresService = {
     input: {
       studentId: string;
       date?: string;
-      value: number;
+      value?: number | null;
       behaviorTypeId?: string | null;
       comment?: string | null;
     },
   ) {
     const settings = await settingsService.getEffectiveScoring(schoolId);
+    const penaltyEnabled = await isPenaltyEnabled(schoolId);
     const student = await findStudent(ctx.actor, schoolId, input.studentId);
     const [types, yearId, cls] = await Promise.all([
       loadTypes(schoolId),
@@ -172,13 +179,13 @@ export const scoresService = {
 
     const date = input.date ?? todayTashkent();
     const values: ScoreValues = {
-      value: input.value,
+      value: input.value ?? null,
       behaviorTypeId: input.behaviorTypeId ?? null,
       comment: input.comment ?? null,
     };
     throwValidation([
       ...checkDate(settings, date, todayTashkent()),
-      ...checkValues(settings, values, types),
+      ...checkValues(settings, values, types, null, penaltyEnabled),
     ]);
 
     if (
@@ -252,15 +259,19 @@ export const scoresService = {
     ctx: Ctx,
     schoolId: string,
     id: string,
-    patch: { value?: number; behaviorTypeId?: string | null; comment?: string | null },
+    patch: { value?: number | null; behaviorTypeId?: string | null; comment?: string | null },
   ) {
     const settings = await settingsService.getEffectiveScoring(schoolId);
     const doc = await this.loadForChange(ctx, schoolId, id, settings);
     const before = snapshot(doc);
-    const types = await loadTypes(schoolId);
+    const [types, penaltyEnabled] = await Promise.all([
+      loadTypes(schoolId),
+      isPenaltyEnabled(schoolId),
+    ]);
 
     const next: ScoreValues = {
-      value: patch.value ?? doc.value,
+      // patch.value === null: faqat jarima qaydiga o'tkazish; undefined: o'zgarishsiz
+      value: patch.value !== undefined ? patch.value : (doc.value ?? null),
       behaviorTypeId:
         patch.behaviorTypeId !== undefined
           ? patch.behaviorTypeId
@@ -270,7 +281,7 @@ export const scoresService = {
       comment: patch.comment !== undefined ? patch.comment : (doc.comment ?? null),
     };
     const keep = doc.behaviorTypeId ? String(doc.behaviorTypeId) : null;
-    throwValidation(checkValues(settings, next, types, keep));
+    throwValidation(checkValues(settings, next, types, keep, penaltyEnabled));
 
     doc.value = next.value;
     // Tur o'zgarganda jarima qayta snapshot qilinadi; o'zgarmasa mavjud snapshot saqlanadi
@@ -320,7 +331,7 @@ export const scoresService = {
       date?: string;
       items: {
         studentId: string;
-        value: number;
+        value?: number | null;
         behaviorTypeId?: string | null;
         comment?: string | null;
       }[];
@@ -330,10 +341,11 @@ export const scoresService = {
     const scope = await allowedClassIds(ctx.actor, schoolId);
     const notFound = AppError.notFound('Sinf topilmadi');
     if (!isId(input.classId) || (scope && !scope.includes(input.classId))) throw notFound;
-    const [cls, yearId, types] = await Promise.all([
+    const [cls, yearId, types, penaltyEnabled] = await Promise.all([
       ClassModel.findOne({ _id: input.classId, schoolId }),
       activeYearId(schoolId),
       loadTypes(schoolId),
+      isPenaltyEnabled(schoolId),
     ]);
     if (!cls) throw notFound;
     assertCanGradeConduct(ctx.actor, cls);
@@ -380,7 +392,7 @@ export const scoresService = {
         continue;
       }
       const values: ScoreValues = {
-        value: item.value,
+        value: item.value ?? null,
         behaviorTypeId: item.behaviorTypeId ?? null,
         comment: item.comment ?? null,
       };
@@ -390,6 +402,7 @@ export const scoresService = {
         values,
         types,
         prev?.behaviorTypeId ? String(prev.behaviorTypeId) : null,
+        penaltyEnabled,
       );
       if (errs.length) {
         fail('VALIDATION_ERROR', errs.map((e) => e.message).join('; '));
@@ -544,7 +557,7 @@ export const scoresService = {
           photo: photoUrl(st.photoId),
           myScore: mine ? (dtoById.get(mine.id) ?? null) : null,
           dayScore: dailyScore(
-            list.map((s) => ({ value: s.value, createdAt: s.createdAt })),
+            list.map((s) => ({ value: s.value ?? null, createdAt: s.createdAt })),
             settings.dailyAggregation,
           ),
           scoresCount: list.length,
@@ -632,13 +645,16 @@ export const scoresService = {
 
     const byDate = new Map<string, ScoreDoc[]>();
     for (const s of scores) byDate.set(s.date, [...(byDate.get(s.date) ?? []), s]);
-    const trend = [...byDate.entries()].map(([date, list]) => ({
-      date,
-      dayScore: dailyScore(
-        list.map((s) => ({ value: s.value, createdAt: s.createdAt })),
-        settings.dailyAggregation,
-      ) as number,
-    }));
+    // Faqat jarima qaydi (value=null) bo'lgan kunlar ballik kun emas: trend/o'rtachaga kirmaydi
+    const trend = [...byDate.entries()]
+      .map(([date, list]) => ({
+        date,
+        dayScore: dailyScore(
+          list.map((s) => ({ value: s.value ?? null, createdAt: s.createdAt })),
+          settings.dailyAggregation,
+        ),
+      }))
+      .filter((t): t is { date: string; dayScore: number } => t.dayScore !== null);
     const average = trend.length
       ? round2(trend.reduce((a, t) => a + t.dayScore, 0) / trend.length)
       : null;

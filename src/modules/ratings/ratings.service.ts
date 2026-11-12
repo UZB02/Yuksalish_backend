@@ -108,6 +108,8 @@ export async function loadDayRows(
   const match: Record<string, unknown> = {
     schoolId: oid(schoolId),
     isDeleted: false,
+    // value=null (faqat jarima qaydi) kunlik ballga, o'rtacha/min/last ga va ballik kunlar soniga kirmaydi
+    value: { $ne: null },
     date: { $gte: period.from, $lte: period.to },
   };
   if (studentIds) match.studentId = { $in: studentIds };

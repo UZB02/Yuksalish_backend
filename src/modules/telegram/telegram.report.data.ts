@@ -238,7 +238,7 @@ export async function loadDiscipline(
     ).map((t) => [idStr(t._id), t]),
   );
   const byType = new Map<string, number>();
-  const byStudent = new Map<string, { count: number; sum: number }>();
+  const byStudent = new Map<string, { count: number; sum: number; valued: number }>();
   for (const s of scores) {
     const t = s.behaviorTypeId ? types.get(idStr(s.behaviorTypeId)) : undefined;
     if (t?.kind === 'positive') out.positive++;
@@ -246,9 +246,13 @@ export async function loadDiscipline(
       out.negative++;
       byType.set(t.name, (byType.get(t.name) ?? 0) + 1);
       const k = idStr(s.studentId);
-      const cur = byStudent.get(k) ?? { count: 0, sum: 0 };
+      const cur = byStudent.get(k) ?? { count: 0, sum: 0, valued: 0 };
       cur.count++;
-      cur.sum += s.value;
+      // Faqat jarima qaydi (value=null) o'rtacha ballga kirmaydi
+      if (typeof s.value === 'number') {
+        cur.sum += s.value;
+        cur.valued++;
+      }
       byStudent.set(k, cur);
     }
   }
@@ -267,12 +271,13 @@ export async function loadDiscipline(
     const cName = new Map(classes.map((c) => [idStr(c._id), c.name]));
     out.topStudents = students
       .map((s) => {
-        const a = byStudent.get(idStr(s._id)) as { count: number; sum: number };
+        const a = byStudent.get(idStr(s._id)) as { count: number; sum: number; valued: number };
         return {
           fullName: s.fullName,
           className: cName.get(idStr(s.classId)) ?? '?',
           count: a.count,
-          avg: a.sum / a.count,
+          // ballsiz (faqat jarima) o'quvchilar teng sonda oxirga tushadi
+          avg: a.valued ? a.sum / a.valued : 1000,
         };
       })
       .sort(
