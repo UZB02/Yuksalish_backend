@@ -35,6 +35,8 @@ export interface RatingSettings {
   resultsMonthDay: number;
   /** quarter/academic_year/custom: aniq e'lon sanasi (YYYY-MM-DD). null yoki davrdan tashqarida bo'lsa davrning oxirgi kuni */
   resultsDate: string | null;
+  /** Xulq turi jarimasini (BehaviorType.ratingPenalty) reytingga qo'llash. Standart: o'chiq */
+  behaviorPenaltyEnabled: boolean;
 }
 
 export const RATING_DEFAULTS: RatingSettings = {
@@ -51,6 +53,7 @@ export const RATING_DEFAULTS: RatingSettings = {
   resultsTime: '18:00',
   resultsMonthDay: 0,
   resultsDate: null,
+  behaviorPenaltyEnabled: false,
 };
 
 /** Qayta hisoblashni talab qilmaydigan (faqat e'lon jadvaliga tegishli) sozlama kalitlari */
@@ -86,6 +89,7 @@ export const ratingValuesSchema = z.object({
   resultsWeekday: z.number().int().min(1).max(7).optional(),
   resultsMonthDay: z.number().int().min(0).max(31).optional(),
   resultsDate: dateStrSchema.nullable().optional(),
+  behaviorPenaltyEnabled: z.boolean().optional(),
   resultsTime: z
     .string()
     .regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Vaqt HH:mm ko‘rinishida bo‘lishi kerak (00:00–23:59)')

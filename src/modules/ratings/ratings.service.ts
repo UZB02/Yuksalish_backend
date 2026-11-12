@@ -219,6 +219,8 @@ async function loadPenalties(
   period: { from: string; to: string },
   impact: RatingImpact,
 ): Promise<Map<string, number>> {
+  // Jarima kuniga BIR marta: (o'quvchi, kun) bo'yicha eng og'ir holat (sababsiz > sababli > kechikish).
+  // Dars rejimida bir kunda ko'p dars yozuvi, aralash (lessonNo 0 va >0) kunlar ham bitta jarima beradi.
   const rows = await AttendanceRecord.aggregate<{
     _id: { s: Types.ObjectId; c: string };
     n: number;
@@ -227,11 +229,43 @@ async function loadPenalties(
       $match: {
         schoolId: oid(schoolId),
         isDeleted: false,
-        category: { $ne: 'present' },
+        category: { $in: ['late', 'absent_excused', 'absent_unexcused'] },
         date: { $gte: period.from, $lte: period.to },
       },
     },
-    { $group: { _id: { s: '$studentId', c: '$category' }, n: { $sum: 1 } } },
+    {
+      $group: {
+        _id: { s: '$studentId', d: '$date' },
+        w: {
+          $max: {
+            $switch: {
+              branches: [
+                { case: { $eq: ['$category', 'absent_unexcused'] }, then: 3 },
+                { case: { $eq: ['$category', 'absent_excused'] }, then: 2 },
+              ],
+              default: 1,
+            },
+          },
+        },
+      },
+    },
+    {
+      $group: {
+        _id: {
+          s: '$_id.s',
+          c: {
+            $switch: {
+              branches: [
+                { case: { $eq: ['$w', 3] }, then: 'absent_unexcused' },
+                { case: { $eq: ['$w', 2] }, then: 'absent_excused' },
+              ],
+              default: 'late',
+            },
+          },
+        },
+        n: { $sum: 1 },
+      },
+    },
   ]);
   const counts = new Map<
     string,
@@ -246,6 +280,36 @@ async function loadPenalties(
     counts.set(key, c);
   }
   return new Map([...counts].map(([k, c]) => [k, penaltyOf(c, impact)]));
+}
+
+/**
+ * Davr ichida xulq turi jarimalari (faqat rating.behaviorPenaltyEnabled bo'lsa chaqiriladi).
+ * Jarima = o'quvchining DISTINCT (kun, xulq turi) juftliklari bo'yicha, har juftlikda o'chirilmagan
+ * baholarning snapshot (behaviorPenalty) eng kattasi yig'indisi: bir kunda bir tur bir marta, turli turlar alohida.
+ */
+async function loadBehaviorPenalties(
+  schoolId: string,
+  period: { from: string; to: string },
+): Promise<Map<string, number>> {
+  const rows = await Score.aggregate<{ _id: Types.ObjectId; total: number }>([
+    {
+      $match: {
+        schoolId: oid(schoolId),
+        isDeleted: false,
+        behaviorTypeId: { $ne: null },
+        behaviorPenalty: { $gt: 0 },
+        date: { $gte: period.from, $lte: period.to },
+      },
+    },
+    {
+      $group: {
+        _id: { s: '$studentId', d: '$date', t: '$behaviorTypeId' },
+        p: { $max: '$behaviorPenalty' },
+      },
+    },
+    { $group: { _id: '$_id.s', total: { $sum: '$p' } } },
+  ] as never);
+  return new Map(rows.map((r) => [String(r._id), round2(r.total)]));
 }
 
 async function compute(
@@ -270,7 +334,11 @@ async function compute(
   }));
   // Sinf = o'quvchining HOZIRGI sinfi (baho snapshotidagi classId emas)
   let base = buildStudentRows(infos, aggs, rating);
-  if (impact?.enabled) base = applyPenalties(base, await loadPenalties(schoolId, period, impact));
+  const attPenalties = impact?.enabled ? await loadPenalties(schoolId, period, impact) : new Map();
+  const behPenalties = rating.behaviorPenaltyEnabled
+    ? await loadBehaviorPenalties(schoolId, period)
+    : undefined;
+  if (impact?.enabled || behPenalties) base = applyPenalties(base, attPenalties, behPenalties);
   const rows = rankStudents(base, rating.tieBreak);
 
   let classes: ClassRow[] = [];
@@ -406,6 +474,7 @@ async function doRecalculateSchool(schoolId: string): Promise<Date> {
       totalStudents: null,
       eligible: r.eligible,
       penalty: r.penalty,
+      behaviorPenalty: r.behaviorPenalty,
       rank: r.rank,
       previousRank: r.rank !== null ? (prevStudents.get(r.studentId) ?? null) : null,
       name: r.fullName,

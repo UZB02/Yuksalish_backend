@@ -198,6 +198,7 @@ describe('Sinf hisoboti', () => {
       gradesCount: 0,
       attendanceRate: 80, // (s1: 2/3, s2: 2/2) -> 4/5
       penaltyTotal: 0,
+      behaviorPenaltyTotal: 0,
     });
     const by = (id: string) => d.students.find((s: { studentId: string }) => s.studentId === id);
     expect(by(s1.id)).toEqual({
@@ -223,6 +224,7 @@ describe('Sinf hisoboti', () => {
         rate: 66.67,
       },
       penalty: 0,
+      behaviorPenalty: 0,
       topBehavior: { name: 'Namunali xulq', count: 3 },
     });
     expect(by(s2.id)).toMatchObject({
@@ -313,6 +315,7 @@ describe('Sinf hisoboti', () => {
       gradesCount: 0,
       attendanceRate: null,
       penaltyTotal: 0,
+      behaviorPenaltyTotal: 0,
     });
     expect(
       d.students.every(
@@ -354,6 +357,7 @@ describe("O'quvchi hisoboti", () => {
       rank: 2,
       classRank: 2,
       ratingScore: 75,
+      behaviorPenalty: 0,
       ratedStudentsInClass: 2,
     });
     expect(d.trend).toEqual([
@@ -457,6 +461,7 @@ describe("O'quvchi hisoboti", () => {
       rank: null,
       classRank: null,
       ratingScore: null,
+      behaviorPenalty: 0,
       ratedStudentsInClass: 0,
     });
     expect(d.trend).toEqual([]);

@@ -96,6 +96,10 @@ export function buildPhase4(h: DocHelpers) {
         "quarter/academic_year/custom: e'lon sanasi; davrdan tashqarida bo'lsa oxirgi kun",
     },
     resultsTime: { type: 'string', description: 'HH:mm (Asia/Tashkent)' },
+    behaviorPenaltyEnabled: {
+      type: 'boolean',
+      description: "Xulq turi jarimasini (BehaviorType.ratingPenalty) reytingga qo'llash",
+    },
   };
   const pubSettings = {
     enabled: bool,

@@ -72,6 +72,7 @@ export function buildPhase3(h: DocHelpers) {
       minScore: { type: 'integer', nullable: true },
       maxScore: { type: 'integer', nullable: true },
       defaultScore: { type: 'integer', nullable: true },
+      ratingPenalty: { type: 'number', minimum: 0, maximum: 100 },
       isActive: bool,
       createdAt: dateTime,
     }),
@@ -116,6 +117,7 @@ export function buildPhase3(h: DocHelpers) {
     minScore: { type: 'integer', nullable: true },
     maxScore: { type: 'integer', nullable: true },
     defaultScore: { type: 'integer', nullable: true },
+    ratingPenalty: { type: 'number', minimum: 0, maximum: 100 },
   };
   const itemFields = { studentId: str, value: int, behaviorTypeId: strNull, comment: strNull };
 

@@ -8,6 +8,8 @@ export interface IScore {
   teacherId: Types.ObjectId;
   academicYearId: Types.ObjectId;
   behaviorTypeId: Types.ObjectId | null;
+  /** Baho qo'yilgan paytdagi xulq turi reyting jarimasi (snapshot). Eski hujjatlarda yo'q = 0 */
+  behaviorPenalty: number;
   value: number;
   comment: string | null;
   /** Asia/Tashkent bo'yicha kun: YYYY-MM-DD */
@@ -26,6 +28,7 @@ const scoreSchema = new Schema<IScore>(
     teacherId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     academicYearId: { type: Schema.Types.ObjectId, ref: 'AcademicYear', required: true },
     behaviorTypeId: { type: Schema.Types.ObjectId, ref: 'BehaviorType', default: null },
+    behaviorPenalty: { type: Number, default: 0 },
     value: { type: Number, required: true },
     comment: { type: String, default: null },
     date: { type: String, required: true },

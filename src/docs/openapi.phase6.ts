@@ -123,6 +123,7 @@ export function buildPhase6(h: DocHelpers) {
       scoresCount: int,
       attendanceRate: numNull,
       penaltyTotal: num,
+      behaviorPenaltyTotal: num,
     }),
     students: {
       type: 'array',
@@ -139,6 +140,7 @@ export function buildPhase6(h: DocHelpers) {
         scoresCount: int,
         attendance: att,
         penalty: num,
+        behaviorPenalty: num,
         topBehavior: { nullable: true, ...o({ name: str, count: int }) },
       }),
     },
@@ -170,6 +172,7 @@ export function buildPhase6(h: DocHelpers) {
             scoresCount: int,
             rank: intNull,
             ratingScore: numNull,
+            behaviorPenalty: num,
             ratedStudentsInClass: int,
           }),
           trend: { type: 'array', items: o({ date: str, dayScore: num }) },
@@ -238,6 +241,7 @@ export function buildPhase6(h: DocHelpers) {
             avgScore: numNull,
             attendanceRate: numNull,
             penaltyTotal: num,
+            behaviorPenaltyTotal: num,
           }),
           classes: {
             type: 'array',

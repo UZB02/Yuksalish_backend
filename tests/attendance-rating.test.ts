@@ -470,3 +470,75 @@ describe('Qayta hisoblash faqat ratingImpact yoqilganda', () => {
     expect(t1).toBeTruthy();
   });
 });
+
+describe("Davomat jarimasi: kuniga bir marta (kunning eng og'ir holati)", () => {
+  const rates = {
+    enabled: true,
+    penaltyLate: 1,
+    penaltyAbsentExcused: 2,
+    penaltyAbsentUnexcused: 10,
+  };
+  const lesson = (student: Doc, date: string, category: AttendanceCategory, no: number) =>
+    rec(student, date, category, { lessonNo: no });
+  const penaltyOfS1 = async () => {
+    await setImpact(rates);
+    await ratingEvents.flushAll();
+    const it = (await students()).find((i: { studentId: string }) => i.studentId === s1.id);
+    return { penalty: it.penalty as number, score: it.score as number };
+  };
+
+  it('bir kunda 3 ta sababsiz dars = 1 ta sababsiz jarima', async () => {
+    for (const n of [1, 2, 3]) await lesson(s1, '2026-10-12', 'absent_unexcused', n);
+    expect(await penaltyOfS1()).toEqual({ penalty: 10, score: 80 });
+  });
+
+  it('sababsiz + kechikish bir kunda = sababsiz', async () => {
+    await lesson(s1, '2026-10-12', 'late', 1);
+    await lesson(s1, '2026-10-12', 'absent_unexcused', 2);
+    expect((await penaltyOfS1()).penalty).toBe(10);
+  });
+
+  it('sababli + sababsiz bir kunda = sababsiz', async () => {
+    await lesson(s1, '2026-10-12', 'absent_excused', 1);
+    await lesson(s1, '2026-10-12', 'absent_unexcused', 2);
+    expect((await penaltyOfS1()).penalty).toBe(10);
+  });
+
+  it('sababli + kechikish = sababli; bir nechta kechikish = 1 ta kechikish; present hisobga olinmaydi', async () => {
+    await lesson(s1, '2026-10-12', 'late', 1);
+    await lesson(s1, '2026-10-12', 'absent_excused', 2);
+    await lesson(s1, '2026-10-12', 'present', 3);
+    for (const n of [1, 2, 3, 4]) await lesson(s1, '2026-10-13', 'late', n);
+    await lesson(s1, '2026-10-14', 'present', 1);
+    expect((await penaltyOfS1()).penalty).toBe(3); // 2 (sababli) + 1 (kechikish)
+  });
+
+  it("kunlik rejim o'zgarmaydi: har kun bitta yozuv = bitta jarima", async () => {
+    await rec(s1, '2026-10-12', 'late');
+    await rec(s1, '2026-10-13', 'absent_excused');
+    await rec(s1, '2026-10-14', 'absent_unexcused');
+    expect((await penaltyOfS1()).penalty).toBe(13);
+  });
+
+  it('aralash kun (lessonNo 0 va >0) bitta jarimaga qisqaradi', async () => {
+    await rec(s1, '2026-10-12', 'late'); // lessonNo 0
+    await lesson(s1, '2026-10-12', 'absent_unexcused', 2);
+    await lesson(s1, '2026-10-12', 'late', 3);
+    expect((await penaltyOfS1()).penalty).toBe(10);
+  });
+
+  it("o'chirilgan (isDeleted) yozuv eng og'ir holatni aniqlamaydi", async () => {
+    await lesson(s1, '2026-10-12', 'late', 1);
+    await rec(s1, '2026-10-12', 'absent_unexcused', { lessonNo: 2, isDeleted: true });
+    expect((await penaltyOfS1()).penalty).toBe(1);
+  });
+
+  it("o'chiq bo'lsa jarima yo'q", async () => {
+    await lesson(s1, '2026-10-12', 'absent_unexcused', 1);
+    await setImpact({ ...rates, enabled: false });
+    await ratingEvents.flushAll();
+    expect(
+      (await students()).find((i: { studentId: string }) => i.studentId === s1.id),
+    ).toMatchObject({ penalty: 0, score: 90 });
+  });
+});

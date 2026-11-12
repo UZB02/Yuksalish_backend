@@ -157,6 +157,9 @@ export async function buildSchoolReport(ctx: ReportCtx) {
       avgScore: mean(dayRows.map((d) => d.day)),
       attendanceRate: attTotal.rate,
       penaltyTotal: round2([...live.byStudent.values()].reduce((s, r) => s + r.penalty, 0)),
+      behaviorPenaltyTotal: round2(
+        [...live.byStudent.values()].reduce((s, r) => s + r.behaviorPenalty, 0),
+      ),
     },
     classes: classRows,
     behaviorDistribution: distribution(beh, types),
@@ -179,7 +182,8 @@ export function schoolLayout(d: SchoolReport): ReportLayout {
       { label: 'Baholar soni', value: d.totals.scoresCount },
       { label: "O'rtacha ball", value: fmtNum(d.totals.avgScore) },
       { label: 'Davomat, %', value: fmtNum(d.totals.attendanceRate) },
-      { label: 'Jarima jami', value: fmtNum(d.totals.penaltyTotal) },
+      { label: 'Davomat jarimasi jami', value: fmtNum(d.totals.penaltyTotal) },
+      { label: 'Xulq jarimasi jami', value: fmtNum(d.totals.behaviorPenaltyTotal) },
     ],
     chart: {
       title: "Kunlik o'rtacha ball",

@@ -19,6 +19,8 @@ export interface IRating {
   eligible: boolean;
   /** Davomat jarimasi (faqat o'quvchi reytingi) */
   penalty: number;
+  /** Xulq turi jarimasi (faqat o'quvchi reytingi; eski hujjatlarda yo'q = 0) */
+  behaviorPenalty: number;
   rank: number | null;
   previousRank: number | null;
   calculatedAt: Date;
@@ -44,6 +46,7 @@ const ratingSchema = new Schema<IRating>(
     totalStudents: { type: Number, default: null },
     eligible: { type: Boolean, default: false },
     penalty: { type: Number, default: 0 },
+    behaviorPenalty: { type: Number, default: 0 },
     rank: { type: Number, default: null },
     previousRank: { type: Number, default: null },
     calculatedAt: { type: Date, required: true },

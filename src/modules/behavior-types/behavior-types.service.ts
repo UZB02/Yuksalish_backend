@@ -16,6 +16,7 @@ export const toBehaviorTypeDto = (b: BehaviorTypeDoc) => ({
   minScore: b.minScore ?? null,
   maxScore: b.maxScore ?? null,
   defaultScore: b.defaultScore ?? null,
+  ratingPenalty: b.ratingPenalty ?? 0,
   isActive: b.isActive,
   createdAt: b.createdAt,
 });
@@ -68,6 +69,7 @@ export interface BehaviorInput {
   minScore?: number | null;
   maxScore?: number | null;
   defaultScore?: number | null;
+  ratingPenalty?: number;
 }
 
 export const behaviorTypesService = {
@@ -118,6 +120,7 @@ export const behaviorTypesService = {
         minScore: input.minScore ?? null,
         maxScore: input.maxScore ?? null,
         defaultScore: input.defaultScore ?? null,
+        ratingPenalty: input.ratingPenalty ?? 0,
       });
     } catch (e) {
       if (isDuplicateKeyError(e)) throw nameTaken();
@@ -153,6 +156,7 @@ export const behaviorTypesService = {
     if (patch.minScore !== undefined) doc.minScore = patch.minScore;
     if (patch.maxScore !== undefined) doc.maxScore = patch.maxScore;
     if (patch.defaultScore !== undefined) doc.defaultScore = patch.defaultScore;
+    if (patch.ratingPenalty !== undefined) doc.ratingPenalty = patch.ratingPenalty;
     assertRange(doc.minScore, doc.maxScore);
     assertDefaultScore(doc.defaultScore, doc.minScore, doc.maxScore);
     try {

@@ -15,6 +15,8 @@ export interface IBehaviorType {
   maxScore: number | null;
   /** Baholash varag'ida xulq turi tanlanganda oldindan to'ldiriladigan ball (null = yo'q) */
   defaultScore: number | null;
+  /** Reytingdan ayiriladigan jarima (kun+tur uchun bir marta); sozlama yoqilgan bo'lsa. Eski hujjatlarda yo'q = 0 */
+  ratingPenalty: number;
   isActive: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -32,6 +34,7 @@ const behaviorTypeSchema = new Schema<IBehaviorType>(
     minScore: { type: Number, default: null },
     maxScore: { type: Number, default: null },
     defaultScore: { type: Number, default: null },
+    ratingPenalty: { type: Number, default: 0, min: 0 },
     isActive: { type: Boolean, default: true },
   },
   { timestamps: true },

@@ -37,6 +37,8 @@ export interface StudentRow {
   eligible: boolean;
   /** Davomat jarimasi (ball shkalasida); score allaqachon jarimani hisobga olgan */
   penalty: number;
+  /** Xulq turi jarimasi (ball shkalasida); score allaqachon hisobga olgan. Davomat jarimasidan alohida */
+  behaviorPenalty: number;
   rank: number | null;
 }
 
@@ -114,6 +116,7 @@ export function buildStudentRows(
       scoresCount: (a?.scoresCount ?? 0) + grades,
       eligible: days >= s.minScoresCount && days > 0,
       penalty: 0,
+      behaviorPenalty: 0,
       rank: null,
     };
   });
@@ -140,11 +143,25 @@ export function penaltyOf(c: AttendanceCounts, rates: PenaltyRates): number {
   );
 }
 
-/** Jarimani ballardan ayiradi; natija 0 dan past tushmaydi. eligible va tie-break maydonlari o'zgarmaydi. */
-export function applyPenalties(rows: StudentRow[], penalties: Map<string, number>): StudentRow[] {
+/**
+ * Jarimalarni ballardan ayiradi: score = max(0, aralash - davomat jarimasi - xulq jarimasi); natija 0 dan past tushmaydi.
+ * behaviorPenalties ixtiyoriy (eski chaqiruvlar o'zgarmaydi). eligible va tie-break maydonlari o'zgarmaydi.
+ */
+export function applyPenalties(
+  rows: StudentRow[],
+  penalties: Map<string, number>,
+  behaviorPenalties?: Map<string, number>,
+): StudentRow[] {
   return rows.map((r) => {
     const penalty = penalties.get(r.studentId) ?? 0;
-    return penalty > 0 ? { ...r, penalty, score: Math.max(0, round2(r.score - penalty)) } : r;
+    const behaviorPenalty = behaviorPenalties?.get(r.studentId) ?? 0;
+    if (penalty <= 0 && behaviorPenalty <= 0) return r;
+    return {
+      ...r,
+      penalty: penalty > 0 ? penalty : r.penalty,
+      behaviorPenalty: behaviorPenalty > 0 ? behaviorPenalty : r.behaviorPenalty,
+      score: Math.max(0, round2(r.score - penalty - behaviorPenalty)),
+    };
   });
 }
 

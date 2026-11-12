@@ -83,6 +83,7 @@ const snapshot = (d: ScoreDoc) => ({
   classId: String(d.classId),
   teacherId: String(d.teacherId),
   behaviorTypeId: d.behaviorTypeId ? String(d.behaviorTypeId) : null,
+  behaviorPenalty: d.behaviorPenalty ?? 0,
   value: d.value,
   comment: d.comment,
   date: d.date,
@@ -99,6 +100,10 @@ async function loadTypes(schoolId: string): Promise<Map<string, BehaviorTypeDoc>
   const docs = await BehaviorType.find({ $or: [{ schoolId: null }, { schoolId }] });
   return new Map(docs.map((d) => [d.id as string, d]));
 }
+
+/** Tanlangan xulq turining joriy reyting jarimasi (snapshot uchun); tur yo'q/eski = 0 */
+const penaltyOfType = (types: Map<string, BehaviorTypeDoc>, typeId: string | null): number =>
+  typeId ? (types.get(typeId)?.ratingPenalty ?? 0) : 0;
 
 async function activeYearId(schoolId: string): Promise<string | null> {
   const y = await AcademicYear.findOne({ schoolId, isActive: true }).select('_id');
@@ -196,6 +201,7 @@ export const scoresService = {
         teacherId: ctx.actor.id,
         academicYearId: yearId as string,
         behaviorTypeId: values.behaviorTypeId,
+        behaviorPenalty: penaltyOfType(types, values.behaviorTypeId),
         value: values.value,
         comment: values.comment,
         date,
@@ -267,6 +273,9 @@ export const scoresService = {
     throwValidation(checkValues(settings, next, types, keep));
 
     doc.value = next.value;
+    // Tur o'zgarganda jarima qayta snapshot qilinadi; o'zgarmasa mavjud snapshot saqlanadi
+    if (next.behaviorTypeId !== keep)
+      doc.behaviorPenalty = penaltyOfType(types, next.behaviorTypeId);
     doc.behaviorTypeId = next.behaviorTypeId ? new Types.ObjectId(next.behaviorTypeId) : null;
     doc.comment = next.comment;
     await doc.save();
@@ -396,6 +405,10 @@ export const scoresService = {
             continue;
           }
           prev.value = values.value;
+          const prevType = prev.behaviorTypeId ? String(prev.behaviorTypeId) : null;
+          if (values.behaviorTypeId !== prevType) {
+            prev.behaviorPenalty = penaltyOfType(types, values.behaviorTypeId);
+          }
           prev.behaviorTypeId = values.behaviorTypeId
             ? new Types.ObjectId(values.behaviorTypeId)
             : null;
@@ -410,6 +423,7 @@ export const scoresService = {
             teacherId: ctx.actor.id,
             academicYearId: yearId,
             behaviorTypeId: values.behaviorTypeId,
+            behaviorPenalty: penaltyOfType(types, values.behaviorTypeId),
             value: values.value,
             comment: values.comment,
             date,

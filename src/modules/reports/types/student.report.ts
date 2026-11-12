@@ -131,6 +131,7 @@ export async function buildStudentReport(ctx: ReportCtx, studentId: string) {
       scoresCount: stats?.scoresCount ?? 0,
       rank: eligible ? (rt?.rank ?? null) : null,
       ratingScore: eligible ? (rt?.score ?? null) : null,
+      behaviorPenalty: rt?.behaviorPenalty ?? 0,
       classRank: eligible && classRank > 0 ? classRank : null,
       ratedStudentsInClass: ratedInClass,
     },
@@ -201,6 +202,7 @@ export function studentLayout(d: StudentReport): ReportLayout {
         value: `${d.attendance.late} / ${d.attendance.absentExcused} / ${d.attendance.absentUnexcused}`,
       },
       { label: 'Davomat jarimasi', value: fmtNum(d.attendance.penalty) },
+      { label: 'Xulq jarimasi', value: fmtNum(d.score.behaviorPenalty) },
     ],
     chart: {
       title: 'Kunlik ball dinamikasi',

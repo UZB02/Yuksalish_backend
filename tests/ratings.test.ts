@@ -553,6 +553,7 @@ describe('Sozlamalar: rating va public', () => {
       resultsTime: '18:00',
       resultsMonthDay: 0,
       resultsDate: null,
+      behaviorPenaltyEnabled: false,
     });
     const p = await get(rep, '/settings/public');
     expect(p.body.data.effective).toEqual({
