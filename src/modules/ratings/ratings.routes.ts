@@ -66,6 +66,17 @@ ratingsRouter.post(
   }),
 );
 
+// Arxivni o'chirish (yumshoq, tombstone): faqat superadmin (X-School-Id bilan)
+ratingsRouter.delete(
+  '/results/:id',
+  authorize('superadmin'),
+  tenant,
+  validate({ params: z.object({ id: objectIdSchema }) }),
+  asyncHandler(async (req, res) => {
+    ok(res, await ratingsApi.resultDelete(getCtx(req), sid(req), String(req.params.id)));
+  }),
+);
+
 ratingsRouter.get(
   '/students',
   ...read,

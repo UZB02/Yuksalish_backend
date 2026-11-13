@@ -79,9 +79,14 @@ export async function createRatingResult(
   schoolId: string,
   period: RatingPeriod,
   to: string,
-  opts: { manual?: boolean; announcedAt?: Date } = {},
+  opts: { manual?: boolean; announcedAt?: Date; replaceDeleted?: boolean } = {},
 ): Promise<(IRatingResult & { _id: unknown }) | null> {
-  if (await RatingResult.exists({ schoolId, periodKey: period.key })) return null;
+  // O'chirilgan (tombstone) arxiv ham davrni band qiladi: avtomatik vazifa qayta yaratmaydi.
+  // Faqat qo'lda e'londa (replaceDeleted) tombstone almashtiriladi.
+  const existing = await RatingResult.findOne({ schoolId, periodKey: period.key })
+    .select('deletedAt')
+    .lean();
+  if (existing && !(opts.replaceDeleted && existing.deletedAt)) return null;
   const [rating, live] = await Promise.all([
     settingsService.getEffectiveRating(schoolId),
     computeLive(schoolId, period.from, to),
@@ -115,6 +120,8 @@ export async function createRatingResult(
       ratedStudents: c.ratedStudents,
     }));
   try {
+    // Hisob tayyor bo'lgach tombstone olib tashlanadi (hisob xato bersa tombstone saqlanadi)
+    if (existing) await RatingResult.deleteOne({ _id: existing._id, deletedAt: { $ne: null } });
     const doc = await RatingResult.create({
       schoolId,
       periodType: period.type,

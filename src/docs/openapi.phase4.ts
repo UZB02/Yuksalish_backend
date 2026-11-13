@@ -333,10 +333,15 @@ export function buildPhase4(h: DocHelpers) {
         },
         { params: [{ name: 'id', in: 'path', required: true, schema: str }] },
       ),
+      delete: internal(
+        "Arxivni yumshoq o'chirish (tombstone; faqat superadmin, X-School-Id shart). Ro'yxat, batafsil va ochiq saytdan yashiriladi; davr avtomatik qayta e'lon qilinmaydi, joriy davrni qo'lda qayta e'lon qilish mumkin. Boshqa maktab yoki allaqachon o'chirilgan: 404",
+        { '200': okRes(o({ id: str })) },
+        { params: [{ name: 'id', in: 'path', required: true, schema: str }] },
+      ),
     },
     '/ratings/results/announce': {
       post: internal(
-        "Joriy davr natijasini hoziroq e'lon qilish (faqat superadmin, X-School-Id shart; takror 409)",
+        "Joriy davr natijasini hoziroq e'lon qilish (faqat superadmin, X-School-Id shart; faol arxiv bo'lsa 409, o'chirilgan arxiv bo'lsa almashtiriladi)",
         { '200': okRes(o({ id: str, periodKey: str, from: str, to: str, manual: bool })) },
       ),
     },

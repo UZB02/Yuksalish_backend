@@ -806,3 +806,133 @@ describe('Telegram', () => {
     expect(text).not.toContain('4-A');
   });
 });
+
+describe("Yakunni o'chirish (yumshoq, tombstone)", () => {
+  const PREV_KEY = 'week:2026-11-02';
+  const del = (t: string, id: string, h: Record<string, string> = H(school.id)) =>
+    request(app).delete(`/api/v1/ratings/results/${id}`).set(bearer(t)).set(h);
+  const announce = (t = root) =>
+    request(app).post('/api/v1/ratings/results/announce').set(bearer(t)).set(H(school.id));
+
+  async function announced() {
+    await seedWeek();
+    await enable();
+    setNow(SAT_18);
+    await runRatingResults();
+  }
+  const idOf = async (key = WEEK_KEY) => String((await mine(key))?._id);
+
+  it('superadmin yumshoq o‘chiradi: hujjat qoladi, audit yoziladi, ro‘yxat va batafsil yashiradi', async () => {
+    await announced();
+    const id = await idOf();
+    const r = await del(root, id);
+    expect(r.status).toBe(200);
+    expect(r.body.data).toEqual({ id });
+    const doc = await mine();
+    expect(doc?.deletedAt).toBeInstanceOf(Date);
+    expect(String(doc?.deletedBy)).toBe(rootUser.id);
+    expect(doc?.students).toHaveLength(3); // ma'lumot saqlanadi
+    const audit = await AuditLog.findOne({ action: 'ratings.results.delete' }).lean();
+    expect(audit?.before).toMatchObject({
+      periodKey: WEEK_KEY,
+      label: '9–15-noyabr',
+      studentsCount: 3,
+    });
+    const list = await get(adm, '/ratings/results', H());
+    expect(list.body.data.map((d: { periodKey: string }) => d.periodKey)).toEqual([PREV_KEY]);
+    expect(list.body.meta.total).toBe(1);
+    expect((await get(adm, `/ratings/results/${id}`, H())).status).toBe(404);
+  });
+
+  it('school_admin va o‘qituvchi 403, tokensiz 401; hech narsa o‘chmaydi', async () => {
+    await announced();
+    const id = await idOf();
+    expect((await del(adm, id, H())).status).toBe(403);
+    expect((await del(tch, id, H())).status).toBe(403);
+    expect((await request(app).delete(`/api/v1/ratings/results/${id}`)).status).toBe(401);
+    expect((await mine())?.deletedAt ?? null).toBeNull();
+    expect((await del(root, 'xyz')).status).toBe(400);
+  });
+
+  it('boshqa maktab X-School-Id bilan 404; qayta o‘chirish 404', async () => {
+    await announced();
+    const id = await idOf();
+    expect((await del(root, id, H(other.id))).status).toBe(404);
+    expect((await mine())?.deletedAt ?? null).toBeNull();
+    expect((await del(root, id)).status).toBe(200);
+    expect((await del(root, id)).status).toBe(404);
+    expect(await AuditLog.countDocuments({ action: 'ratings.results.delete' })).toBe(1);
+  });
+
+  it('eski hujjat (deletedAt maydoni yo‘q) o‘chirilmagan hisoblanadi', async () => {
+    await announced();
+    await RatingResult.collection.updateMany({}, { $unset: { deletedAt: '', deletedBy: '' } });
+    expect((await get(adm, '/ratings/results', H())).body.data).toHaveLength(2);
+    const id = await idOf();
+    expect((await get(adm, `/ratings/results/${id}`, H())).status).toBe(200);
+    expect((await del(root, id)).status).toBe(200);
+  });
+
+  it('vazifa o‘chirilgan davrni qayta yaratmaydi (joriy va oldingi), Telegram yo‘q', async () => {
+    await announced();
+    await startBot();
+    await link(admin.id, 111);
+    for (const key of [WEEK_KEY, PREV_KEY])
+      expect((await del(root, await idOf(key))).status).toBe(200);
+    const before = await TelegramOutbox.countDocuments({});
+    setNow('2026-11-14T13:05:00Z');
+    expect((await runRatingResults()).created).toBe(0);
+    expect(await countMine(WEEK_KEY)).toBe(1);
+    expect(await countMine(PREV_KEY)).toBe(1);
+    expect((await mine())?.deletedAt).toBeTruthy();
+    expect(await TelegramOutbox.countDocuments({})).toBe(before);
+    expect((await get(adm, '/ratings/results', H())).body.data).toHaveLength(0);
+  });
+
+  it('manual e‘lon: faqat tombstone bo‘lsa qayta yaratadi, faol bo‘lsa 409', async () => {
+    await seedWeek();
+    await put('rating', { scope: 'school', schoolId: school.id, values: { periodType: 'week' } });
+    setNow('2026-11-12T05:00:00Z');
+    const first = await announce();
+    expect(first.status).toBe(200);
+    expect((await announce()).status).toBe(409);
+    expect((await del(root, first.body.data.id)).status).toBe(200);
+    const again = await announce();
+    expect(again.status).toBe(200);
+    expect(again.body.data.id).not.toBe(first.body.data.id);
+    expect(again.body.data).toMatchObject({ manual: true, periodKey: WEEK_KEY });
+    expect(await countMine()).toBe(1); // tombstone almashtirildi
+    expect((await mine())?.deletedAt ?? null).toBeNull();
+    expect((await announce()).status).toBe(409);
+    const list = await get(adm, '/ratings/results', H());
+    expect(list.body.data).toHaveLength(1);
+  });
+
+  it('ochiq sayt: o‘chirilgach keshdan chiqadi va avvalgi (o‘quvchili) arxivga qaytadi', async () => {
+    await announced();
+    await enablePublic();
+    await RatingResult.create({
+      schoolId: school.id,
+      periodType: 'week',
+      periodKey: 'week:2026-10-26',
+      from: '2026-10-26',
+      to: '2026-10-31',
+      periodTo: '2026-11-01',
+      label: '26-oktabr–1-noyabr',
+      announcedAt: new Date('2026-10-31T13:00:00Z'),
+      settings: {},
+      studentsCount: 1,
+      students: [
+        { studentId: s1._id, fullName: 'Aliyev Ali', classId: c5._id, score: 90, rank: 1 },
+      ],
+    });
+    const a = await pub('/res-a/rating/results/latest');
+    expect(a.body.data.period.label).toBe('9–15-noyabr');
+    expect((await del(root, await idOf())).status).toBe(200);
+    const b = await pub('/res-a/rating/results/latest');
+    expect(b.body.data.period.label).toBe('26-oktabr–1-noyabr');
+    // oldingi bo'sh (0 o'quvchi) arxiv sinfga tushmaydi; hammasi o'chsa null
+    expect((await del(root, await idOf('week:2026-10-26'))).status).toBe(200);
+    expect((await pub('/res-a/rating/results/latest')).body.data).toBeNull();
+  });
+});

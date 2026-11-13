@@ -189,7 +189,11 @@ export const publicService = {
     const { school, id, settings } = await resolveSchool(slug);
     const rating = await settingsService.getEffectiveRating(id);
     if (!rating.resultsEnabled) return { data: null };
-    const doc = await RatingResult.findOne({ schoolId: id, studentsCount: { $gt: 0 } })
+    const doc = await RatingResult.findOne({
+      schoolId: id,
+      studentsCount: { $gt: 0 },
+      deletedAt: null,
+    })
       .sort({ announcedAt: -1, from: -1 })
       .lean();
     if (!doc) return { data: null };

@@ -7,6 +7,7 @@ import { addDaysStr, clock, todayTashkent } from '../../utils/clock';
 import { escapeRegex } from '../../utils/helpers';
 import { auditService } from '../audit/audit.service';
 import { allowedClassIds } from '../classes/classes.service';
+import { publicCache } from '../public/public.cache';
 import { settingsService } from '../settings/settings.service';
 import { rankChange } from './rating.calc';
 import { createRatingResult } from './rating.results';
@@ -92,7 +93,7 @@ const resultMeta = (r: {
 export const ratingsApi = {
   /** Muzlatilgan (e'lon qilingan) davr natijalari arxivi, yangisi birinchi */
   async resultsList(schoolId: string, q: { page: number; limit: number }) {
-    const filter = { schoolId };
+    const filter = { schoolId, deletedAt: null };
     const [docs, total] = await Promise.all([
       RatingResult.find(filter)
         .select('-students -classes')
@@ -107,7 +108,7 @@ export const ratingsApi = {
 
   /** Bitta arxiv. O'qituvchi faqat o'z sinflari qatorlarini ko'radi (o'rinlar maktab bo'yicha) */
   async resultDetail(actor: Actor, schoolId: string, id: string) {
-    const doc = await RatingResult.findOne({ _id: id, schoolId }).lean();
+    const doc = await RatingResult.findOne({ _id: id, schoolId, deletedAt: null }).lean();
     if (!doc) throw AppError.notFound('Yakuniy natija topilmadi');
     const scope = await allowedClassIds(actor, schoolId);
     const inScope = (classId: unknown) => !scope || scope.includes(String(classId));
@@ -128,7 +129,10 @@ export const ratingsApi = {
     const { period } = await resolveSchoolPeriod(schoolId);
     const today = todayTashkent();
     const to = today < period.to ? today : period.to;
-    const doc = await createRatingResult(schoolId, period, to, { manual: true });
+    const doc = await createRatingResult(schoolId, period, to, {
+      manual: true,
+      replaceDeleted: true,
+    });
     if (!doc) throw AppError.conflict("Bu davr natijasi allaqachon e'lon qilingan");
     await notifyRatingResults(schoolId, doc);
     await auditService.log({
@@ -141,6 +145,27 @@ export const ratingsApi = {
       ip: ctx.ip,
     });
     return resultMeta(doc as never);
+  },
+
+  /** Arxivni yumshoq o'chirish (tombstone) — faqat superadmin. Davr avtomatik qayta e'lon qilinmaydi */
+  async resultDelete(ctx: Ctx, schoolId: string, id: string) {
+    const doc = await RatingResult.findOneAndUpdate(
+      { _id: id, schoolId, deletedAt: null },
+      { $set: { deletedAt: clock.now(), deletedBy: ctx.actor.id } },
+      { projection: { students: 0, classes: 0 } },
+    ).lean();
+    if (!doc) throw AppError.notFound('Yakuniy natija topilmadi');
+    publicCache.clear();
+    await auditService.log({
+      userId: ctx.actor.id,
+      schoolId,
+      action: 'ratings.results.delete',
+      entity: 'rating_result',
+      entityId: String(doc._id),
+      before: { periodKey: doc.periodKey, label: doc.label, studentsCount: doc.studentsCount },
+      ip: ctx.ip,
+    });
+    return { id: String(doc._id) };
   },
 
   async config(schoolId: string) {

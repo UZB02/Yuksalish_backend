@@ -50,6 +50,9 @@ export interface IRatingResult {
   classesCount: number;
   students: IRatingResultStudent[];
   classes: IRatingResultClass[];
+  /** Yumshoq o'chirish (tombstone): o'chirilgan arxiv ro'yxat/ochiq saytda ko'rinmaydi, lekin (schoolId, periodKey) ni band qilib turadi — minutlik vazifa qayta yaratmaydi. Eski hujjatlarda maydon yo'q. */
+  deletedAt?: Date | null;
+  deletedBy?: Types.ObjectId | null;
 }
 
 const studentSub = new Schema<IRatingResultStudent>(
@@ -95,6 +98,8 @@ const ratingResultSchema = new Schema<IRatingResult>(
     classesCount: { type: Number, default: 0 },
     students: { type: [studentSub], default: [] },
     classes: { type: [classSub], default: [] },
+    deletedAt: { type: Date, default: null },
+    deletedBy: { type: Schema.Types.ObjectId, default: null },
   },
   { versionKey: false },
 );
