@@ -14,16 +14,21 @@ ARG VITE_PWA_KILL=0
 # Vite da process.env dagi VITE_* o'zgaruvchilar .env.production fayldagidan ustun turadi
 ENV VITE_API_BASE_URL=/api/v1 \
     VITE_PUBLIC_URL=$VITE_PUBLIC_URL \
-    VITE_PWA_KILL=$VITE_PWA_KILL
-RUN npm run build
+    VITE_PWA_KILL=$VITE_PWA_KILL \
+    NODE_OPTIONS=--max-old-space-size=1536
+# Serverda (1.7 GB RAM) faqat vite build: vue-tsc (tip tekshiruvi) xotira yetmasligiga olib keladi
+# ("JavaScript heap out of memory"). Tip tekshiruvi har commit'dan oldin lokalda `npm run build` bilan bajariladi.
+RUN npx vite build
 
 FROM node:22-alpine AS publik
 WORKDIR /app
 COPY Yuksalish-publik/package.json Yuksalish-publik/package-lock.json ./
 RUN npm ci
 COPY Yuksalish-publik/ ./
-ENV VITE_API_BASE_URL=/api/v1
-RUN npm run build
+ENV VITE_API_BASE_URL=/api/v1 \
+    NODE_OPTIONS=--max-old-space-size=1536
+# admin bosqichidagi kabi: serverda faqat vite build (tip tekshiruvi lokalda)
+RUN npx vite build
 
 FROM caddy:2-alpine
 COPY Yuksalish_backend/deploy/Caddyfile /etc/caddy/Caddyfile
