@@ -128,6 +128,7 @@ describe('Ruxsatlar (permissions)', () => {
       'scores.create',
       'grades.create',
       'attendance.take',
+      'exams.questions', // imtihon moduli yoqilgan maktablardagina ishlaydi (requireExamsEnabled)
     ]);
     expect(await AuditLog.countDocuments({ action: 'teacher.permissions' })).toBe(2);
   });
@@ -208,6 +209,10 @@ describe('Ruxsatlar (permissions)', () => {
       'timetable.view',
       'timetable.manage',
       'timetable.substitute',
+      'exams.questions',
+      'exams.manage',
+      'exams.grade',
+      'exams.results',
     ]);
     expect(res.body.data[0]).toEqual(
       expect.objectContaining({
@@ -225,6 +230,7 @@ describe('Ruxsatlar (permissions)', () => {
       'scores.create',
       'grades.create',
       'attendance.take',
+      'exams.questions', // imtihon moduli yoqilgan maktablardagina ishlaydi (requireExamsEnabled)
     ]);
   });
 });

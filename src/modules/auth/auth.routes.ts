@@ -10,6 +10,8 @@ import {
   passwordResetRequestUserLimiter,
   passwordResetVerifyLimiter,
   profileUpdateLimiter,
+  refreshIpLimiter,
+  refreshTokenLimiter,
   usernameCheckLimiter,
 } from '../../middlewares/rateLimiters';
 import { validate } from '../../middlewares/validate';
@@ -27,7 +29,8 @@ import {
 export const authRouter = Router();
 
 authRouter.post('/login', loginLimiter, validate({ body: loginBody }), c.login);
-authRouter.post('/refresh', loginLimiter, c.refresh);
+// refresh loginLimiter dan AJRATILGAN: maktab NAT'i orqasidagi hamma foydalanuvchi bir IP dan chiqadi
+authRouter.post('/refresh', refreshIpLimiter, refreshTokenLimiter, c.refresh);
 authRouter.post('/logout', c.logout);
 authRouter.post('/logout-all', authenticate, c.logoutAll);
 authRouter.get('/me', authenticate, c.me);

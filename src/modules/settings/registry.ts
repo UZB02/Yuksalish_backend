@@ -7,6 +7,7 @@ import {
   attendanceValuesSchema,
   normalizeAttendance,
 } from './attendance.settings';
+import { EXAMS_DEFAULTS, EXAMS_KEY, examsValuesSchema, guardExamsWrite } from './exams.settings';
 import {
   TELEGRAM_DEFAULTS,
   TELEGRAM_KEY,
@@ -56,7 +57,7 @@ export interface SettingDef {
    * writeRoles da school_admin bo'lsa: ruxsat va doirani tekshiradi, to'g'rilangan body qaytaradi
    * (faqat o'z maktabi, scope=school)
    */
-  guardWrite?: (actor: AuthUser, body: WriteBody) => WriteBody;
+  guardWrite?: (actor: AuthUser, body: WriteBody) => WriteBody | Promise<WriteBody>;
   /** global/override ni kim ko'ra oladi (default: override — superadmin, global — hamma) */
   detailAccess?: (actor: AuthUser) => boolean;
 }
@@ -126,6 +127,18 @@ export const SETTING_DEFS: Record<string, SettingDef> = {
     normalize: normalizeTelegram,
     validateMerged: validateTelegram,
     ...attendanceAccess,
+  },
+  // Imtihon: yozish — superadmin (hammasi) yoki exams.manage li maktab admini (enabled dan tashqari).
+  // Reytingni qayta hisoblashga ta'sir qilmaydi (ratings.events faqat scoring/rating/attendance).
+  [EXAMS_KEY]: {
+    key: EXAMS_KEY,
+    defaults: EXAMS_DEFAULTS as unknown as Obj,
+    valuesSchema: examsValuesSchema,
+    validateMerged: () => undefined,
+    writeRoles: ['superadmin', 'school_admin'],
+    guardWrite: guardExamsWrite,
+    detailAccess: (actor) =>
+      actor.role === 'superadmin' || actor.permissions.includes('exams.manage'),
   },
 };
 

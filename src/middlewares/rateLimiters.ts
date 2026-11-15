@@ -1,3 +1,5 @@
+import crypto from 'crypto';
+import type { Request } from 'express';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { env } from '../config/env';
 import { AppError } from '../core/errors';
@@ -25,7 +27,7 @@ export const photoLimiter = make(
   "So'rovlar juda ko'p. Birozdan so'ng urinib ko'ring",
 );
 
-/** Login/refresh: 15 daqiqada 30 ta */
+/** Faqat login: 15 daqiqada 30 ta (IP bo'yicha). /auth/refresh uchun ISHLATILMAYDI, pastdagi refresh limiterlarga qarang */
 export const loginLimiter = make(
   15 * 60_000,
   30,
@@ -104,3 +106,127 @@ export const passwordResetRequestUserLimiter = rateLimit({
   keyGenerator: (req) => `pr:${String(req.body?.username ?? '')}`,
   handler: (_req, _res, next) => next(AppError.rateLimited(RESET_MSG)),
 });
+
+const sha256 = (v: string) => crypto.createHash('sha256').update(v).digest('hex');
+
+// ---------------------------------------------------------------------------------------------
+// /auth/refresh: bitta maktab NAT'i orqasidagi hamma foydalanuvchi bir IP dan chiqadi, shuning uchun
+// loginLimiter (30/15 daq/IP) dan ajratilgan. Ikki qatlam: (1) IP bo'yicha saxiy chegara,
+// (2) refresh token xeshi bo'yicha qattiq chegara (bitta tokenni takror urish / taxmin qilishga qarshi).
+// ---------------------------------------------------------------------------------------------
+export interface RefreshLimiterOptions {
+  /** Limiter yoqilganmi (default: env.RATE_LIMIT_ENABLED) */
+  enabled?: () => boolean;
+  ipLimit?: number;
+  ipWindowMs?: number;
+  tokenLimit?: number;
+  tokenWindowMs?: number;
+}
+
+const REFRESH_MSG = "Sessiyani yangilash urinishlari juda ko'p. Birozdan so'ng urinib ko'ring";
+
+export function createRefreshLimiters(o: RefreshLimiterOptions = {}) {
+  const enabled = o.enabled ?? (() => env.RATE_LIMIT_ENABLED);
+  const ip = rateLimit({
+    windowMs: o.ipWindowMs ?? 15 * 60_000,
+    limit: o.ipLimit ?? 600,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: () => !enabled(),
+    handler: (_req, _res, next) => next(AppError.rateLimited(REFRESH_MSG)),
+  });
+  const token = rateLimit({
+    windowMs: o.tokenWindowMs ?? 60_000,
+    limit: o.tokenLimit ?? 20,
+    standardHeaders: true,
+    legacyHeaders: false,
+    // Cookie yo'q so'rov (login sahifasi ochilganda SPA shunday yuboradi) bu chegaraga tushmaydi:
+    // u faqat IP limiter bilan cheklanadi, aks holda NAT orqasidagi hamma bitta chelakda qolardi
+    skip: (req) => !enabled() || !refreshCookie(req),
+    keyGenerator: (req) => 'rt:' + sha256(refreshCookie(req) as string),
+    handler: (_req, _res, next) => next(AppError.rateLimited(REFRESH_MSG)),
+  });
+  return { ip, token };
+}
+
+const refreshCookie = (req: Request): string | undefined => {
+  const v = req.cookies?.refreshToken;
+  return typeof v === 'string' && v ? v : undefined;
+};
+
+export const { ip: refreshIpLimiter, token: refreshTokenLimiter } = createRefreshLimiters();
+
+// ---------------------------------------------------------------------------------------------
+// Exam-client (/api/v1/exam-client): apiLimiter DAN OLDIN ulanadi (photos kabi). Maktab NAT'i
+// orqasida 300-500 o'quvchi bitta IP dan ishlaydi, shuning uchun IP bo'yicha qattiq chegara YO'Q.
+// Kalit: urinish tokeni xeshi ("Authorization: Bearer <opaque>"); token yo'q so'rov (kirish) uchun
+// IP + sessiya kodi, saxiy chegara bilan. Qo'shimcha: IP bo'yicha juda baland "xavfsizlik to'ri".
+// ---------------------------------------------------------------------------------------------
+export interface ExamClientLimiterOptions {
+  enabled?: () => boolean;
+  windowMs?: number;
+  /** Bitta urinish tokeni uchun (autosave/heartbeat) */
+  tokenLimit?: number;
+  /** Tokensiz so'rovlar (kirish): IP + kod uchun */
+  joinLimit?: number;
+  /** IP bo'yicha umumiy xavfsizlik to'ri */
+  ipLimit?: number;
+}
+
+const EXAM_MSG = "So'rovlar juda ko'p. Birozdan so'ng urinib ko'ring";
+
+export const examClientTokenOf = (req: Request): string | undefined => {
+  const h = req.headers.authorization;
+  if (typeof h !== 'string' || !h.startsWith('Bearer ')) return undefined;
+  const t = h.slice(7).trim();
+  return t || undefined;
+};
+
+/** Sessiya kodi (body.code yoki query.code), kalit uchun normallashgan va qisqartirilgan */
+const examCodeOf = (req: Request): string => {
+  const raw = req.body?.code ?? req.query?.code;
+  return typeof raw === 'string' ? raw.trim().toUpperCase().slice(0, 16) : '-';
+};
+
+export function createExamClientLimiters(o: ExamClientLimiterOptions = {}) {
+  const enabled = o.enabled ?? (() => env.RATE_LIMIT_ENABLED);
+  const windowMs = o.windowMs ?? 60_000;
+  const main = rateLimit({
+    windowMs,
+    limit: (req) => (examClientTokenOf(req) ? (o.tokenLimit ?? 120) : (o.joinLimit ?? 1500)),
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: () => !enabled(),
+    keyGenerator: (req) => {
+      const t = examClientTokenOf(req);
+      return t ? 'at:' + sha256(t) : 'jc:' + ipKeyGenerator(req.ip ?? '') + '|' + examCodeOf(req);
+    },
+    handler: (_req, _res, next) => next(AppError.rateLimited(EXAM_MSG)),
+  });
+  const ip = rateLimit({
+    windowMs,
+    limit: o.ipLimit ?? 20_000,
+    standardHeaders: false,
+    legacyHeaders: false,
+    skip: () => !enabled(),
+    keyGenerator: (req) => 'ip:' + ipKeyGenerator(req.ip ?? ''),
+    handler: (_req, _res, next) => next(AppError.rateLimited(EXAM_MSG)),
+  });
+  return { main, ip };
+}
+
+export const { main: examClientLimiter, ip: examClientIpLimiter } = createExamClientLimiters();
+
+/** Savol rasmlarini yuklash: foydalanuvchi bo'yicha daqiqasiga 60 ta (authenticate dan keyin) */
+export const examAssetUploadLimiter = perUser(
+  60_000,
+  60,
+  "Rasm yuklash juda tez. Birozdan so'ng urinib ko'ring",
+);
+
+/** Savollar importi (og'ir): foydalanuvchi bo'yicha daqiqasiga 10 ta (authenticate dan keyin) */
+export const examImportLimiter = perUser(
+  60_000,
+  10,
+  "Import so'rovlari juda ko'p. Birozdan so'ng urinib ko'ring",
+);

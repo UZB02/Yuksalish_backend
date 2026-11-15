@@ -27,7 +27,11 @@ import { AttendanceStatus } from '../../src/models/AttendanceStatus';
 import { AuditLog } from '../../src/models/AuditLog';
 import { ClassModel } from '../../src/models/Class';
 import { ImportSession } from '../../src/models/ImportSession';
+import { ExamAsset } from '../../src/models/ExamAsset';
 import { Photo } from '../../src/models/Photo';
+import { ExamImportSession } from '../../src/models/ExamImportSession';
+import { ExamTopic } from '../../src/models/ExamTopic';
+import { Question } from '../../src/models/Question';
 import { Student } from '../../src/models/Student';
 import { nameKeyOf } from '../../src/utils/text';
 import { RefreshToken } from '../../src/models/RefreshToken';
@@ -67,6 +71,10 @@ const ALL_MODELS: { init(): Promise<unknown>; deleteMany(f: object): PromiseLike
   TelegramLinkToken,
   TelegramOutbox,
   PasswordResetCode,
+  Question,
+  ExamAsset,
+  ExamImportSession,
+  ExamTopic,
 ];
 
 /** Har bir test fayli uchun alohida baza; har testdan oldin tozalanadi */

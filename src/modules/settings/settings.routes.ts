@@ -43,7 +43,7 @@ for (const def of Object.values(SETTING_DEFS)) {
     validate({ body: putBody }),
     asyncHandler(async (req, res) => {
       const actor = req.user as NonNullable<typeof req.user>;
-      const body: WriteBody = def.guardWrite ? def.guardWrite(actor, req.body) : req.body;
+      const body: WriteBody = def.guardWrite ? await def.guardWrite(actor, req.body) : req.body;
       ok(res, await settingsService.put(getCtx(req), def.key, body));
     }),
   );

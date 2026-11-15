@@ -124,12 +124,43 @@ export const PERMISSION_CATALOG: PermissionDef[] = [
     label: "O'rinbosar qo'yish va darsni bekor qilish",
     roles: ['school_admin'],
   },
+  {
+    key: 'exams.questions',
+    group: 'Imtihonlar',
+    label: 'Savollar bankini yuritish',
+    roles: ['school_admin', 'teacher'],
+  },
+  {
+    key: 'exams.manage',
+    group: 'Imtihonlar',
+    label: 'Imtihonlarni rejalashtirish va sozlash',
+    roles: ['school_admin'],
+  },
+  {
+    key: 'exams.grade',
+    group: 'Imtihonlar',
+    label: 'Esse javoblarini tekshirish',
+    roles: ['school_admin', 'teacher'],
+  },
+  {
+    key: 'exams.results',
+    group: 'Imtihonlar',
+    label: "Imtihon natijalarini ko'rish",
+    roles: ['school_admin', 'teacher'],
+  },
 ];
 
 export const ALL_PERMISSION_KEYS = PERMISSION_CATALOG.map((p) => p.key);
 
-// O'qituvchida doim mavjud asosiy ruxsat
-export const TEACHER_BASE_PERMISSIONS = ['scores.create', 'grades.create', 'attendance.take'];
+// O'qituvchida doim mavjud asosiy ruxsat.
+// 'exams.questions' ham shu yerda: u faqat maktabda `exams.enabled` sozlamasi yoqilgan bo'lsa ishlaydi
+// (barcha /exams/* endpointlari requireExamsEnabled bilan darvozalangan; o'chiq bo'lsa 403).
+export const TEACHER_BASE_PERMISSIONS = [
+  'scores.create',
+  'grades.create',
+  'attendance.take',
+  'exams.questions',
+];
 
 // Rol uchun berilishi mumkin bo'lgan kalitlar
 export function permissionsForRole(role: Role): string[] {
