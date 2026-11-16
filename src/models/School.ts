@@ -9,6 +9,8 @@ export interface ISchool {
   /** Yuklangan logo xeshi (BrandingAsset); null = yuklanmagan */
   logoHash: string | null;
   isActive: boolean;
+  /** Butunlay o'chirish boshlangan vaqt (null = oddiy maktab). Qo'yilsa maktab "yo'q" hisoblanadi */
+  deletingAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -23,6 +25,7 @@ const schoolSchema = new Schema<ISchool>(
     logoUrl: { type: String, trim: true, default: null },
     logoHash: { type: String, default: null },
     isActive: { type: Boolean, default: true },
+    deletingAt: { type: Date, default: null },
   },
   { timestamps: true },
 );

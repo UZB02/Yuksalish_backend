@@ -16,11 +16,12 @@ export const toSchoolDto = (s: SchoolDoc) => ({
   logoUrl: s.logoHash ? schoolLogoPath.admin(s.id, s.logoHash) : (s.logoUrl ?? null),
   hasUploadedLogo: !!s.logoHash,
   isActive: s.isActive,
+  deletingAt: s.deletingAt ?? null,
   createdAt: s.createdAt,
 });
 
 const snapshot = (s: SchoolDoc) => {
-  const { id: _id, createdAt: _c, ...rest } = toSchoolDto(s);
+  const { id: _id, createdAt: _c, deletingAt: _d, ...rest } = toSchoolDto(s);
   return rest;
 };
 
@@ -105,6 +106,9 @@ export const schoolsService = {
     },
   ) {
     const school = await findOrFail(id);
+    if (school.deletingAt) {
+      throw AppError.conflict("Maktab o'chirilmoqda, uni o'zgartirib bo'lmaydi");
+    }
     const before = snapshot(school);
     school.set(patch);
     await school.save();

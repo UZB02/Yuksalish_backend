@@ -4,6 +4,7 @@ import { getCtx } from '../../core/context';
 import { created, ok } from '../../core/response';
 import { AppError } from '../../core/errors';
 import { brandingService } from '../branding/branding.service';
+import { schoolDeletion } from './schools.delete';
 import { schoolsService, toSchoolDto } from './schools.service';
 
 export const list = asyncHandler(async (req, res) => {
@@ -49,4 +50,12 @@ export const setLogo = asyncHandler(async (req, res) => {
 
 export const deleteLogo = asyncHandler(async (req, res) => {
   ok(res, toSchoolDto(await brandingService.deleteSchoolLogo(getCtx(req), String(req.params.id))));
+});
+
+export const deletePreview = asyncHandler(async (req, res) => {
+  ok(res, await schoolDeletion.preview(String(req.params.id)));
+});
+
+export const remove = asyncHandler(async (req, res) => {
+  ok(res, await schoolDeletion.remove(getCtx(req), String(req.params.id), req.body));
 });

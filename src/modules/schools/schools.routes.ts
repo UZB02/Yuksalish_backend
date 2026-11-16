@@ -4,7 +4,7 @@ import { authorize } from '../../middlewares/authorize';
 import { validate } from '../../middlewares/validate';
 import { uploadLogo } from '../branding/branding.upload';
 import * as c from './schools.controller';
-import { createBody, listQuery, updateBody } from './schools.schema';
+import { createBody, deleteBody, listQuery, updateBody } from './schools.schema';
 
 export const schoolsRouter = Router();
 
@@ -22,3 +22,7 @@ schoolsRouter.use(authorize('superadmin'));
 schoolsRouter.get('/', validate({ query: listQuery }), c.list);
 schoolsRouter.post('/', validate({ body: createBody }), c.create);
 schoolsRouter.patch('/:id', validate({ body: updateBody }), c.update);
+
+// Xavfli: maktabni butunlay o'chirish (faqat superadmin; maktab nofaol bo'lishi shart)
+schoolsRouter.get('/:id/delete-preview', c.deletePreview);
+schoolsRouter.post('/:id/delete', validate({ body: deleteBody }), c.remove);

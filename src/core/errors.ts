@@ -1,5 +1,6 @@
 export const ErrorCodes = {
   VALIDATION_ERROR: 'VALIDATION_ERROR',
+  INVALID_PASSWORD: 'INVALID_PASSWORD',
   UNAUTHORIZED: 'UNAUTHORIZED',
   FORBIDDEN: 'FORBIDDEN',
   NOT_FOUND: 'NOT_FOUND',
@@ -18,6 +19,7 @@ export interface ErrorDetail {
 
 const STATUS: Record<ErrorCode, number> = {
   VALIDATION_ERROR: 400,
+  INVALID_PASSWORD: 400,
   UNAUTHORIZED: 401,
   FORBIDDEN: 403,
   NOT_FOUND: 404,
@@ -41,6 +43,10 @@ export class AppError extends Error {
 
   static validation(message = "Ma'lumotlar noto'g'ri", details?: ErrorDetail[]) {
     return new AppError('VALIDATION_ERROR', message, details);
+  }
+  /** Tasdiqlash paroli noto'g'ri: 400 (401 EMAS: admin frontend 401 da chiqarib yuboradi) */
+  static invalidPassword(message = "Parol noto'g'ri") {
+    return new AppError('INVALID_PASSWORD', message, [{ path: 'password', message }]);
   }
   static unauthorized(message = "Avtorizatsiyadan o'tilmagan") {
     return new AppError('UNAUTHORIZED', message);

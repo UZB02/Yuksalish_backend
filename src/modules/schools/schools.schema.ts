@@ -43,3 +43,10 @@ export const updateBody = z.object({
   logoUrl: logoUrl.nullable().optional(),
   isActive: z.boolean().optional(),
 });
+
+/** Maktabni butunlay o'chirish: nom (aynan, ikki chetdagi bo'shliqlar e'tiborsiz, registr muhim) + parol + tasdiq */
+export const deleteBody = z.object({
+  confirmName: z.string().trim().min(1, 'Maktab nomini kiriting'),
+  password: z.string().min(1, 'Parolni kiriting').max(200),
+  acknowledge: z.literal(true, { error: "Tasdiqlash belgisini qo'ying" }),
+});

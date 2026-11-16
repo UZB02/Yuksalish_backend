@@ -41,6 +41,15 @@ export class Debouncer {
     );
   }
 
+  /** Kalit bo'yicha kutayotgan ishni bekor qiladi (maktab o'chirilganda). Ketayotgan ish to'xtamaydi */
+  cancel(key: string): void {
+    const h = this.timers.get(key);
+    if (h !== undefined) this.t.clear(h);
+    this.timers.delete(key);
+    this.pending.delete(key);
+    this.rerun.delete(key);
+  }
+
   get pendingKeys(): string[] {
     return [...this.pending];
   }

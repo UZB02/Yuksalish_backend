@@ -13,7 +13,12 @@ const SCHOOLS_KEY = '*schools';
 
 const debouncer = new Debouncer(
   env.RATING_DEBOUNCE_MS,
-  (key) => (key === SCHOOLS_KEY ? recalculateSchools() : recalculateSchool(key)),
+  async (key) => {
+    if (key === SCHOOLS_KEY) return recalculateSchools();
+    // O'chirilayotgan/o'chirilgan maktab uchun reyting hujjatlari qayta yaratilmasin
+    if (!(await School.exists({ _id: key, deletingAt: null }))) return undefined;
+    return recalculateSchool(key);
+  },
   undefined,
   (key, err) => logger.error({ err, key }, 'Reytingni qayta hisoblashda xato'),
 );
@@ -54,6 +59,17 @@ export const ratingEvents = {
 
   schedule(schoolId: string) {
     debouncer.schedule(schoolId);
+  },
+
+  /** Maktab butunlay o'chirilganda: uning kutayotgan hisobi bekor, umumiy (maktablar) reyting qayta hisoblanadi */
+  schoolRemoved(schoolId: string) {
+    debouncer.cancel(schoolId);
+    debouncer.schedule(SCHOOLS_KEY);
+  },
+
+  /** Maktab o'chirish boshlanganda: kutayotgan hisobni bekor qiladi (qayta rejalashtirmaydi) */
+  cancel(schoolId: string) {
+    debouncer.cancel(schoolId);
   },
 
   get pending(): string[] {
