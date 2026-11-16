@@ -13,6 +13,8 @@ import {
   candidatesService,
 } from './candidates.service';
 import {
+  extendBody,
+  reopenBody,
   grantBody,
   optionalReasonBody,
   participantsBody,
@@ -23,6 +25,7 @@ import {
   sessionsService,
 } from './sessions.service';
 import { renderPinSheet } from './sessions.pdf';
+import { exportQuery, gradeBody, publishBody, resultsService } from '../results/results.service';
 import {
   previewBody,
   templateBody,
@@ -223,6 +226,28 @@ sessionsRouter.post(
   }),
 );
 sessionsRouter.post(
+  '/sessions/:id/participants/:key/allow-reentry',
+  validate({ params: keyParams }),
+  asyncHandler(async (req, res) => {
+    ok(
+      res,
+      await sessionsService.allowReentry(
+        getCtx(req),
+        sid(req),
+        String(req.params.id),
+        String(req.params.key),
+      ),
+    );
+  }),
+);
+sessionsRouter.get(
+  '/sessions/:id/attempts',
+  validate({ params: idParams }),
+  asyncHandler(async (req, res) => {
+    ok(res, await sessionsService.attempts(getCtx(req), sid(req), String(req.params.id)));
+  }),
+);
+sessionsRouter.post(
   '/sessions/:id/participants/:key/grant',
   validate({ params: keyParams, body: grantBody }),
   asyncHandler(async (req, res) => {
@@ -262,6 +287,86 @@ sessionsRouter.post(
     ok(res, await sessionsService.reject(getCtx(req), sid(req), String(req.params.id), req.body));
   }),
 );
+sessionsRouter.post(
+  '/sessions/:id/reopen',
+  validate({ params: idParams, body: reopenBody }),
+  asyncHandler(async (req, res) => {
+    ok(res, await sessionsService.reopen(getCtx(req), sid(req), String(req.params.id), req.body));
+  }),
+);
+sessionsRouter.post(
+  '/sessions/:id/extend',
+  validate({ params: idParams, body: extendBody }),
+  asyncHandler(async (req, res) => {
+    ok(res, await sessionsService.extend(getCtx(req), sid(req), String(req.params.id), req.body));
+  }),
+);
+
+// Natijalar (E6): imtihon ichida
+sessionsRouter.get(
+  '/sessions/:id/results',
+  validate({ params: idParams }),
+  asyncHandler(async (req, res) => {
+    ok(res, await resultsService.list(getCtx(req), sid(req), String(req.params.id)));
+  }),
+);
+sessionsRouter.get(
+  '/sessions/:id/results/analysis',
+  validate({ params: idParams }),
+  asyncHandler(async (req, res) => {
+    ok(res, await resultsService.analysis(getCtx(req), sid(req), String(req.params.id)));
+  }),
+);
+sessionsRouter.get(
+  '/sessions/:id/results/export',
+  validate({ params: idParams, query: exportQuery }),
+  asyncHandler(async (req, res) => {
+    const q = req.query as unknown as { format: 'xlsx' | 'pdf' };
+    const r = await resultsService.export(getCtx(req), sid(req), String(req.params.id), q.format);
+    res.set(r.headers);
+    res.send(r.buf);
+  }),
+);
+sessionsRouter.post(
+  '/sessions/:id/results/publish',
+  validate({ params: idParams, body: publishBody }),
+  asyncHandler(async (req, res) => {
+    ok(res, await resultsService.publish(getCtx(req), sid(req), String(req.params.id), req.body));
+  }),
+);
+sessionsRouter.get(
+  '/sessions/:id/results/:key',
+  validate({ params: keyParams }),
+  asyncHandler(async (req, res) => {
+    ok(
+      res,
+      await resultsService.detail(
+        getCtx(req),
+        sid(req),
+        String(req.params.id),
+        String(req.params.key),
+      ),
+    );
+  }),
+);
+sessionsRouter.put(
+  '/sessions/:id/results/:key/essays/:qid',
+  validate({ params: keyParams.extend({ qid: z.string().min(1).max(40) }), body: gradeBody }),
+  asyncHandler(async (req, res) => {
+    ok(
+      res,
+      await resultsService.gradeEssay(
+        getCtx(req),
+        sid(req),
+        String(req.params.id),
+        String(req.params.key),
+        String(req.params.qid),
+        req.body,
+      ),
+    );
+  }),
+);
+
 sessionsRouter.post(
   '/sessions/:id/cancel',
   validate({ params: idParams, body: optionalReasonBody }),

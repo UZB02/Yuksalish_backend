@@ -8,6 +8,7 @@ import { BrandingAsset } from '../../models/BrandingAsset';
 import { ClassModel } from '../../models/Class';
 import { ClassSubject } from '../../models/ClassSubject';
 import { ExamAsset } from '../../models/ExamAsset';
+import { ExamAttempt } from '../../models/ExamAttempt';
 import { ExamCandidate } from '../../models/ExamCandidate';
 import { ExamImportSession } from '../../models/ExamImportSession';
 import { ExamSession } from '../../models/ExamSession';
@@ -91,6 +92,7 @@ export const SCHOOL_PURGE_STEPS: PurgeStep[] = [
   bySchool('examTopics', 'Imtihon mavzulari', ExamTopic),
   bySchool('examAssets', 'Imtihon rasmlari', ExamAsset),
   bySchool('examImportSessions', 'Imtihon import sessiyalari', ExamImportSession),
+  bySchool('examAttempts', 'Imtihon urinishlari (javoblar, hodisalar)', ExamAttempt),
   bySchool('examSessions', 'Imtihon sessiyalari (PIN, savollar nusxasi)', ExamSession),
   bySchool('examTemplates', 'Imtihon shablonlari', ExamTemplate),
   bySchool('examCandidates', 'Imtihon nomzodlari', ExamCandidate),
@@ -153,6 +155,8 @@ export const SWEEP_KEYS = [
 export const PURGE_EXEMPT: Record<string, string> = {
   School: "O'chirish ketma-ketligining eng OXIRGI qadami (schools.delete.ts)",
   TelegramBotConfig: "Platforma darajasida yagona hujjat (maktabga bog'lanmagan)",
+  ExamJoinGuard:
+    "Imtihonga kirishdagi noto'g'ri urinishlar hisoblagichi: maktabga bog'lanmagan (kod/IP kaliti), TTL bilan o'zi o'chadi",
 };
 
 /** Filtr aniq shu maktabga (yoki aniq foydalanuvchi id'lariga) bog'langanini tekshiradi. Aks holda XATO */

@@ -5,6 +5,8 @@ import { runMorningDigests } from '../modules/telegram/telegram.digest';
 import { runDailyReports, runWeeklyReports } from '../modules/telegram/telegram.report';
 import { runRatingResults } from '../modules/ratings/rating.results';
 import { recalculateAll } from '../modules/ratings/ratings.service';
+import { runExamSweeper } from '../modules/exam-client/exam-client.sweeper';
+import { runExamReminders } from '../modules/telegram/telegram.exams';
 import { runExamCandidatePurge } from '../modules/exams/sessions/candidates.service';
 import { runTimetablePurge } from '../modules/timetable/timetable.purge';
 
@@ -38,6 +40,9 @@ export function startJobs(): void {
     '* * * * *',
     () => {
       runMorningDigests().catch((err) => logger.error({ err }, 'Ertalabki jadval xatosi'));
+      // Imtihon: muddati o'tgan urinishlarni avtomatik topshirish (bitta yengil updateMany)
+      runExamSweeper().catch((err) => logger.error({ err }, 'Imtihon sweeper xatosi'));
+      runExamReminders().catch((err) => logger.error({ err }, 'Imtihon eslatmasi xatosi'));
     },
     { timezone: 'Asia/Tashkent' },
   );

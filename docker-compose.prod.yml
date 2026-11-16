@@ -90,6 +90,8 @@ services:
     environment:
       PUBLIC_DOMAIN: ${PUBLIC_DOMAIN}
       ADMIN_DOMAIN: ${ADMIN_DOMAIN}
+      # Onlayn imtihon domeni (masalan test.yuksalish-edu.uz). Bo'sh bo'lsa Caddy ichki (ochilmagan) manzilga qaraydi
+      EXAM_DOMAIN: ${EXAM_DOMAIN:-http://exam.invalid:8081}
       ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL .env da berilishi kerak (Let's Encrypt uchun)}
     volumes:
       - caddy-data:/data # sertifikatlar shu yerda saqlanadi — o'chirmang

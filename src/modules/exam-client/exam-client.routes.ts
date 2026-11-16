@@ -1,19 +1,119 @@
-import { Router } from 'express';
-import { AppError } from '../../core/errors';
+import { Router, type RequestHandler, type Response } from 'express';
+import { z } from 'zod';
+import { asyncHandler } from '../../core/asyncHandler';
+import { ok } from '../../core/response';
+import { examClientTokenOf } from '../../middlewares/rateLimiters';
+import { validate } from '../../middlewares/validate';
+import type { ExamAttemptDoc } from '../../models/ExamAttempt';
+import {
+  answersBody,
+  authenticateAttempt,
+  eventBody,
+  examClientService,
+  joinBody,
+} from './exam-client.service';
 
 /**
  * Imtihon topshiruvchi (o'quvchi) API'si: /api/v1/exam-client/*.
  *
- * E0 holati: faqat joy band qilingan (placeholder). Hech narsa ochilmaydi, har qanday so'rov 404.
- * Haqiqiy endpointlar (kirish, boshlash, autosave, topshirish) E4 bosqichida qo'shiladi.
- *
- * Muhim (E4 uchun):
- *  - app.ts da apiLimiter DAN OLDIN ulangan, o'z limiterlari bilan (urinish tokeni xeshi bo'yicha;
- *    token yo'q so'rov uchun IP + sessiya kodi, saxiy chegara) - maktab NAT'i uchun.
- *  - Admin CORS (credentials) ostiga tushmaydi: SPA va API bir originda (Caddy) bo'ladi.
- *  - pino-http bu yo'l uchun faqat xatolarni loglaydi (autosave hajmi).
- *  - Autentifikatsiya: opaque urinish tokeni (bazada sha256), admin JWT emas.
+ *  - app.ts da apiLimiter DAN OLDIN ulangan, o'z limiterlari bilan (token xeshi bo'yicha; kirish uchun IP + kod).
+ *  - Autentifikatsiya: opaque urinish tokeni, faqat `Authorization: Bearer` (admin JWT emas, cookie emas).
+ *    schoolId/sessionId klientdan HECH QACHON olinmaydi: faqat token orqali topilgan urinish hujjatidan.
+ *  - Barcha javoblar Cache-Control: no-store. Javob kaliti hech qachon chiqmaydi (oq ro'yxatli DTO),
+ *    faqat sessiyaning natija rejimi ruxsat bergan natija ko'rinishida.
+ *  - pino-http bu yo'l uchun faqat xatolarni loglaydi.
  */
 export const examClientRouter = Router();
 
-examClientRouter.use((_req, _res, next) => next(AppError.notFound('Topilmadi')));
+examClientRouter.use((_req, res, next) => {
+  res.set({ 'Cache-Control': 'no-store', Pragma: 'no-cache', 'X-Content-Type-Options': 'nosniff' });
+  next();
+});
+
+const requireAttempt: RequestHandler = asyncHandler(async (req, res, next) => {
+  res.locals.attempt = await authenticateAttempt(examClientTokenOf(req));
+  next();
+});
+const attemptOf = (res: Response) => res.locals.attempt as ExamAttemptDoc;
+
+examClientRouter.post(
+  '/join',
+  validate({ body: joinBody }),
+  asyncHandler(async (req, res) => {
+    ok(res, await examClientService.join(req.body, req.ip ?? ''));
+  }),
+);
+
+examClientRouter.post(
+  '/start',
+  requireAttempt,
+  asyncHandler(async (_req, res) => {
+    ok(res, await examClientService.start(attemptOf(res)));
+  }),
+);
+
+examClientRouter.get(
+  '/state',
+  requireAttempt,
+  asyncHandler(async (_req, res) => {
+    ok(res, await examClientService.state(attemptOf(res)));
+  }),
+);
+
+examClientRouter.put(
+  '/answers',
+  requireAttempt,
+  validate({ body: answersBody }),
+  asyncHandler(async (req, res) => {
+    ok(res, await examClientService.saveAnswers(attemptOf(res), req.body));
+  }),
+);
+
+examClientRouter.post(
+  '/events',
+  requireAttempt,
+  validate({ body: eventBody }),
+  asyncHandler(async (req, res) => {
+    ok(res, await examClientService.recordEvent(attemptOf(res), req.body));
+  }),
+);
+
+examClientRouter.post(
+  '/heartbeat',
+  requireAttempt,
+  asyncHandler(async (_req, res) => {
+    ok(res, await examClientService.heartbeat(attemptOf(res)));
+  }),
+);
+
+examClientRouter.post(
+  '/submit',
+  requireAttempt,
+  asyncHandler(async (_req, res) => {
+    ok(res, await examClientService.submit(attemptOf(res)));
+  }),
+);
+
+examClientRouter.get(
+  '/result',
+  requireAttempt,
+  asyncHandler(async (_req, res) => {
+    ok(res, await examClientService.result(attemptOf(res)));
+  }),
+);
+
+examClientRouter.get(
+  '/assets/:id',
+  requireAttempt,
+  validate({ params: z.object({ id: z.string().regex(/^[0-9a-f]{24}$/) }) }),
+  asyncHandler(async (req, res) => {
+    const a = await examClientService.asset(attemptOf(res), String(req.params.id));
+    res.set({ 'Content-Type': a.contentType, 'Content-Length': String(a.data.length) });
+    res.status(200).end(a.data);
+  }),
+);
+
+// Qolgan hamma yo'l: 404
+examClientRouter.use((_req, res) => {
+  res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Topilmadi' } });
+});

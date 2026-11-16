@@ -55,6 +55,8 @@ describe('Telegram sozlamalari', () => {
         dailyReport: true,
         weeklyReport: true,
         ratingResults: true,
+        examResults: true,
+        examReminders: true,
       },
       dailyReportAbsentNames: true,
     });
@@ -78,6 +80,8 @@ describe('Telegram sozlamalari', () => {
       dailyReport: false,
       weeklyReport: true,
       ratingResults: true,
+      examResults: true,
+      examReminders: true,
     });
     const s = await getTelegramSettings(school.id);
     expect(s.workdays).toEqual([1, 3, 5]);

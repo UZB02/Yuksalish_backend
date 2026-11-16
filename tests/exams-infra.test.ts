@@ -124,12 +124,11 @@ describe('E0: exam-client limiter skeleti', () => {
     );
   });
 
-  it("haqiqiy app: /api/v1/exam-client/* hozircha 404 (hech narsa ochilmagan), CORS sarlavhasi yo'q", async () => {
+  it("haqiqiy app: /api/v1/exam-client/* noma'lum yo'llar 404, kirish validatsiyasi 400; CORS sarlavhasi yo'q", async () => {
     const origin = 'http://localhost:5173';
     for (const [method, path] of [
       ['get', '/api/v1/exam-client'],
       ['get', '/api/v1/exam-client/join'],
-      ['post', '/api/v1/exam-client/join'],
       ['post', '/api/v1/exam-client/attempts/abc/answers'],
     ] as const) {
       const res = await request(app)[method](path).set('Origin', origin).send({ code: '123456' });
@@ -137,6 +136,14 @@ describe('E0: exam-client limiter skeleti', () => {
       expect(res.body).toMatchObject({ success: false, error: { code: 'NOT_FOUND' } });
       expect(res.headers['access-control-allow-origin']).toBeUndefined();
     }
+    // E4: /join haqiqiy endpoint (noto'g'ri tana: 400), lekin CORS sarlavhasi baribir yo'q, javob no-store
+    const join = await request(app)
+      .post('/api/v1/exam-client/join')
+      .set('Origin', origin)
+      .send({ code: '123456' });
+    expect(join.status).toBe(400);
+    expect(join.headers['access-control-allow-origin']).toBeUndefined();
+    expect(join.headers['cache-control']).toBe('no-store');
     // Taqqoslash: oddiy admin API CORS beradi
     const health = await request(app).get('/api/v1/health').set('Origin', origin);
     expect(health.headers['access-control-allow-origin']).toBe(origin);

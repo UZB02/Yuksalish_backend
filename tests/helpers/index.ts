@@ -31,7 +31,9 @@ import { ExamAsset } from '../../src/models/ExamAsset';
 import { Photo } from '../../src/models/Photo';
 import { ExamImportSession } from '../../src/models/ExamImportSession';
 import { ExamTopic } from '../../src/models/ExamTopic';
+import { ExamAttempt } from '../../src/models/ExamAttempt';
 import { ExamCandidate } from '../../src/models/ExamCandidate';
+import { ExamJoinGuard } from '../../src/models/ExamJoinGuard';
 import { ExamSession } from '../../src/models/ExamSession';
 import { ExamTemplate } from '../../src/models/ExamTemplate';
 import { Question } from '../../src/models/Question';
@@ -78,6 +80,8 @@ const ALL_MODELS: { init(): Promise<unknown>; deleteMany(f: object): PromiseLike
   ExamTemplate,
   ExamSession,
   ExamCandidate,
+  ExamAttempt,
+  ExamJoinGuard,
   ExamAsset,
   ExamImportSession,
   ExamTopic,

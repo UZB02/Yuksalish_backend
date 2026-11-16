@@ -10,6 +10,10 @@ export interface TelegramNotifyToggles {
   dailyReport: boolean;
   weeklyReport: boolean;
   ratingResults: boolean;
+  /** Imtihon yopilganda xulosa va esse eslatmasi */
+  examResults: boolean;
+  /** Imtihondan 30 daqiqa oldin nazoratchilarga eslatma */
+  examReminders: boolean;
 }
 
 /** Maktabning Telegram bot sozlamalari (saqlangan ko'rinish; null = avtomatik) */
@@ -35,6 +39,8 @@ export const NOTIFY_DEFAULTS: TelegramNotifyToggles = {
   dailyReport: true,
   weeklyReport: true,
   ratingResults: true,
+  examResults: true,
+  examReminders: true,
 };
 
 export const TELEGRAM_DEFAULTS: TelegramSettings = {
@@ -74,6 +80,8 @@ export const telegramValuesSchema = z.object({
       dailyReport: z.boolean().optional(),
       weeklyReport: z.boolean().optional(),
       ratingResults: z.boolean().optional(),
+      examResults: z.boolean().optional(),
+      examReminders: z.boolean().optional(),
     })
     .optional(),
   dailyReportAbsentNames: z.boolean().optional(),

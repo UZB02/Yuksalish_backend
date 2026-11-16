@@ -14,6 +14,14 @@ Kod uchta alohida repoda (backend, admin, publik); deploy fayllari backend repod
 
 Domenlar: ochiq reyting `PUBLIC_DOMAIN` da, admin panel `ADMIN_DOMAIN` da. Ochiq domen orqali faqat `/api/v1/public/*` ishlaydi, login endpointlari u yerda yopiq.
 
+Onlayn imtihon (o'quvchi ilovasi): `EXAM_DOMAIN` da (masalan `test.yuksalish-edu.uz`). Bu domendan faqat `/api/v1/exam-client/*` API ga o'tadi, boshqa `/api/*` 404; qat'iy CSP Caddy beradi. `EXAM_DOMAIN` berilmasa Caddy baribir ishga tushadi (ichki `http://exam.invalid:8081`, tashqariga ochilmagan). Yoqish tartibi:
+1. DNS: `EXAM_DOMAIN` uchun VPS IP ga A-yozuv; tarqalishini kuting (Let's Encrypt rate limit: DNS tayyor bo'lmasdan `web` ni qayta ishga tushirmang). Imtihondan kamida 1-2 kun oldin sinang.
+2. Serverdagi `.env` ga `EXAM_DOMAIN=test.yuksalish-edu.uz` va (PIN uchun) `EXAM_PIN_SECRET` qo'shing.
+3. `./deploy/update.sh`: `web` image da uchinchi bosqich (`exam`) quriladi, Caddy qayta ishga tushadi (admin/ochiq sayt bir necha soniya uziladi). Imtihon oynasida deploy qilmang.
+4. Tekshiruv: `curl -sI https://EXAM_DOMAIN | head -3` (200, Content-Security-Policy), `curl -s -o /dev/null -w "%{http_code}
+" https://EXAM_DOMAIN/api/v1/auth/me` (404), `curl -s -X POST https://EXAM_DOMAIN/api/v1/exam-client/join -H 'content-type: application/json' -d '{}'` (400 validatsiya xatosi: API javob beryapti).
+
+
 > Compose fayl, image build, sertifikat olish va frontend `vue-tsc` build'i hali haqiqiy Docker da sinab ko'rilmagan (Docker o'rnatilmagan muhitda tayyorlangan). Birinchi ishga tushirishda 7-bo'limdagi tekshiruvlarni bajaring.
 
 ---

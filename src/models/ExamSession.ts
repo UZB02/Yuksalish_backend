@@ -35,6 +35,8 @@ export interface ISessionParticipant {
   /** To'liq davomiylik berilgan (kechikkan o'quvchi uchun): deadline = boshlagan vaqti + davomiylik */
   fullTimeGranted: boolean;
   extraMinutes: number;
+  /** Nazoratchi boshqa qurilmadan qayta kirishga ruxsat berdi (bir martalik) */
+  allowReentry: boolean;
   addedAt: Date;
 }
 
@@ -72,8 +74,15 @@ export interface IExamSession {
   shuffleQuestions: boolean;
   shuffleOptions: boolean;
   resultsMode: ResultsMode;
+  /** O'tish bali (foiz, 1..100); null = belgilanmagan */
+  passPercent: number | null;
+  /** after_publish rejimida natijalar o'quvchilarga e'lon qilinganmi */
+  resultsPublished: boolean;
+  publishedAt: Date | null;
   supervisorIds: Types.ObjectId[];
   pinSalt: string;
+  /** Noto'g'ri kod/PIN urinishlari (DB da: restartda yo'qolmaydi). alertAt: nazoratchiga ogohlantirish */
+  joinFailures: { count: number; lastAt: Date | null; alertAt: Date | null };
   participants: ISessionParticipant[];
   questionPool: IPoolQuestion[];
   poolFrozenAt: Date | null;
@@ -106,6 +115,7 @@ const participantSchema = new Schema<ISessionParticipant>(
     pinEnc: { type: String, required: true },
     fullTimeGranted: { type: Boolean, default: false },
     extraMinutes: { type: Number, default: 0 },
+    allowReentry: { type: Boolean, default: false },
     addedAt: { type: Date, default: () => new Date() },
   },
   { _id: false },
@@ -130,8 +140,15 @@ const schema = new Schema<IExamSession>(
     shuffleQuestions: { type: Boolean, default: true },
     shuffleOptions: { type: Boolean, default: true },
     resultsMode: { type: String, enum: RESULTS_MODES, default: 'score' },
+    passPercent: { type: Number, default: null },
+    resultsPublished: { type: Boolean, default: false },
+    publishedAt: { type: Date, default: null },
     supervisorIds: { type: [Schema.Types.ObjectId], default: [] },
     pinSalt: { type: String, required: true },
+    joinFailures: {
+      type: Schema.Types.Mixed,
+      default: () => ({ count: 0, lastAt: null, alertAt: null }),
+    },
     participants: { type: [participantSchema], default: [] },
     questionPool: { type: [Schema.Types.Mixed] as never, default: [], select: false },
     poolFrozenAt: { type: Date, default: null },
@@ -154,6 +171,11 @@ const schema = new Schema<IExamSession>(
 schema.index(
   { schoolId: 1, code: 1 },
   { unique: true, partialFilterExpression: { codeActive: true }, name: 'unique_active_exam_code' },
+);
+// Kirishda kod bo'yicha qidirish (maktab noma'lum: PIN aniqlaydi). Mavjud indeksga tegilmaydi.
+schema.index(
+  { code: 1 },
+  { partialFilterExpression: { codeActive: true }, name: 'active_exam_code_lookup' },
 );
 schema.index({ schoolId: 1, isDeleted: 1, status: 1, scheduledStart: -1 });
 schema.index({ schoolId: 1, createdBy: 1 });

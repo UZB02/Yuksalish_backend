@@ -43,6 +43,38 @@
 	}
 }
 
+# ---- Onlayn imtihon (o'quvchilar) ----
+# EXAM_DOMAIN berilmasa (.env da yo'q) Caddy baribir ishga tushadi: standart qiymat ichki "http://exam.invalid:8081"
+# (TLS/ACME so'ralmaydi, tashqariga ochilmagan). Haqiqiy domen: test.yuksalish-edu.uz (DNS A yozuvi shart).
+{$EXAM_DOMAIN:http://exam.invalid:8081} {
+	import common
+
+	# Bu domendan faqat imtihon API'si ochiq: admin login/refresh va boshqa endpointlar yo'q (404)
+	handle /api/v1/exam-client/* {
+		reverse_proxy api:4000
+	}
+	handle /api/* {
+		respond "Not found" 404
+	}
+
+	handle {
+		root * /srv/exam
+
+		# Qat'iy CSP: faqat o'z originidan; KaTeX shriftlari va stillari bundle ichida
+		header Content-Security-Policy "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+		header Permissions-Policy "camera=(), microphone=(), geolocation=()"
+
+		@assets path /assets/*
+		header @assets Cache-Control "public, max-age=31536000, immutable"
+		# index.html va SPA fallback doim qayta tekshiriladi (service worker yo'q)
+		@mutable not path /assets/*
+		header @mutable Cache-Control "no-cache"
+
+		try_files {path} /index.html
+		file_server
+	}
+}
+
 # ---- Admin panel ----
 {$ADMIN_DOMAIN} {
 	import common

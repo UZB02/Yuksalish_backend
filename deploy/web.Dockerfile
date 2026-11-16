@@ -1,4 +1,4 @@
-# Ikkala frontend (admin + ochiq reyting) ni yig'ib, Caddy ichida statik beradi.
+# Uchala frontend (admin + ochiq reyting + onlayn imtihon) ni yig'ib, Caddy ichida statik beradi.
 # Build konteksti: uchala repo ning ota papkasi (serverda /opt/yuksalish) —
 # docker-compose.prod.yml da `context: ..` va `dockerfile: Yuksalish_backend/deploy/web.Dockerfile`.
 # Ignore qoidalari: web.Dockerfile.dockerignore (BuildKit talab qilinadi).
@@ -30,7 +30,18 @@ ENV VITE_API_BASE_URL=/api/v1 \
 # admin bosqichidagi kabi: serverda faqat vite build (tip tekshiruvi lokalda)
 RUN npx vite build
 
+# Onlayn imtihon ilovasi (o'quvchi tomoni): alohida SPA, admin kodi bilan umumiy emas, PWA/service worker yo'q.
+# Boshqa bosqichlar kabi: serverda faqat vite build (tip tekshiruvi lokalda: `npm run build`), xotira chegarasi bilan.
+FROM node:22-alpine AS exam
+WORKDIR /app
+COPY Yuksalish_Front/exam/package.json Yuksalish_Front/exam/package-lock.json ./
+RUN npm ci
+COPY Yuksalish_Front/exam/ ./
+ENV NODE_OPTIONS=--max-old-space-size=1536
+RUN npx vite build
+
 FROM caddy:2-alpine
 COPY Yuksalish_backend/deploy/Caddyfile /etc/caddy/Caddyfile
 COPY --from=admin /app/dist /srv/admin
 COPY --from=publik /app/dist /srv/public
+COPY --from=exam /app/dist /srv/exam

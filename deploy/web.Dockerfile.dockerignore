@@ -2,6 +2,7 @@
 # Build konteksti: /opt/yuksalish (uchala repo ning ota papkasi), shuning uchun yo'llar shu papkaga nisbatan.
 # Keraksiz va maxfiy fayllar build kontekstiga tushmasin.
 **/node_modules
+# Imtihon ilovasi (Yuksalish_Front/exam): node_modules/dist ham kontekstga tushmaydi (yuqoridagi umumiy qoidalar)
 **/dist
 **/coverage
 **/.git

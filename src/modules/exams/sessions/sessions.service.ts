@@ -8,6 +8,7 @@ import { objectIdSchema } from '../../../core/validators';
 import { AcademicYear } from '../../../models/AcademicYear';
 import { ClassModel } from '../../../models/Class';
 import { ClassSubject } from '../../../models/ClassSubject';
+import { ExamAttempt } from '../../../models/ExamAttempt';
 import { ExamCandidate } from '../../../models/ExamCandidate';
 import {
   ExamSession,
@@ -27,6 +28,7 @@ import { Student } from '../../../models/Student';
 import { Subject } from '../../../models/Subject';
 import { User } from '../../../models/User';
 import { isDuplicateKeyError, isId, uniq } from '../../../utils/helpers';
+import { notifyExamClosed } from '../../telegram/telegram.exams';
 import { cleanText } from '../../../utils/text';
 import { auditService } from '../../audit/audit.service';
 import { resolveExamScope, type ExamScope } from '../exams.scope';
@@ -49,11 +51,12 @@ import {
   pinSecretConfigured,
   uniquePin,
 } from './pin';
-import { commonEnd } from './timing';
+import { commonEnd, participantDeadline } from './timing';
 
 type Actor = Ctx['actor'];
 
 export const MAX_PARTICIPANTS = 500;
+const MAX_DURATION_MIN = 1440;
 
 // ---------- Sxemalar ----------
 // eslint-disable-next-line no-control-regex
@@ -86,6 +89,7 @@ const sessionFields = {
   shuffleQuestions: z.boolean().optional(),
   shuffleOptions: z.boolean().optional(),
   resultsMode: z.enum(RESULTS_MODES).default('score'),
+  passPercent: z.number().int().min(1).max(100).nullish(),
   supervisorIds: z.array(objectIdSchema).max(30).default([]),
   periodId: objectIdSchema.nullish(),
 };
@@ -107,6 +111,13 @@ export const participantsBody = z
     candidateIds: z.array(objectIdSchema).max(MAX_PARTICIPANTS).default([]),
   })
   .strict();
+export const reopenBody = z.object({ reason: text('Sabab', 500), newEnd: startSchema }).strict();
+export const extendBody = z
+  .object({
+    minutes: z.number().int().min(1, 'Kamida 1 daqiqa').max(180, '180 daqiqadan oshmasligi kerak'),
+    reason: text('Sabab', 500, 0).optional(),
+  })
+  .strict();
 export const grantBody = z
   .object({
     fullTime: z.boolean().optional(),
@@ -126,7 +137,7 @@ export type SessionListQuery = z.output<typeof sessionListQuery>;
 const notFound = () => AppError.notFound('Imtihon topilmadi');
 const oid = (s: string) => new Types.ObjectId(s);
 
-const audit = (
+export const audit = (
   ctx: Ctx,
   schoolId: string,
   action: string,
@@ -158,9 +169,9 @@ const summary = (s: ExamSessionDoc) => ({
   classes: s.classIds.length,
 });
 
-const isSupervisor = (s: ExamSessionDoc, actor: Actor) =>
+export const isSupervisor = (s: ExamSessionDoc, actor: Actor) =>
   s.supervisorIds.some((x) => String(x) === actor.id);
-const isCreator = (s: ExamSessionDoc, actor: Actor) => String(s.createdBy) === actor.id;
+export const isCreator = (s: ExamSessionDoc, actor: Actor) => String(s.createdBy) === actor.id;
 
 function assertPinSecret() {
   if (!pinSecretConfigured()) {
@@ -186,7 +197,7 @@ async function teacherPairs(schoolId: string, teacherId: string, yearId: Types.O
   return new Set(rows.map((r) => `${r.classId}:${r.subjectId}`));
 }
 
-async function findSession(ctx: Ctx, schoolId: string, scope: ExamScope, id: string) {
+export async function findSession(ctx: Ctx, schoolId: string, scope: ExamScope, id: string) {
   const s = isId(id)
     ? await ExamSession.findOne({ _id: id, schoolId, isDeleted: { $ne: true } })
     : null;
@@ -280,6 +291,17 @@ function flags(s: ExamSessionDoc, scope: ExamScope, actor: Actor, isSuper: boole
     canCancel:
       (scope.all || (isCreator(s, actor) && s.status !== 'open')) &&
       ['draft', 'pending_approval', 'scheduled', 'open'].includes(s.status),
+    canReopen:
+      (scope.all || isSupervisor(s, actor) || isCreator(s, actor)) && s.status === 'closed',
+    canExtend: (scope.all || isSupervisor(s, actor) || isCreator(s, actor)) && s.status === 'open',
+    canViewResults:
+      ['open', 'closed'].includes(s.status) &&
+      (isCreator(s, actor) ||
+        isSupervisor(s, actor) ||
+        isSuper ||
+        (scope.all &&
+          (actor.permissions.includes('exams.results') ||
+            actor.permissions.includes('exams.manage')))),
     canPrint: manager && ['scheduled', 'open', 'closed'].includes(s.status),
     canDelete: manager && ['draft', 'cancelled'].includes(s.status),
   };
@@ -302,6 +324,10 @@ async function toDto(ctx: Ctx, scope: ExamScope, docs: ExamSessionDoc[], full: b
     endsAt: commonEnd(s),
     code: s.code,
     resultsMode: s.resultsMode,
+    passPercent: s.passPercent ?? null,
+    resultsPublished: !!s.resultsPublished,
+    /** Umumiy vaqt tugagan, lekin sessiya hali yopilmagan (davom etayotgan urinishlar bor) */
+    timeUp: s.status === 'open' && Date.now() > commonEnd(s).getTime(),
     shuffleQuestions: s.shuffleQuestions,
     shuffleOptions: s.shuffleOptions,
     participantsCount: s.participants.length,
@@ -413,12 +439,34 @@ async function schedule(schoolId: string, s: ExamSessionDoc, ctx: Ctx, via: 'sub
   throw AppError.unavailable('Imtihon kodini tanlab bo‘lmadi, qayta urinib ko‘ring');
 }
 
+/**
+ * Davom etayotgan urinishlar deadline i ni sessiya hozirgi davomiyligidan qayta hisoblaydi (hamma uchun +N / yangi tugash).
+ * participantDeadline: to'liq vaqtli = boshlagan vaqti + davomiylik (+extra); aks holda umumiy tugash (+extra).
+ */
+export async function recomputeDeadlines(s: ExamSessionDoc): Promise<void> {
+  const attempts = await ExamAttempt.find({ sessionId: s._id, status: 'in_progress' }).select(
+    'participantKey startedAt',
+  );
+  const ops = [];
+  for (const a of attempts) {
+    const p = s.participants.find((x) => x.key === a.participantKey);
+    if (!p || !a.startedAt) continue;
+    ops.push({
+      updateOne: {
+        filter: { _id: a._id, status: 'in_progress' },
+        update: { $set: { deadline: participantDeadline(s, p, a.startedAt) } },
+      },
+    });
+  }
+  if (ops.length) await ExamAttempt.bulkWrite(ops as never);
+}
+
 // ---------- Ishtirokchilar ----------
 async function makeParticipants(
   s: ExamSessionDoc,
   specs: Omit<
     ISessionParticipant,
-    'key' | 'pinHash' | 'pinEnc' | 'fullTimeGranted' | 'extraMinutes' | 'addedAt'
+    'key' | 'pinHash' | 'pinEnc' | 'fullTimeGranted' | 'extraMinutes' | 'allowReentry' | 'addedAt'
   >[],
 ) {
   const taken = new Set(s.participants.map((p) => p.pinHash));
@@ -432,6 +480,7 @@ async function makeParticipants(
       pinEnc: encryptPin(pin, s.id as string),
       fullTimeGranted: false,
       extraMinutes: 0,
+      allowReentry: false,
       addedAt: new Date(),
     });
   }
@@ -667,6 +716,7 @@ export const sessionsService = {
       shuffleQuestions: shuffleQ ?? true,
       shuffleOptions: shuffleO ?? true,
       resultsMode: body.resultsMode,
+      passPercent: body.passPercent ?? null,
       supervisorIds: supervisors,
       pinSalt: newPinSalt(),
       createdBy: ctx.actor.id,
@@ -724,6 +774,7 @@ export const sessionsService = {
     if (body.shuffleQuestions !== undefined) s.shuffleQuestions = body.shuffleQuestions;
     if (body.shuffleOptions !== undefined) s.shuffleOptions = body.shuffleOptions;
     if (body.resultsMode !== undefined) s.resultsMode = body.resultsMode;
+    if (body.passPercent !== undefined) s.passPercent = body.passPercent ?? null;
     if (body.supervisorIds !== undefined) {
       s.supervisorIds = (
         await validateSupervisors(schoolId, [
@@ -951,6 +1002,68 @@ export const sessionsService = {
    * Individual vaqt: faqat superadmin yoki shu imtihon nazoratchisi. `fullTime`: deadline = o'quvchi
    * boshlagan vaqt + davomiylik (kechikkan o'quvchiga to'liq vaqt); `extraMinutes`: qo'shimcha daqiqalar.
    */
+  /**
+   * Boshqa qurilmadan qayta kirishga bir martalik ruxsat (qurilma almashganda). Nazoratchi, yaratuvchi yoki ma'muriyat.
+   */
+  async allowReentry(ctx: Ctx, schoolId: string, id: string, key: string) {
+    const scope = await resolveExamScope(ctx.actor, schoolId);
+    const s = await findSession(ctx, schoolId, scope, id);
+    if (!scope.all && !isSupervisor(s, ctx.actor) && !isCreator(s, ctx.actor))
+      throw AppError.forbidden();
+    if (!['scheduled', 'open'].includes(s.status)) {
+      throw AppError.conflict('Faqat rejalashtirilgan yoki ochiq imtihonda ruxsat berish mumkin');
+    }
+    const p = s.participants.find((x) => x.key === key);
+    if (!p) throw AppError.notFound('Ishtirokchi topilmadi');
+    p.allowReentry = true;
+    await s.save();
+    await audit(ctx, schoolId, 'exam.session.allow_reentry', s.id, null, { kind: p.kind });
+    return { allowReentry: true };
+  },
+
+  /** Ishtirokchilar urinishlari holati (nazoratchi ekrani uchun minimal ma'lumot; javoblar va kalit YO'Q) */
+  async attempts(ctx: Ctx, schoolId: string, id: string) {
+    const scope = await resolveExamScope(ctx.actor, schoolId);
+    const s = await findSession(ctx, schoolId, scope, id);
+    const rows = await ExamAttempt.find({ sessionId: s._id, schoolId })
+      .select(
+        'participantKey status answeredCount order.qid startedAt submittedAt deadline lastSeenAt counters',
+      )
+      .lean();
+    const byKey = new Map(rows.map((r) => [r.participantKey, r]));
+    const items = s.participants.map((p) => {
+      const a = byKey.get(p.key);
+      const c = (a?.counters ?? {}) as Record<string, number>;
+      const warnings = (c.blur ?? 0) + (c.fullscreenExit ?? 0) + (c.visibilityHidden ?? 0);
+      return {
+        key: p.key,
+        status: a?.status ?? 'not_started',
+        answered: a?.answeredCount ?? 0,
+        total: a?.order?.length ?? 0,
+        startedAt: a?.startedAt ?? null,
+        submittedAt: a?.submittedAt ?? null,
+        deadline: a?.deadline ?? null,
+        lastSeenAt: a?.lastSeenAt ?? null,
+        warnings,
+        reconnects: c.reconnect ?? 0,
+        allowReentry: p.allowReentry === true,
+      };
+    });
+    const jf = (s.joinFailures ?? { count: 0, lastAt: null, alertAt: null }) as {
+      count: number;
+      lastAt: Date | null;
+      alertAt: Date | null;
+    };
+    return {
+      items,
+      joinAlert: {
+        failures: jf.count ?? 0,
+        lastAt: jf.lastAt ?? null,
+        alertAt: jf.alertAt ?? null,
+      },
+    };
+  },
+
   async grant(
     ctx: Ctx,
     schoolId: string,
@@ -1075,6 +1188,118 @@ export const sessionsService = {
     return (await toDto(ctx, scope, [s], true))[0]!;
   },
 
+  /**
+   * Yopilgan imtihonni qayta ochish: majburiy sabab va YANGI umumiy tugash vaqti (kelajakda). Topshirganlar qayta
+   * topshira olmaydi; boshlanmagan va jarayondagilar yangi tugashgacha kira oladi. Eski kod boshqa faol imtihonda
+   * band bo'lsa yangi kod beriladi. Bekor qilingan imtihon ochilmaydi.
+   */
+  async reopen(ctx: Ctx, schoolId: string, id: string, body: z.output<typeof reopenBody>) {
+    const scope = await resolveExamScope(ctx.actor, schoolId);
+    const s = await findSession(ctx, schoolId, scope, id);
+    if (!scope.all && !isSupervisor(s, ctx.actor) && !isCreator(s, ctx.actor))
+      throw AppError.forbidden();
+    if (s.status === 'cancelled')
+      throw AppError.conflict('Bekor qilingan imtihonni qayta ochib bo‘lmaydi');
+    if (s.status !== 'closed')
+      throw AppError.conflict('Faqat yopilgan imtihonni qayta ochish mumkin');
+    const now = new Date();
+    if (body.newEnd.getTime() <= now.getTime()) {
+      throw AppError.validation('Yangi tugash vaqti kelajakda bo‘lishi kerak', [
+        { path: 'newEnd', message: 'Kelajakdagi vaqtni tanlang' },
+      ]);
+    }
+    const durationMin = Math.ceil((body.newEnd.getTime() - s.scheduledStart.getTime()) / 60_000);
+    if (durationMin < 5 || durationMin > MAX_DURATION_MIN) {
+      throw AppError.validation('Davomiylik noto‘g‘ri', [
+        {
+          path: 'newEnd',
+          message: `Boshlanishdan 5 daqiqa..${MAX_DURATION_MIN / 60} soat oralig'ida bo'lishi kerak`,
+        },
+      ]);
+    }
+    const oldCode = s.code;
+    let code = oldCode as string;
+    let opened = false;
+    for (let i = 0; i < 25 && !opened; i++) {
+      try {
+        const r = await ExamSession.updateOne(
+          { _id: s._id, status: 'closed' },
+          {
+            $set: {
+              status: 'open',
+              openedAt: now,
+              closedAt: null,
+              durationMin,
+              code,
+              codeActive: true,
+            },
+          },
+        );
+        if (!r.matchedCount)
+          throw AppError.conflict('Imtihon holati o‘zgargan, sahifani yangilang');
+        opened = true;
+      } catch (e) {
+        if (!isDuplicateKeyError(e)) throw e;
+        code = String(crypto.randomInt(100000, 1000000)); // eski kod band: yangisi
+      }
+    }
+    if (!opened) throw AppError.unavailable('Imtihon kodini tanlab bo‘lmadi, qayta urinib ko‘ring');
+    const fresh = (await ExamSession.findById(s._id))!;
+    await recomputeDeadlines(fresh);
+    await audit(
+      ctx,
+      schoolId,
+      'exam.session.reopen',
+      s.id,
+      { status: 'closed' },
+      {
+        status: 'open',
+        reason: body.reason,
+        newEnd: body.newEnd,
+        codeChanged: code !== oldCode,
+      },
+    );
+    return { ...(await toDto(ctx, scope, [fresh], true))[0]!, codeChanged: code !== oldCode };
+  },
+
+  /** Ochiq imtihonda hammaga +N daqiqa: umumiy tugash va davom etayotgan urinishlar deadline i (to'liq vaqtlilar ham) */
+  async extend(ctx: Ctx, schoolId: string, id: string, body: z.output<typeof extendBody>) {
+    const scope = await resolveExamScope(ctx.actor, schoolId);
+    const s = await findSession(ctx, schoolId, scope, id);
+    if (!scope.all && !isSupervisor(s, ctx.actor) && !isCreator(s, ctx.actor))
+      throw AppError.forbidden();
+    if (s.status !== 'open') throw AppError.conflict('Faqat ochiq imtihonga vaqt qo‘shiladi');
+    if (s.durationMin + body.minutes > MAX_DURATION_MIN) {
+      throw AppError.validation('Davomiylik juda uzun', [
+        {
+          path: 'minutes',
+          message: `Umumiy davomiylik ${MAX_DURATION_MIN / 60} soatdan oshmasligi kerak`,
+        },
+      ]);
+    }
+    const before = s.durationMin;
+    const r = await ExamSession.findOneAndUpdate(
+      { _id: s._id, status: 'open' },
+      { $inc: { durationMin: body.minutes } },
+      { returnDocument: 'after' },
+    );
+    if (!r) throw AppError.conflict('Imtihon holati o‘zgargan, sahifani yangilang');
+    await recomputeDeadlines(r);
+    await audit(
+      ctx,
+      schoolId,
+      'exam.session.extend',
+      s.id,
+      { durationMin: before },
+      {
+        durationMin: r.durationMin,
+        minutes: body.minutes,
+        reason: body.reason ?? '',
+      },
+    );
+    return (await toDto(ctx, scope, [r], true))[0]!;
+  },
+
   async close(ctx: Ctx, schoolId: string, id: string) {
     const scope = await resolveExamScope(ctx.actor, schoolId);
     const s = await findSession(ctx, schoolId, scope, id);
@@ -1088,6 +1313,7 @@ export const sessionsService = {
     s.closedAt = new Date();
     await s.save();
     await audit(ctx, schoolId, 'exam.session.close', s.id, { status: prev }, { status: 'closed' });
+    void notifyExamClosed(s.id as string);
     return (await toDto(ctx, scope, [s], true))[0]!;
   },
 

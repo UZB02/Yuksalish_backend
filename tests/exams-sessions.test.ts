@@ -725,3 +725,45 @@ describe('Maktab o`chirish reestri', () => {
     expect(await School.countDocuments({ _id: other.id })).toBe(1);
   });
 });
+
+describe('Qoralamani tahrirlash (usta qayta ochilganda)', () => {
+  it('PATCH qoralamada usta maydonlarining hammasini yangilaydi; ishtirokchilar saqlanib qoladi; qoralama emas 409', async () => {
+    await readyStudents(2);
+    const s = await mkSession(admin);
+    await addParts(admin, s.id, { classIds: [c7a.id] });
+    const newStart = new Date(Date.now() + 5 * 3_600_000).toISOString();
+    const r = await api('patch', `/sessions/${s.id}`, admin, {
+      title: 'Yangi nom',
+      type: 'quarter',
+      subjectId: math.id,
+      classIds: [c7a.id],
+      sections: [{ title: 'Yangi bo`lim', items: [{ kind: 'manual', questionIds: [qs[2]!] }] }],
+      scheduledStart: newStart,
+      durationMin: 55,
+      shuffleQuestions: false,
+      shuffleOptions: false,
+      resultsMode: 'after_publish',
+      passPercent: 70,
+      supervisorIds: [],
+    });
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.data).toMatchObject({
+      title: 'Yangi nom',
+      type: 'quarter',
+      durationMin: 55,
+      shuffleQuestions: false,
+      shuffleOptions: false,
+      resultsMode: 'after_publish',
+      passPercent: 70,
+      status: 'draft',
+    });
+    expect(r.body.data.sections[0].title).toBe('Yangi bo`lim');
+    expect(new Date(r.body.data.scheduledStart).toISOString()).toBe(newStart);
+    expect(r.body.data.participants).toHaveLength(2);
+    const again = await api('get', `/sessions/${s.id}`, admin);
+    expect(again.body.data.passPercent).toBe(70);
+    // yuborilgach (qoralama emas) tahrirlab bo'lmaydi
+    await api('post', `/sessions/${s.id}/submit`, admin);
+    expect((await api('patch', `/sessions/${s.id}`, admin, { title: 'Yana' })).status).toBe(409);
+  });
+});
