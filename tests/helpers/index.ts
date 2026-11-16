@@ -31,6 +31,9 @@ import { ExamAsset } from '../../src/models/ExamAsset';
 import { Photo } from '../../src/models/Photo';
 import { ExamImportSession } from '../../src/models/ExamImportSession';
 import { ExamTopic } from '../../src/models/ExamTopic';
+import { ExamCandidate } from '../../src/models/ExamCandidate';
+import { ExamSession } from '../../src/models/ExamSession';
+import { ExamTemplate } from '../../src/models/ExamTemplate';
 import { Question } from '../../src/models/Question';
 import { Student } from '../../src/models/Student';
 import { nameKeyOf } from '../../src/utils/text';
@@ -72,6 +75,9 @@ const ALL_MODELS: { init(): Promise<unknown>; deleteMany(f: object): PromiseLike
   TelegramOutbox,
   PasswordResetCode,
   Question,
+  ExamTemplate,
+  ExamSession,
+  ExamCandidate,
   ExamAsset,
   ExamImportSession,
   ExamTopic,

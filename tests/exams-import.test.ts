@@ -567,6 +567,18 @@ describe('Import: mavzuga, oldindan ko`rish, tuzatish, import qilish', () => {
     expect(JSON.stringify(log)).not.toContain('Birinchi');
   });
 
+  it("status: 'active' bo'lsa to'g'ri qatorlar FAOL; noto'g'ri qiymat 400; standart qoralama", async () => {
+    const r = await upXlsx(admin, await rowsXlsx());
+    expect((await commit(admin, r.body.data.id, { status: 'published' })).status).toBe(400);
+    const c = await commit(admin, r.body.data.id, { status: 'active' });
+    expect(c.status).toBe(200);
+    const qs = await Question.find({ schoolId: school.id }).lean();
+    expect(qs.length).toBe(c.body.data.created);
+    for (const q of qs) expect(q.status).toBe('active');
+    const log = await AuditLog.findOne({ action: 'exam.question.import' }).lean();
+    expect(log?.after).toMatchObject({ status: 'active' });
+  });
+
   it("ma'muriyat boshqa fan mavzusiga ham import qiladi: savollar o'sha mavzu va fanga tushadi", async () => {
     const r = await upXlsx(admin, await rowsXlsx(), 'q.xlsx', { topicId: physTopic });
     expect(r.body.data.topic.subjectName).toBe('Fizika');

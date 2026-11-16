@@ -10,6 +10,8 @@ export interface ExamsSettings {
   enabled: boolean;
   /** O'qituvchilar o'z sinfi va fani uchun nazorat ishi yarata oladi (faqat enabled bo'lsa ahamiyatli) */
   teachersCanCreateQuizzes: boolean;
+  /** Yoqilsa, o'qituvchi yaratgan nazorat ishi ma'muriyat tasdig'ini kutadi (pending_approval) */
+  teacherQuizNeedsApproval: boolean;
   /** Nomzodlarning shaxsiy ma'lumotlarini (telefon, tug'ilgan sana) saqlash muddati, kun */
   candidateRetentionDays: number;
 }
@@ -17,12 +19,14 @@ export interface ExamsSettings {
 export const EXAMS_DEFAULTS: ExamsSettings = {
   enabled: false,
   teachersCanCreateQuizzes: true,
+  teacherQuizNeedsApproval: false,
   candidateRetentionDays: 365,
 };
 
 export const examsValuesSchema = z.object({
   enabled: z.boolean().optional(),
   teachersCanCreateQuizzes: z.boolean().optional(),
+  teacherQuizNeedsApproval: z.boolean().optional(),
   candidateRetentionDays: z
     .number()
     .int("Butun son bo'lishi kerak")

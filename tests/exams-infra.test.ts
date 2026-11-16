@@ -182,6 +182,7 @@ describe('E0: exams sozlamalari va ruxsatlar', () => {
     expect(EXAMS_DEFAULTS).toEqual({
       enabled: false,
       teachersCanCreateQuizzes: true,
+      teacherQuizNeedsApproval: false,
       candidateRetentionDays: 365,
     });
     const school = await makeSchool('a');
@@ -270,6 +271,7 @@ describe('E0: exams sozlamalari va ruxsatlar', () => {
     expect(res.body.data.effective).toEqual({
       enabled: true, // superadmin qiymati yo'qolmagan
       teachersCanCreateQuizzes: false,
+      teacherQuizNeedsApproval: false,
       candidateRetentionDays: 90,
     });
     expect(res.body.data.override.enabled).toBe(true);

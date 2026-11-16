@@ -25,12 +25,15 @@ import {
 } from './questions.dto';
 import {
   questionInput,
+  type BulkStatusBody,
   type ListQuery,
   type QuestionInput,
   type UpdateBody,
 } from './questions.schema';
 
 type Actor = Ctx['actor'];
+
+const MAX_BULK = 5000;
 
 const notFound = () => AppError.notFound('Savol topilmadi');
 
@@ -418,6 +421,79 @@ export const questionsService = {
       changed: [...changed],
     });
     return this.dto(ctx, scope, doc);
+  },
+
+  /**
+   * Ommaviy holat o'zgartirish (faqat holat: versiya oshmaydi). Faqat muallif yoki ma'muriyat o'zgartira
+   * oladigan, shu maktabning ko'rinadigan savollariga qo'llanadi; qolganlari `skipped` da sababi bilan.
+   * Faollashtirishda savol yakka tahrirdagi bilan bir xil tekshiruvdan o'tishi shart.
+   */
+  async bulkStatus(ctx: Ctx, schoolId: string, body: BulkStatusBody) {
+    const scope = await resolveExamScope(ctx.actor, schoolId);
+    const and = visibilityFilter(ctx.actor, schoolId, scope);
+    if (body.ids) and.push({ _id: { $in: uniq(body.ids).map((x) => new Types.ObjectId(x)) } });
+    if (body.topicId) and.push({ topicId: new Types.ObjectId(body.topicId) });
+    if (body.fromStatus) and.push({ status: body.fromStatus });
+    const docs = await Question.find({ $and: and }).limit(MAX_BULK + 1);
+    if (docs.length > MAX_BULK) {
+      throw AppError.validation(`Bir martada ${MAX_BULK} tadan ko'p savol o'zgartirib bo'lmaydi`, [
+        { path: 'topicId', message: 'Filtrni toraytiring yoki bir necha bosqichda bajaring' },
+      ]);
+    }
+    const skipped: { id: string; reason: string }[] = [];
+    const found = new Set(docs.map((d) => d.id as string));
+    for (const id of uniq(body.ids ?? [])) {
+      if (!found.has(id)) skipped.push({ id, reason: 'Savol topilmadi' });
+    }
+    const okIds: Types.ObjectId[] = [];
+    let unchanged = 0;
+    for (const d of docs) {
+      if (!canEditDoc(ctx.actor, scope, d)) {
+        skipped.push({
+          id: d.id as string,
+          reason: "Faqat muallif yoki ma'muriyat o'zgartira oladi",
+        });
+        continue;
+      }
+      if (d.status === body.toStatus) {
+        unchanged++;
+        continue;
+      }
+      if (body.toStatus === 'active') {
+        const r = questionInput.safeParse({ ...docToInput(d), status: 'active' });
+        if (!r.success) {
+          skipped.push({
+            id: d.id as string,
+            reason: r.error.issues[0]?.message ?? "Savol to'liq emas",
+          });
+          continue;
+        }
+      }
+      okIds.push(d._id as Types.ObjectId);
+    }
+    let updated = 0;
+    if (okIds.length) {
+      // Aniq filtr: maktab + id ro'yxati + (o'qituvchi uchun) muallif sharti
+      const r = await Question.updateMany(
+        {
+          schoolId,
+          isDeleted: { $ne: true },
+          _id: { $in: okIds },
+          ...(scope.all ? {} : { authorId: ctx.actor.id }),
+        },
+        { $set: { status: body.toStatus } },
+      );
+      updated = r.modifiedCount;
+    }
+    await audit(ctx, schoolId, 'exam.question.bulk_status', body.topicId ?? 'ids', null, {
+      toStatus: body.toStatus,
+      fromStatus: body.fromStatus ?? null,
+      mode: body.ids ? 'ids' : 'topic',
+      updated,
+      unchanged,
+      skipped: skipped.length,
+    });
+    return { updated, unchanged, skipped };
   },
 
   async archive(ctx: Ctx, schoolId: string, id: string) {

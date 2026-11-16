@@ -10,6 +10,7 @@ export default defineConfig({
       NODE_ENV: 'test',
       LOG_LEVEL: 'silent',
       JWT_ACCESS_SECRET: 'test-secret-test-secret-test-secret-123',
+      EXAM_PIN_SECRET: 'exam-pin-secret-exam-pin-secret-12345678',
       MONGODB_URI: 'mongodb://127.0.0.1:27017/placeholder',
       BCRYPT_COST: '4',
       RATE_LIMIT_ENABLED: 'false',

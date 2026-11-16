@@ -8,7 +8,10 @@ import { BrandingAsset } from '../../models/BrandingAsset';
 import { ClassModel } from '../../models/Class';
 import { ClassSubject } from '../../models/ClassSubject';
 import { ExamAsset } from '../../models/ExamAsset';
+import { ExamCandidate } from '../../models/ExamCandidate';
 import { ExamImportSession } from '../../models/ExamImportSession';
+import { ExamSession } from '../../models/ExamSession';
+import { ExamTemplate } from '../../models/ExamTemplate';
 import { ExamTopic } from '../../models/ExamTopic';
 import { ImportSession } from '../../models/ImportSession';
 import { LessonOverride } from '../../models/LessonOverride';
@@ -88,6 +91,9 @@ export const SCHOOL_PURGE_STEPS: PurgeStep[] = [
   bySchool('examTopics', 'Imtihon mavzulari', ExamTopic),
   bySchool('examAssets', 'Imtihon rasmlari', ExamAsset),
   bySchool('examImportSessions', 'Imtihon import sessiyalari', ExamImportSession),
+  bySchool('examSessions', 'Imtihon sessiyalari (PIN, savollar nusxasi)', ExamSession),
+  bySchool('examTemplates', 'Imtihon shablonlari', ExamTemplate),
+  bySchool('examCandidates', 'Imtihon nomzodlari', ExamCandidate),
   // Baholash va davomat
   bySchool('subjectGrades', 'Fan baholari', SubjectGrade),
   bySchool('scores', 'Xulq baholari', Score),

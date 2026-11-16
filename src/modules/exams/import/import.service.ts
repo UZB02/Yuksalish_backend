@@ -104,6 +104,8 @@ export const commitBody = z
     exclude: z.array(z.number().int()).max(1000).default([]),
     /** Qatorlar bo'yicha tuzatishlar (fan, tur, javob...) */
     overrides: z.array(overrideSchema).max(1000).default([]),
+    /** Import qilingan savollar holati: standart qoralama */
+    status: z.enum(['draft', 'active']).default('draft'),
   })
   .strict();
 export type CommitBody = z.infer<typeof commitBody>;
@@ -283,7 +285,7 @@ export const importService = {
       }
       docs.push({
         ...parsed,
-        status: 'draft',
+        status: body.status,
         sharing: { mode: 'private', userIds: [] },
         schoolId,
         scope: 'school',
@@ -305,7 +307,7 @@ export const importService = {
       action: 'exam.question.import',
       entity: 'exam_import',
       entityId: claimed.id,
-      after: { kind: claimed.kind, ...result, failed: failed.length },
+      after: { kind: claimed.kind, ...result, failed: failed.length, status: body.status },
       ip: ctx.ip,
     });
     return result;

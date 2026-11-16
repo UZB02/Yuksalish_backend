@@ -19,9 +19,10 @@ import {
 } from './import/import.service';
 import { buildWordTemplate } from './import/import.template';
 import { requireExamsEnabled, requireQuestionsAccess } from './exams.gate';
-import { listQuery, updateBody, type ListQuery } from './questions.schema';
+import { bulkStatusBody, listQuery, updateBody, type ListQuery } from './questions.schema';
 import { reorderBody, topicBody, topicPatchBody, topicsService } from './topics.service';
 import { questionsService } from './questions.service';
+import { sessionsRouter } from './sessions/sessions.routes';
 
 /**
  * Imtihon moduli (admin API): /api/v1/exams/*
@@ -114,6 +115,14 @@ examsRouter.get(
   asyncHandler(async (req, res) => {
     const r = await questionsService.list(getCtx(req), sid(req), req.query as unknown as ListQuery);
     ok(res, r.items, r.meta);
+  }),
+);
+
+examsRouter.post(
+  '/questions/bulk-status',
+  validate({ body: bulkStatusBody }),
+  asyncHandler(async (req, res) => {
+    ok(res, await questionsService.bulkStatus(getCtx(req), sid(req), req.body));
   }),
 );
 
@@ -276,3 +285,6 @@ examsRouter.get(
     res.status(200).end(a.data);
   }),
 );
+
+// Imtihonlar, shablonlar, nomzodlar (E3)
+examsRouter.use(sessionsRouter);

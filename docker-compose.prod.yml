@@ -41,6 +41,8 @@ services:
       MONGODB_URI: mongodb://${MONGO_APP_USER}:${MONGO_APP_PASSWORD}@mongo:27017/yuksalish?authSource=yuksalish
       JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?JWT_ACCESS_SECRET .env da berilishi kerak (kamida 32 belgi)}
       ACCESS_TOKEN_TTL_MINUTES: 15
+      # Imtihon PIN shifrlash kaliti (ixtiyoriy: bo'sh bo'lsa PIN yaratish 503)
+      EXAM_PIN_SECRET: ${EXAM_PIN_SECRET:-}
       REFRESH_TOKEN_TTL_DAYS: ${REFRESH_TOKEN_TTL_DAYS:-7}
       CORS_ORIGINS: https://${ADMIN_DOMAIN:?ADMIN_DOMAIN .env da berilishi kerak}
       PUBLIC_CORS_ORIGINS: https://${PUBLIC_DOMAIN:?PUBLIC_DOMAIN .env da berilishi kerak}

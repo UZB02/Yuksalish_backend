@@ -34,6 +34,12 @@ const schema = z.object({
   ),
   // Telegram bot tokeni (ixtiyoriy zaxira; asosiy token bazada, superadmin kiritadi)
   TELEGRAM_BOT_TOKEN: z.preprocess((v) => (v === '' ? undefined : v), z.string().trim().optional()),
+  // Imtihon PIN kodlarini shifrlash kaliti (chop etish uchun qayta o'qiladi). JWT_ACCESS_SECRET DAN ALOHIDA.
+  // Bo'sh bo'lsa PIN yaratadigan imtihon amallari 503 qaytaradi (modul qolgan qismi ishlaydi)
+  EXAM_PIN_SECRET: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z.string().min(32, 'EXAM_PIN_SECRET kamida 32 belgi').optional(),
+  ),
   RATING_DEBOUNCE_MS: z.coerce.number().int().min(0).default(5000),
 });
 

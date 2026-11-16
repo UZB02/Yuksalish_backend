@@ -5,6 +5,7 @@ import { runMorningDigests } from '../modules/telegram/telegram.digest';
 import { runDailyReports, runWeeklyReports } from '../modules/telegram/telegram.report';
 import { runRatingResults } from '../modules/ratings/rating.results';
 import { recalculateAll } from '../modules/ratings/ratings.service';
+import { runExamCandidatePurge } from '../modules/exams/sessions/candidates.service';
 import { runTimetablePurge } from '../modules/timetable/timetable.purge';
 
 /** Rejalashtirilgan vazifalar (JOBS_ENABLED=false bilan o'chiriladi) */
@@ -28,6 +29,7 @@ export function startJobs(): void {
     '0 3 * * *',
     () => {
       void runTimetablePurge();
+      runExamCandidatePurge().catch((err) => logger.error({ err }, 'Nomzod PII tozalash xatosi'));
     },
     { timezone: 'Asia/Tashkent' },
   );

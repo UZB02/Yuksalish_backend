@@ -206,3 +206,21 @@ export const listQuery = z.object({
   search: z.string().trim().max(100).optional(),
 });
 export type ListQuery = z.output<typeof listQuery>;
+
+/**
+ * Ommaviy holat o'zgartirish. `ids` (<=500) yoki `topicId` (+ixtiyoriy `fromStatus`) dan kamida bittasi shart.
+ * Faqat foydalanuvchi tahrirlay oladigan savollarga qo'llanadi.
+ */
+export const bulkStatusBody = z
+  .object({
+    ids: z.array(objectIdSchema).min(1).max(500).optional(),
+    topicId: objectIdSchema.optional(),
+    fromStatus: z.enum(QUESTION_STATUSES).optional(),
+    toStatus: z.enum(['active', 'draft', 'archived']),
+  })
+  .strict()
+  .refine((v) => !!v.ids || !!v.topicId, {
+    message: 'ids yoki topicId berilishi kerak',
+    path: ['ids'],
+  });
+export type BulkStatusBody = z.infer<typeof bulkStatusBody>;
