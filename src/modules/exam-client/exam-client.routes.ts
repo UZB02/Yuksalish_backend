@@ -10,6 +10,7 @@ import {
   authenticateAttempt,
   eventBody,
   examClientService,
+  finishBlockBody,
   joinBody,
 } from './exam-client.service';
 
@@ -91,6 +92,15 @@ examClientRouter.post(
   requireAttempt,
   asyncHandler(async (_req, res) => {
     ok(res, await examClientService.submit(attemptOf(res)));
+  }),
+);
+
+examClientRouter.post(
+  '/blocks/finish',
+  requireAttempt,
+  validate({ body: finishBlockBody }),
+  asyncHandler(async (req, res) => {
+    ok(res, await examClientService.finishBlock(attemptOf(res), req.body));
   }),
 );
 

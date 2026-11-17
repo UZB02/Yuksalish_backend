@@ -24,11 +24,46 @@ export interface IExamSection {
   items: IExamItem[];
 }
 
+export const SCORING_MODES = ['points', 'coefficient'] as const;
+export type ScoringMode = (typeof SCORING_MODES)[number];
+export const TIMING_MODES = ['common', 'per_block'] as const;
+export type TimingMode = (typeof TIMING_MODES)[number];
+export const BLOCK_STATUSES = ['open', 'ready'] as const;
+export type BlockStatus = (typeof BLOCK_STATUSES)[number];
+
+/** Blokka biriktirilgan o'qituvchi qo'shgan savol (tuzuvchi ro'yxatidan alohida: bir-birini bosib yubormaydi) */
+export interface IBlockContribQuestion {
+  questionId: Types.ObjectId;
+  addedBy: Types.ObjectId;
+  addedAt: Date;
+}
+
+/**
+ * Imtihon bloki (bitta fan). `items`: tuzuvchi qo'ygan qo'lda/qoida elementlari; `contribQuestions`:
+ * biriktirilgan o'qituvchilar qo'shgan savollar. Eski hujjatlarda `blocks` yo'q: blocks.core.ts normalizatori
+ * `sections` + `subjectId` dan BITTA blok yasaydi (migratsiya yo'q).
+ */
+export interface IExamBlock {
+  blockId: string;
+  subjectId: Types.ObjectId;
+  title: string;
+  targetCount: number;
+  coefficient: number;
+  durationMin: number | null;
+  contributors: Types.ObjectId[];
+  items: IExamItem[];
+  contribQuestions: IBlockContribQuestion[];
+  status: BlockStatus;
+}
+
 export interface IExamTemplate {
   schoolId: Types.ObjectId;
   title: string;
   subjectId: Types.ObjectId | null;
   sections: IExamSection[];
+  blocks: IExamBlock[];
+  scoringMode: ScoringMode;
+  timingMode: TimingMode;
   shuffleQuestions: boolean;
   shuffleOptions: boolean;
   createdBy: Types.ObjectId;
@@ -53,12 +88,37 @@ export const sectionsField = {
   default: [],
 };
 
+/** Bloklar sessiyada ham shu sxema bilan saqlanadi */
+export const blocksField = {
+  type: [
+    new Schema(
+      {
+        blockId: { type: String, required: true },
+        subjectId: { type: Schema.Types.ObjectId, ref: 'Subject', required: true },
+        title: { type: String, default: '' },
+        targetCount: { type: Number, default: 0 },
+        coefficient: { type: Number, default: 1 },
+        durationMin: { type: Number, default: null },
+        contributors: { type: [Schema.Types.ObjectId], default: [] },
+        items: { type: [Schema.Types.Mixed], default: [] },
+        contribQuestions: { type: [Schema.Types.Mixed], default: [] },
+        status: { type: String, enum: BLOCK_STATUSES, default: 'open' },
+      },
+      { _id: false },
+    ),
+  ],
+  default: [],
+};
+
 const schema = new Schema<IExamTemplate>(
   {
     schoolId: { type: Schema.Types.ObjectId, ref: 'School', required: true },
     title: { type: String, required: true, trim: true },
     subjectId: { type: Schema.Types.ObjectId, ref: 'Subject', default: null },
     sections: sectionsField,
+    blocks: blocksField,
+    scoringMode: { type: String, enum: SCORING_MODES, default: 'points' },
+    timingMode: { type: String, enum: TIMING_MODES, default: 'common' },
     shuffleQuestions: { type: Boolean, default: true },
     shuffleOptions: { type: Boolean, default: true },
     createdBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },

@@ -43,8 +43,16 @@ export function shuffled<T>(arr: readonly T[], rnd: () => number): T[] {
   return a;
 }
 
+export interface SelectionBlock {
+  blockId: string;
+  items: StoredItem[];
+}
+
 export interface SelectionInput {
-  sections: StoredSection[];
+  /** Eski (blokisiz) shakl: bitta blok sifatida ishlanadi, urinish elementlarida blockId bo'lmaydi */
+  sections?: StoredSection[];
+  /** Blokli shakl: har blok alohida tanlanadi va aralashtiriladi, bloklar tartibi saqlanadi */
+  blocks?: SelectionBlock[];
   pool: Map<string, PoolQuestion>;
   shuffleQuestions: boolean;
   shuffleOptions: boolean;
@@ -62,45 +70,48 @@ export interface SelectionInput {
  */
 export function selectQuestions(input: SelectionInput): IAttemptOrderItem[] {
   const rnd = seededRandom(input.seed);
+  const tagBlocks = !!input.blocks;
+  const blocks: SelectionBlock[] = input.blocks ?? [
+    { blockId: '', items: (input.sections ?? []).flatMap((s) => s.items) },
+  ];
   const manualIds = new Set<string>();
-  for (const sec of input.sections) {
-    for (const it of sec.items) {
+  for (const b of blocks) {
+    for (const it of b.items) {
       if (it.kind === 'manual') for (const q of it.questionIds ?? []) manualIds.add(String(q));
     }
   }
   const chosen = new Set<string>();
-  const ordered: string[] = [];
-  const take = (id: string) => {
-    if (chosen.has(id) || !input.pool.has(id)) return;
-    chosen.add(id);
-    ordered.push(id);
-  };
-  for (const sec of input.sections) {
-    for (const it of sec.items) {
-      if (it.kind === 'manual') {
-        for (const q of it.questionIds ?? []) take(String(q));
-      }
+  const out: IAttemptOrderItem[] = [];
+  for (const b of blocks) {
+    const ordered: string[] = [];
+    const take = (id: string) => {
+      if (chosen.has(id) || !input.pool.has(id)) return;
+      chosen.add(id);
+      ordered.push(id);
+    };
+    for (const it of b.items) {
+      if (it.kind === 'manual') for (const q of it.questionIds ?? []) take(String(q));
     }
-  }
-  for (const sec of input.sections) {
-    for (const it of sec.items) {
+    for (const it of b.items) {
       if (it.kind !== 'rule') continue;
       const candidates = (it.poolIds ?? [])
         .map(String)
         .filter((id) => !chosen.has(id) && !manualIds.has(id) && input.pool.has(id));
       for (const id of shuffled(candidates, rnd).slice(0, it.count ?? 0)) take(id);
     }
+    const finalIds = input.shuffleQuestions ? shuffled(ordered, rnd) : ordered;
+    for (const id of finalIds) {
+      const q = input.pool.get(id)!;
+      const ids = (q.options ?? []).map((o) => o.id);
+      const hasOptions = q.type === 'single' || q.type === 'multi';
+      out.push({
+        ...(tagBlocks ? { blockId: b.blockId } : {}),
+        qid: id,
+        type: q.type,
+        points: q.points,
+        optionPerm: hasOptions ? (input.shuffleOptions ? shuffled(ids, rnd) : ids) : [],
+      });
+    }
   }
-  const finalIds = input.shuffleQuestions ? shuffled(ordered, rnd) : ordered;
-  return finalIds.map((id) => {
-    const q = input.pool.get(id)!;
-    const ids = (q.options ?? []).map((o) => o.id);
-    const hasOptions = q.type === 'single' || q.type === 'multi';
-    return {
-      qid: id,
-      type: q.type,
-      points: q.points,
-      optionPerm: hasOptions ? (input.shuffleOptions ? shuffled(ids, rnd) : ids) : [],
-    };
-  });
+  return out;
 }

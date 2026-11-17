@@ -1,9 +1,15 @@
+import { Types } from 'mongoose';
 import { z } from 'zod';
 import type { Ctx } from '../../../core/context';
+import { buildMeta as pageMeta, paginationQuery, skipOf } from '../../../core/pagination';
+import { objectIdSchema } from '../../../core/validators';
+import { escapeRegex } from '../../../utils/helpers';
+import { buildMeta as buildResultsMeta, namesFor, type ResultsMeta } from './results.meta';
 import { AppError } from '../../../core/errors';
 import { ExamAttempt } from '../../../models/ExamAttempt';
 import { ExamSession, type ExamSessionDoc } from '../../../models/ExamSession';
 import { School } from '../../../models/School';
+import { Subject } from '../../../models/Subject';
 import { User } from '../../../models/User';
 import { clock } from '../../../utils/clock';
 import { gradeAttempt } from '../../exam-client/grading';
@@ -16,7 +22,21 @@ import { resolveExamScope, type ExamScope } from '../exams.scope';
 import { fmtTashkent } from '../sessions/sessions.pdf';
 import { audit, findSession, isCreator, isSupervisor } from '../sessions/sessions.service';
 import { commonEnd } from '../sessions/timing';
-import { buildRows, loadAttempts, poolMapOf, sortRanked, type ResultRow } from './results.core';
+import {
+  effectiveItems,
+  normalizeBlocks,
+  scoringModeOf,
+  scoringOf,
+  timingModeOf,
+} from '../blocks/blocks.core';
+import {
+  blockHeadersOf,
+  buildRows,
+  loadAttempts,
+  poolMapOf,
+  sortRanked,
+  type ResultRow,
+} from './results.core';
 
 type Actor = Ctx['actor'];
 
@@ -37,6 +57,16 @@ export const publishBody = z
   .object({ published: z.boolean(), confirmPending: z.boolean().optional() })
   .strict();
 export const exportQuery = z.object({ format: z.enum(['xlsx', 'pdf']).default('xlsx') });
+const dayQuery = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+export const resultsListQuery = z.object({
+  ...paginationQuery,
+  from: dayQuery.optional(),
+  to: dayQuery.optional(),
+  subjectId: objectIdSchema.optional(),
+  classId: objectIdSchema.optional(),
+  q: z.string().trim().max(100).optional(),
+});
+export type ResultsListQuery = z.output<typeof resultsListQuery>;
 
 const STATUS_UZ: Record<string, string> = {
   not_started: 'Kirmagan',
@@ -56,7 +86,7 @@ const hasPerm = (actor: Actor, ...p: string[]) =>
  */
 async function open(ctx: Ctx, schoolId: string, id: string, grade = false) {
   const scope = await resolveExamScope(ctx.actor, schoolId);
-  const s0 = await findSession(ctx, schoolId, scope, id);
+  const s0 = await findSession(ctx, schoolId, scope, id, true);
   const own = isCreator(s0, ctx.actor) || isSupervisor(s0, ctx.actor);
   if (!own && !hasPerm(ctx.actor, 'exams.results', 'exams.manage')) throw AppError.forbidden();
   if (grade && !own && !hasPerm(ctx.actor, 'exams.grade', 'exams.manage'))
@@ -87,7 +117,93 @@ function passInfo(s: ExamSessionDoc) {
   return { passPercent: s.passPercent ?? null };
 }
 
+/** Blok sarlavhalari fan nomi bilan (natijalar jadvali ustunlari) */
+async function blockHeaders(s: ExamSessionDoc) {
+  const heads = blockHeadersOf(s);
+  const subs = await Subject.find({
+    _id: { $in: heads.map((h) => h.subjectId).filter(Boolean) as string[] },
+  })
+    .select('name')
+    .lean();
+  const names = new Map(subs.map((x) => [String(x._id), x.name]));
+  return heads.map((h) => ({
+    ...h,
+    subjectName: h.subjectId ? (names.get(h.subjectId) ?? null) : null,
+    title: h.title || (h.subjectId ? (names.get(h.subjectId) ?? '') : ''),
+  }));
+}
+
 export const resultsService = {
+  /**
+   * "Natijalar" moduli: yopilgan imtihonlar (shu jumladan "faqat imtihonni o'chirish" tanlangan, natijalari
+   * saqlanganlar). Ko'rinish qoidasi natijalar sahifasi bilan bir xil: superadmin yoki exams.results/exams.manage
+   * - maktabning hammasi; boshqalar (o'qituvchi) faqat o'zi yaratgan yoki nazoratchi bo'lgan imtihonlar.
+   * Savol topshirgan (blok) o'qituvchilar ko'rmaydi (ularda natija huquqi yo'q). Maktab bo'yicha qat'iy filtr.
+   */
+  async listAll(ctx: Ctx, schoolId: string, q: ResultsListQuery) {
+    const and: Record<string, unknown>[] = [
+      { schoolId: new Types.ObjectId(schoolId) },
+      { status: 'closed' },
+      { $or: [{ isDeleted: { $ne: true } }, { resultsKept: true }] },
+    ];
+    if (!hasPerm(ctx.actor, 'exams.results', 'exams.manage')) {
+      const me = new Types.ObjectId(ctx.actor.id);
+      and.push({ $or: [{ createdBy: me }, { supervisorIds: me }] });
+    }
+    // Sana: Toshkent (+05:00) kuni bo'yicha, boshlanish vaqtiga qarab
+    if (q.from || q.to) {
+      const r: Record<string, Date> = {};
+      if (q.from) r.$gte = new Date(`${q.from}T00:00:00+05:00`);
+      if (q.to) r.$lt = new Date(new Date(`${q.to}T00:00:00+05:00`).getTime() + 86_400_000);
+      and.push({ scheduledStart: r });
+    }
+    if (q.subjectId) {
+      const sid = new Types.ObjectId(q.subjectId);
+      and.push({ $or: [{ subjectId: sid }, { 'blocks.subjectId': sid }] });
+    }
+    if (q.classId) and.push({ classIds: new Types.ObjectId(q.classId) });
+    if (q.q) and.push({ title: new RegExp(escapeRegex(q.q), 'i') });
+    const filter = { $and: and };
+    const [docs, total] = await Promise.all([
+      ExamSession.find(filter)
+        .sort({ scheduledStart: -1, _id: 1 })
+        .skip(skipOf(q.page, q.limit))
+        .limit(q.limit),
+      ExamSession.countDocuments(filter),
+    ]);
+    const needNames = docs.filter((d) => !d.resultsMeta);
+    const names = await namesFor(needNames);
+    const counts = await ExamAttempt.aggregate<{ _id: Types.ObjectId; n: number }>([
+      {
+        $match: {
+          sessionId: { $in: docs.map((d) => d._id) },
+          status: { $in: ['submitted', 'auto_submitted'] },
+        },
+      },
+      { $group: { _id: '$sessionId', n: { $sum: 1 } } },
+    ]);
+    const submitted = new Map(counts.map((c) => [String(c._id), c.n]));
+    const items = docs.map((d) => {
+      const m = (d.resultsMeta as ResultsMeta | null) ?? buildResultsMeta(d, names, []);
+      return {
+        id: d.id as string,
+        title: m.title,
+        heldAt: m.heldAt,
+        endsAt: m.endsAt,
+        closedAt: m.closedAt,
+        subjects: m.subjects,
+        classes: m.classes,
+        blocksCount: m.blocks.length,
+        scoringMode: m.scoringMode,
+        participants: m.participantsCount,
+        submitted: submitted.get(d.id as string) ?? 0,
+        /** Imtihonning o'zi o'chirilgan (natijalari saqlangan) */
+        examDeleted: !!d.isDeleted,
+      };
+    });
+    return { items, meta: pageMeta(q.page, q.limit, total) };
+  },
+
   /** Natijalar ro'yxati va umumiy ko'rsatkichlar */
   async list(ctx: Ctx, schoolId: string, id: string) {
     const { s } = await open(ctx, schoolId, id);
@@ -104,7 +220,11 @@ export const resultsService = {
         ...passInfo(s),
         scheduledStart: s.scheduledStart,
         endsAt: commonEnd(s),
+        scoringMode: scoringModeOf(s),
+        timingMode: timingModeOf(s),
+        examDeleted: !!s.isDeleted,
       },
+      blocks: await blockHeaders(s),
       summary,
       rows: sortRanked(rows),
     };
@@ -126,7 +246,7 @@ export const resultsService = {
     }
     const pool = poolMapOf(s);
     if (['submitted', 'auto_submitted'].includes(a.status) && !a.score) {
-      a.score = gradeAttempt(a.order, a.saved, pool, a.manual ?? []);
+      a.score = gradeAttempt(a.order, a.saved, pool, a.manual ?? [], scoringOf(s));
     }
     const saved = new Map(a.saved.map((x) => [x.qid, x]));
     const manual = new Map((a.manual ?? []).map((m) => [m.qid, m]));
@@ -141,6 +261,7 @@ export const resultsService = {
       const it = items.get(o.qid);
       return {
         id: o.qid,
+        blockId: o.blockId ?? null,
         index: index + 1,
         type: o.type,
         points: o.points,
@@ -181,7 +302,9 @@ export const resultsService = {
       score: a.score
         ? { earned: a.score.earned, max: a.score.max, essayPending: a.score.essayPending }
         : null,
-      percent: rows[0]?.percent ?? null,
+      blocks: await blockHeaders(s),
+      blockScores: rows.find((r) => r.key === key)?.blocks ?? [],
+      percent: rows.find((r) => r.key === key)?.percent ?? null,
       questions,
     };
   },
@@ -239,7 +362,13 @@ export const resultsService = {
       { updatePipeline: true },
     );
     const fresh = (await ExamAttempt.findById(a._id))!;
-    const score = gradeAttempt(fresh.order, fresh.saved, poolMapOf(s), fresh.manual ?? []);
+    const score = gradeAttempt(
+      fresh.order,
+      fresh.saved,
+      poolMapOf(s),
+      fresh.manual ?? [],
+      scoringOf(s),
+    );
     await ExamAttempt.updateOne({ _id: a._id }, { $set: { score, scoredAt: clock.now() } });
     // Audit: faqat xulosa (esse matni yozilmaydi)
     await audit(
@@ -376,7 +505,27 @@ export const resultsService = {
         flags,
       };
     });
-    return { submittedAttempts: attempts.length, questions };
+    // Bloklar: savol -> blok (muzlatilgan bloklar elementlaridan), savollar blok tartibida guruhlanadi
+    const nb = normalizeBlocks(s);
+    const blockOfQ = new Map<string, string>();
+    for (const b of nb) {
+      for (const it of effectiveItems(b)) {
+        const ids = it.kind === 'manual' ? (it.questionIds ?? []) : (it.poolIds ?? []);
+        for (const q of ids) if (!blockOfQ.has(String(q))) blockOfQ.set(String(q), b.blockId);
+      }
+    }
+    for (const a of attempts)
+      for (const o of a.order) if (o.blockId) blockOfQ.set(o.qid, o.blockId);
+    const rank = new Map(nb.map((b, i) => [b.blockId, i]));
+    const withBlock = questions
+      .map((q) => ({ ...q, blockId: blockOfQ.get(q.id) ?? nb[0]!.blockId }))
+      .sort((x, y) => (rank.get(x.blockId) ?? 0) - (rank.get(y.blockId) ?? 0))
+      .map((q, i) => ({ ...q, index: i + 1 }));
+    return {
+      submittedAttempts: attempts.length,
+      blocks: await blockHeaders(s),
+      questions: withBlock,
+    };
   },
 
   /** Excel (ishtirokchilar + savollar matritsasi + savollar) yoki PDF xulosa. Telefon/PII yo'q, formula injeksiyasidan himoya */
@@ -395,6 +544,12 @@ export const resultsService = {
       school: school ? { id: schoolId, name: school.name } : null,
       scope: 'exam',
     };
+    const heads = await blockHeaders(s);
+    const multi = heads.length > 1;
+    const blockMax = new Map<string, number>();
+    for (const r of rows)
+      for (const b of r.blocks)
+        blockMax.set(b.blockId, Math.max(blockMax.get(b.blockId) ?? 0, b.max));
     const fmtMin = (sec: number | null) =>
       sec === null ? '' : `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
     const main: Table = {
@@ -404,6 +559,16 @@ export const resultsService = {
         { header: 'F.I.Sh.', key: 'name', width: 32 },
         { header: 'Sinf / manba', key: 'cls', width: 16 },
         { header: 'Holat', key: 'status', width: 20 },
+        ...(multi
+          ? heads.map((h, i) => ({
+              header: `${h.title || `${i + 1}-blok`} (maks. ${blockMax.get(h.id) ?? 0})`,
+              key: `b${i}`,
+              width: 14,
+              type: 'number' as const,
+              align: 'right' as const,
+              short: h.title || `${i + 1}-blok`,
+            }))
+          : []),
         { header: 'Ball', key: 'earned', width: 8, type: 'number', align: 'right' },
         { header: 'Maks.', key: 'max', width: 8, type: 'number', align: 'right' },
         { header: '%', key: 'percent', width: 8, type: 'number', align: 'right' },
@@ -432,6 +597,9 @@ export const resultsService = {
         name: r.fullName,
         cls: r.className ?? '',
         status: STATUS_UZ[r.status] ?? r.status,
+        ...Object.fromEntries(
+          heads.map((h, i) => [`b${i}`, r.blocks.find((b) => b.blockId === h.id)?.earned ?? null]),
+        ),
         earned: r.earned,
         max: r.max,
         percent: r.percent,

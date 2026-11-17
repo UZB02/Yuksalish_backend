@@ -2,6 +2,7 @@ import { ExamAttempt, type ExamAttemptDoc } from '../../../models/ExamAttempt';
 import type { ExamSessionDoc } from '../../../models/ExamSession';
 import { ensureScored } from '../../exam-client/exam-client.service';
 import type { PoolQuestion } from '../../exam-client/selection';
+import { normalizeBlocks } from '../blocks/blocks.core';
 
 /**
  * Natijalar hisobi (ruxsatsiz, sof ma'lumot): ham admin API, ham Telegram xulosasi ishlatadi.
@@ -25,6 +26,8 @@ export interface ResultRow {
   warnings: number;
   essayPending: number;
   rank: number | null;
+  /** Blok bo'yicha ballar (yagona/eski imtihonda bitta element). Topshirmagan: bo'sh */
+  blocks: { blockId: string; earned: number; max: number }[];
 }
 
 export interface ResultSummary {
@@ -39,6 +42,17 @@ export interface ResultSummary {
   passedCount: number;
   essayPending: number;
 }
+
+/** Natijalar jadvali uchun bloklar (eski imtihon: bitta blok, legacy) */
+export const blockHeadersOf = (s: ExamSessionDoc) =>
+  normalizeBlocks(s).map((b) => ({
+    id: b.blockId,
+    legacy: b.legacy,
+    subjectId: b.subjectId,
+    title: b.title,
+    coefficient: b.coefficient,
+    durationMin: b.durationMin,
+  }));
 
 export const poolMapOf = (s: ExamSessionDoc): Map<string, PoolQuestion> =>
   new Map((s.questionPool as unknown as PoolQuestion[]).map((q) => [String(q.questionId), q]));
@@ -61,6 +75,7 @@ export async function loadAttempts(session: ExamSessionDoc): Promise<ExamAttempt
 export function buildRows(session: ExamSessionDoc, attempts: ExamAttemptDoc[]) {
   const byKey = new Map(attempts.map((a) => [a.participantKey, a]));
   const pass = session.passPercent ?? null;
+  const firstBlock = normalizeBlocks(session)[0]!.blockId;
   const rows: ResultRow[] = session.participants.map((p) => {
     const a = byKey.get(p.key);
     const c = (a?.counters ?? {}) as Record<string, number>;
@@ -91,6 +106,12 @@ export function buildRows(session: ExamSessionDoc, attempts: ExamAttemptDoc[]) {
       warnings: (c.blur ?? 0) + (c.fullscreenExit ?? 0) + (c.visibilityHidden ?? 0),
       essayPending: finished ? a!.score!.essayPending : 0,
       rank: null,
+      blocks: finished
+        ? (a!.score!.blocks?.length
+            ? a!.score!.blocks
+            : [{ blockId: firstBlock, earned: a!.score!.earned, max: a!.score!.max }]
+          ).map((b) => ({ blockId: b.blockId, earned: b.earned, max: b.max }))
+        : [],
     };
   });
   // O'rin: foiz kamayish bo'yicha, teng ballar bir xil o'rin (1,1,3)

@@ -22,6 +22,7 @@ import { requireExamsEnabled, requireQuestionsAccess } from './exams.gate';
 import { bulkStatusBody, listQuery, updateBody, type ListQuery } from './questions.schema';
 import { reorderBody, topicBody, topicPatchBody, topicsService } from './topics.service';
 import { questionsService } from './questions.service';
+import { blocksRouter } from './blocks/blocks.routes';
 import { sessionsRouter } from './sessions/sessions.routes';
 
 /**
@@ -286,5 +287,7 @@ examsRouter.get(
   }),
 );
 
+// Blokli imtihon: biriktirilgan o'qituvchi va tuzuvchi endpointlari
+examsRouter.use(blocksRouter);
 // Imtihonlar, shablonlar, nomzodlar (E3)
 examsRouter.use(sessionsRouter);

@@ -15,6 +15,8 @@ export type AttemptEventType = (typeof EVENT_TYPES)[number];
 export const MAX_EVENTS = 200;
 
 export interface IAttemptOrderItem {
+  /** Blok id (eski urinishlarda yo'q: birinchi/yagona blok) */
+  blockId?: string;
   /** Savol id (satr): sessiya savollar nusxasidagi questionId */
   qid: string;
   type: string;
@@ -48,6 +50,28 @@ export interface IManualGrade {
   gradedAt: Date;
 }
 
+export interface IAttemptBlockScore {
+  blockId: string;
+  earned: number;
+  max: number;
+  autoMax: number;
+  essayPending: number;
+  /** Blokdagi savollar soni va to'g'ri (to'liq ball) javoblar soni */
+  questions: number;
+  correct: number;
+}
+
+/** per_block: har bir blokning holati (urinishda saqlanadi; deadline lar server tomonda) */
+export interface IAttemptBlockState {
+  blockId: string;
+  durationMin: number;
+  startedAt: Date | null;
+  deadline: Date | null;
+  /** Hammaga vaqt qo'shish (extend) shu blokka qo'shgan daqiqalar */
+  extraMin: number;
+  closedAt: Date | null;
+}
+
 export interface IAttemptScore {
   earned: number;
   max: number;
@@ -55,6 +79,8 @@ export interface IAttemptScore {
   autoMax: number;
   essayPending: number;
   items: { qid: string; got: number; max: number; ok: boolean | null; graded?: boolean }[];
+  /** Blok bo'yicha ballar (eski natijalarda yo'q: yagona blok deb o'qiladi) */
+  blocks?: IAttemptBlockScore[];
 }
 
 export interface IExamAttempt {
@@ -78,6 +104,10 @@ export interface IExamAttempt {
   saved: ISavedAnswer[];
   clientSeq: number;
   answeredCount: number;
+  /** per_block: joriy blok indeksi, har blok holati va qattiq (umumiy) deadline. Eski urinishlarda bo'sh */
+  blockIndex: number;
+  blockState: IAttemptBlockState[];
+  hardDeadline: Date | null;
   events: IAttemptEvent[];
   counters: { blur: number; fullscreenExit: number; visibilityHidden: number; reconnect: number };
   lastSeenAt: Date | null;
@@ -109,6 +139,9 @@ const schema = new Schema<IExamAttempt>(
     assetIds: { type: [String], default: [] },
     saved: { type: [Schema.Types.Mixed] as never, default: [] },
     clientSeq: { type: Number, default: 0 },
+    blockIndex: { type: Number, default: 0 },
+    blockState: { type: [Schema.Types.Mixed] as never, default: [] },
+    hardDeadline: { type: Date, default: null },
     answeredCount: { type: Number, default: 0 },
     events: { type: [Schema.Types.Mixed] as never, default: [] },
     counters: {

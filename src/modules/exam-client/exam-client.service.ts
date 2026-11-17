@@ -19,7 +19,24 @@ import { EXAMS_KEY, type ExamsSettings } from '../settings/exams.settings';
 import { settingsService } from '../settings/settings.service';
 import { hashPin, normalizePin } from '../exams/sessions/pin';
 import { fmtTashkent } from '../exams/sessions/sessions.pdf';
-import { canEnter, commonEnd, participantDeadline } from '../exams/sessions/timing';
+import {
+  advanceExpired,
+  canEnter,
+  commonEnd,
+  finishCurrentBlock,
+  initBlockState,
+  participantDeadline,
+  projectedDeadline,
+  type BlockStateLike,
+} from '../exams/sessions/timing';
+import {
+  effectiveItems,
+  normalizeBlocks,
+  scoringOf,
+  timingModeOf,
+  totalQuestionCount,
+  type NBlock,
+} from '../exams/blocks/blocks.core';
 import { gradeAttempt } from './grading';
 import { selectQuestions, type PoolQuestion, type StoredSection } from './selection';
 
@@ -86,6 +103,10 @@ export const eventBody = z
   .strict();
 export type EventBody = z.output<typeof eventBody>;
 
+/** Blokni yakunlash: faqat JORIY blok id si (ikki marta bosish keyingi blokni o'tkazib yubormasin) */
+export const finishBlockBody = z.object({ blockId: z.string().min(1).max(40) }).strict();
+export type FinishBlockBody = z.output<typeof finishBlockBody>;
+
 // ---------- Himoya hisoblagichlari (DB) ----------
 async function isBlocked(keys: string[], now: Date): Promise<boolean> {
   return (
@@ -138,6 +159,7 @@ export function toClientQuestions(
 ) {
   const out: {
     id: string;
+    blockId?: string;
     type: string;
     points: number;
     content: ReturnType<typeof blockDto>[];
@@ -149,6 +171,7 @@ export function toClientQuestions(
     const byId = new Map((q.options ?? []).map((x) => [x.id, x]));
     out.push({
       id: o.qid,
+      ...(o.blockId ? { blockId: o.blockId } : {}),
       type: o.type,
       points: o.points,
       content: blocksDto(q.content),
@@ -190,16 +213,81 @@ async function assertSchoolActive(schoolId: unknown): Promise<boolean> {
 }
 
 /** Har ishtirokchiga ko'rsatiladigan savollar soni (qo'lda takrorsiz + qoidalar) */
-function questionCountOf(sections: StoredSection[]): number {
-  const manual = new Set<string>();
-  let rules = 0;
-  for (const s of sections) {
-    for (const it of s.items) {
-      if (it.kind === 'manual') for (const q of it.questionIds ?? []) manual.add(String(q));
-      else rules += it.count ?? 0;
-    }
+const questionCountOf = (s: ExamSessionDoc): number => totalQuestionCount(normalizeBlocks(s));
+
+/** Bloklar haqida klientga ma'lumot (kalitsiz): id, nom, savollar soni, davomiylik */
+function blocksMeta(session: ExamSessionDoc, order: readonly IAttemptOrderItem[]) {
+  const blocks = normalizeBlocks(session);
+  const first = blocks[0]!.blockId;
+  const known = new Set(blocks.map((b) => b.blockId));
+  const counts = new Map<string, number>();
+  for (const o of order) {
+    const id = o.blockId && known.has(o.blockId) ? o.blockId : first;
+    counts.set(id, (counts.get(id) ?? 0) + 1);
   }
-  return manual.size + rules;
+  return blocks.map((b) => ({
+    id: b.blockId,
+    title: b.title,
+    questionCount: order.length ? (counts.get(b.blockId) ?? 0) : blockQuestionCountOf(b),
+    durationMin: b.durationMin,
+  }));
+}
+const blockQuestionCountOf = (b: NBlock): number => totalQuestionCount([b]);
+
+/**
+ * Blokma-blok urinish: vaqti tugagan bloklarni (grace dan keyin) ketma-ket yopib, keyingisini ochadi; oxirgi blok ham
+ * tugagan bo'lsa urinishni avtomatik topshiradi. Faqat DB dagi holatdan ishlaydi (xotira yo'q). Optimistik
+ * (blockIndex filtri): parallel so'rovda biri yutadi, qolganlari yangi holatni o'qiydi.
+ */
+export async function syncBlocks(attempt: ExamAttemptDoc, now: Date): Promise<ExamAttemptDoc> {
+  if (attempt.status !== 'in_progress' || !attempt.blockState?.length) return attempt;
+  const hard = attempt.hardDeadline ?? attempt.deadline;
+  if (!hard) return attempt;
+  const adv = advanceExpired(
+    attempt.blockState as BlockStateLike[],
+    attempt.blockIndex ?? 0,
+    now,
+    hard,
+    DEADLINE_GRACE_MS,
+  );
+  if (!adv.changed) return attempt;
+  const filter = {
+    _id: attempt._id,
+    status: 'in_progress' as const,
+    blockIndex: attempt.blockIndex ?? 0,
+  };
+  const set = adv.finished
+    ? {
+        status: 'auto_submitted',
+        submittedAt: adv.finishedAt,
+        blockState: adv.state,
+        blockIndex: adv.index,
+      }
+    : {
+        blockState: adv.state,
+        blockIndex: adv.index,
+        deadline: projectedDeadline(adv.state, adv.index, hard),
+      };
+  const upd = await ExamAttempt.findOneAndUpdate(
+    filter,
+    { $set: set as never },
+    { returnDocument: 'after' },
+  );
+  return upd ?? (await ExamAttempt.findById(attempt._id)) ?? attempt;
+}
+
+/** Klientga: joriy blok holati (blokma-blok urinish) yoki null */
+function blockView(a: ExamAttemptDoc) {
+  const st = (a.blockState ?? []) as BlockStateLike[];
+  if (!st.length) return null;
+  const cur = st[a.blockIndex ?? 0];
+  return {
+    index: a.blockIndex ?? 0,
+    total: st.length,
+    id: cur?.blockId ?? null,
+    startedAt: cur?.startedAt ?? null,
+    deadline: cur?.deadline ?? null,
+  };
 }
 
 // ---------- Natija ----------
@@ -227,7 +315,23 @@ function resultPayload(
     autoMax: score.autoMax,
     essayPending: score.essayPending,
   };
-  if (mode === 'score') return { ...base, available: true as const, score: summary };
+  // Blok bo'yicha ballar: faqat bir nechta blokli imtihonda (eski natija shakli o'zgarmaydi)
+  const nblocks = normalizeBlocks(session as ExamSessionDoc);
+  const blocksScore =
+    nblocks.length > 1 && score.blocks?.length
+      ? {
+          blocks: score.blocks.map((b) => ({
+            id: b.blockId,
+            title: nblocks.find((x) => x.blockId === b.blockId)?.title ?? '',
+            earned: b.earned,
+            max: b.max,
+          })),
+        }
+      : {};
+  const blockOfQ = new Map(attempt.order.map((o) => [o.qid, o.blockId ?? null]));
+  if (mode === 'score') {
+    return { ...base, available: true as const, score: summary, ...blocksScore };
+  }
   const pool = poolOf(session as ExamSessionDoc);
   const given = new Map(attempt.saved.map((s) => [s.qid, s.value]));
   const review = score.items.map((it) => {
@@ -244,6 +348,7 @@ function resultPayload(
             : {};
     return {
       id: it.qid,
+      blockId: blockOfQ.get(it.qid) ?? null,
       type,
       got: it.got,
       max: it.max,
@@ -252,7 +357,7 @@ function resultPayload(
       reveal,
     };
   });
-  return { ...base, available: true as const, score: summary, review };
+  return { ...base, available: true as const, score: summary, ...blocksScore, review };
 }
 
 /** Bahoni (kerak bo'lsa) hisoblab saqlaydi. Idempotent: javoblar va kalit manba, qayta hisoblash xavfsiz */
@@ -262,7 +367,13 @@ export async function ensureScored(
 ): Promise<{ score: IAttemptScore; session: ExamSessionDoc }> {
   const s = session ?? (await loadSessionWithPool(attempt.sessionId));
   if (attempt.score) return { score: attempt.score, session: s };
-  const score = gradeAttempt(attempt.order, attempt.saved, poolOf(s), attempt.manual ?? []);
+  const score = gradeAttempt(
+    attempt.order,
+    attempt.saved,
+    poolOf(s),
+    attempt.manual ?? [],
+    scoringOf(s),
+  );
   await ExamAttempt.updateOne(
     { _id: attempt._id, score: null },
     { $set: { score, scoredAt: clock.now() } },
@@ -406,7 +517,7 @@ export const examClientService = {
       );
     }
 
-    const sections = session.sections as unknown as StoredSection[];
+    const timing = timingModeOf(session);
     return {
       token,
       serverNow: now,
@@ -416,18 +527,24 @@ export const examClientService = {
         title: session.title,
         type: session.type,
         durationMin: session.durationMin,
-        questionCount: attempt.order.length || questionCountOf(sections),
+        questionCount: attempt.order.length || questionCountOf(session),
         resultsMode: session.resultsMode,
         startsAt: session.scheduledStart,
         endsAt: commonEnd(session),
         /** Hozir boshlansa tugash vaqti (kechikkan o'quvchi uchun qisqargan) */
         deadlinePreview: attempt.deadline ?? end,
-        freeNavigation: true,
+        /** per_block: bloklar orasida erkin o'tish YO'Q */
+        freeNavigation: timing === 'common',
+        timingMode: timing,
+        blocks: blocksMeta(session, attempt.order),
       },
     };
   },
 
-  /** Boshlash (idempotent): savollar tanlanadi, deadline server tomonda hisoblanadi, mavjud bo'lsa o'sha qaytadi */
+  /**
+   * Boshlash (idempotent): savollar tanlanadi, deadline server tomonda hisoblanadi, mavjud bo'lsa o'sha qaytadi.
+   * Blokma-blok rejimda faqat JORIY blok savollari qaytadi (yopilgan va hali ochilmagan bloklar yuborilmaydi).
+   */
   async start(attempt: ExamAttemptDoc) {
     const now = clock.now();
     if (attempt.status === 'submitted' || attempt.status === 'auto_submitted') {
@@ -435,7 +552,7 @@ export const examClientService = {
     }
     const session = await loadSessionWithPool(attempt.sessionId);
     const pool = poolOf(session);
-    let current = attempt;
+    let current: ExamAttemptDoc;
     if (attempt.status === 'joined') {
       const participant = session.participants.find((p) => p.key === attempt.participantKey);
       if (!participant) throw AppError.forbidden('Siz bu imtihon ishtirokchisi emassiz');
@@ -452,22 +569,39 @@ export const examClientService = {
             : `Imtihon ${fmtTashkent(commonEnd(session)).slice(-5)} da tugagan. Nazoratchiga murojaat qiling.`,
         );
       }
+      const nblocks = normalizeBlocks(session);
       const order = selectQuestions({
-        sections: session.sections as unknown as StoredSection[],
+        ...(nblocks[0]!.legacy
+          ? { sections: session.sections as unknown as StoredSection[] }
+          : {
+              blocks: nblocks.map((b) => ({
+                blockId: b.blockId,
+                items: effectiveItems(b),
+              })),
+            }),
         pool,
         shuffleQuestions: session.shuffleQuestions,
         shuffleOptions: session.shuffleOptions,
         seed: `${session.id}:${attempt.id}`,
       });
       const assetIds = assetIdsOf(toClientQuestions(order, pool));
-      const deadline = participantDeadline(session, participant, now);
+      const hard = participantDeadline(session, participant, now);
+      const perBlock = timingModeOf(session) === 'per_block' && !nblocks[0]!.legacy;
+      const blockState = perBlock
+        ? initBlockState(
+            nblocks.map((b) => ({ blockId: b.blockId, durationMin: b.durationMin ?? 1 })),
+            now,
+            hard,
+          )
+        : [];
       const upd = await ExamAttempt.findOneAndUpdate(
         { _id: attempt._id, status: 'joined' },
         {
           $set: {
             status: 'in_progress',
             startedAt: now,
-            deadline,
+            deadline: perBlock ? projectedDeadline(blockState, 0, hard) : hard,
+            ...(perBlock ? { blockState, blockIndex: 0, hardDeadline: hard } : {}),
             order,
             assetIds,
             lastSeenAt: now,
@@ -476,25 +610,46 @@ export const examClientService = {
         { returnDocument: 'after' },
       );
       current = upd ?? (await ExamAttempt.findById(attempt._id)) ?? attempt;
+    } else {
+      current = await syncBlocks(attempt, now);
+      if (current.status === 'auto_submitted') throw AppError.conflict('Imtihon topshirilgan');
     }
-    const questions = toClientQuestions(current.order, pool);
+    return this.view(current, session, pool, now);
+  },
+
+  /** Joriy ko'rinish (start/blokni yakunlash javobi): savollar (blokma-blok: faqat joriy blok), saqlanganlar, bloklar */
+  view(
+    current: ExamAttemptDoc,
+    session: ExamSessionDoc,
+    pool: Map<string, PoolQuestion>,
+    now: Date,
+  ) {
+    const bv = blockView(current);
+    const order = bv ? current.order.filter((o) => o.blockId === bv.id) : current.order;
+    const qids = new Set(order.map((o) => o.qid));
     return {
       serverNow: now,
       status: current.status,
       startedAt: current.startedAt,
       deadline: current.deadline,
-      questions,
-      saved: current.saved.map((s) => ({
-        id: s.qid,
-        value: s.value ?? null,
-        flagged: !!s.flagged,
-      })),
+      timingMode: timingModeOf(session),
+      blocks: blocksMeta(session, current.order),
+      block: bv,
+      questions: toClientQuestions(order, pool),
+      saved: current.saved
+        .filter((s) => qids.has(s.qid))
+        .map((s) => ({
+          id: s.qid,
+          value: s.value ?? null,
+          flagged: !!s.flagged,
+        })),
       clientSeq: current.clientSeq,
     };
   },
 
-  async state(attempt: ExamAttemptDoc) {
+  async state(attempt0: ExamAttemptDoc) {
     const now = clock.now();
+    const attempt = await syncBlocks(attempt0, now);
     await ExamAttempt.updateOne({ _id: attempt._id }, { $set: { lastSeenAt: now } });
     return {
       serverNow: now,
@@ -504,15 +659,76 @@ export const examClientService = {
       answeredCount: attempt.answeredCount,
       total: attempt.order.length,
       clientSeq: attempt.clientSeq,
+      block: blockView(attempt),
     };
   },
 
-  /** Javoblarni saqlash: atomik findOneAndUpdate (token + holat + deadline + clientSeq filtrda) */
-  async saveAnswers(attempt: ExamAttemptDoc, body: AnswersBody) {
+  /**
+   * Blokni yakunlash (blokma-blok rejim): joriy blok yopiladi (orqaga qaytish yo'q), keyingi blok hozirdan boshlanadi;
+   * oxirgi blok bo'lsa imtihon topshiriladi. `blockId` joriy blok bo'lmasa hech narsa o'zgarmaydi (idempotent).
+   */
+  async finishBlock(attempt0: ExamAttemptDoc, body: FinishBlockBody) {
     const now = clock.now();
+    const attempt = await syncBlocks(attempt0, now);
+    if (attempt.status === 'submitted' || attempt.status === 'auto_submitted') {
+      return { finished: true as const, ...(await this.result(attempt)) };
+    }
+    if (attempt.status !== 'in_progress') throw AppError.conflict('Imtihon hali boshlanmagan');
+    if (!attempt.blockState?.length) {
+      throw AppError.conflict('Bu imtihon blokma-blok emas');
+    }
+    const session = await loadSessionWithPool(attempt.sessionId);
+    const pool = poolOf(session);
+    const bv = blockView(attempt)!;
+    if (bv.id !== body.blockId) {
+      // Eskirgan so'rov (blok allaqachon almashgan): joriy holatni qaytaramiz
+      return { finished: false as const, ...this.view(attempt, session, pool, now) };
+    }
+    const hard = attempt.hardDeadline ?? attempt.deadline!;
+    const adv = finishCurrentBlock(attempt.blockState as BlockStateLike[], bv.index, now, hard);
+    const filter = { _id: attempt._id, status: 'in_progress' as const, blockIndex: bv.index };
+    if (adv.finished) {
+      const done = await ExamAttempt.findOneAndUpdate(
+        filter,
+        {
+          $set: {
+            status: 'submitted',
+            submittedAt: now,
+            lastSeenAt: now,
+            blockState: adv.state,
+          },
+        },
+        { returnDocument: 'after' },
+      );
+      const cur = done ?? (await ExamAttempt.findById(attempt._id)) ?? attempt;
+      return { finished: true as const, ...(await this.result(cur)) };
+    }
+    const upd = await ExamAttempt.findOneAndUpdate(
+      filter,
+      {
+        $set: {
+          blockState: adv.state,
+          blockIndex: adv.index,
+          deadline: projectedDeadline(adv.state, adv.index, hard),
+          lastSeenAt: now,
+        },
+      },
+      { returnDocument: 'after' },
+    );
+    const cur = upd ?? (await ExamAttempt.findById(attempt._id)) ?? attempt;
+    return { finished: false as const, ...this.view(cur, session, pool, now) };
+  },
+
+  /** Javoblarni saqlash: atomik findOneAndUpdate (token + holat + deadline + clientSeq filtrda) */
+  async saveAnswers(attempt0: ExamAttemptDoc, body: AnswersBody) {
+    const now = clock.now();
+    // Blokma-blok: vaqti tugagan bloklar avval yopiladi
+    const attempt = await syncBlocks(attempt0, now);
+    const bv = attempt.status === 'in_progress' ? blockView(attempt) : null;
     const byQid = new Map(attempt.order.map((o) => [o.qid, o]));
     const items: { qid: string; value: unknown; flagged: boolean; answered: boolean; at: Date }[] =
       [];
+    const rejected: string[] = [];
     const seen = new Set<string>();
     for (const a of body.answers) {
       const o = byQid.get(a.qid);
@@ -521,6 +737,17 @@ export const examClientService = {
           { path: 'answers', message: "Bu savol sizning imtihoningizda yo'q" },
         ]);
       if (seen.has(a.qid)) continue; // bir so'rovda takror: birinchisi
+      if (
+        bv &&
+        (o.blockId !== bv.id ||
+          !bv.deadline ||
+          now.getTime() > bv.deadline.getTime() + DEADLINE_GRACE_MS)
+      ) {
+        // Yopilgan (yoki hali ochilmagan) blokka javob yozilmaydi
+        seen.add(a.qid);
+        rejected.push(a.qid);
+        continue;
+      }
       seen.add(a.qid);
       const v = normalizeValue(o, a.value);
       items.push({
@@ -531,12 +758,23 @@ export const examClientService = {
         at: now,
       });
     }
+    if (bv && !items.length) {
+      // Hammasi yopiq blokniki: navbat to'xtashi uchun tasdiqlanadi, lekin hech narsa saqlanmaydi
+      return {
+        savedSeq: Math.max(attempt.clientSeq, body.clientSeq),
+        answeredCount: attempt.answeredCount,
+        serverNow: now,
+        rejected,
+        blockId: bv.id,
+      };
+    }
     const qids = items.map((i) => i.qid);
     const updated = await ExamAttempt.findOneAndUpdate(
       {
         _id: attempt._id,
         tokenHash: attempt.tokenHash,
         status: 'in_progress',
+        ...(bv ? { blockIndex: bv.index } : {}),
         deadline: { $gt: new Date(now.getTime() - DEADLINE_GRACE_MS) },
         clientSeq: { $lt: body.clientSeq },
       },
@@ -573,14 +811,30 @@ export const examClientService = {
         projection: { clientSeq: 1, answeredCount: 1 },
       },
     );
-    if (updated)
-      return { savedSeq: updated.clientSeq, answeredCount: updated.answeredCount, serverNow: now };
+    if (updated) {
+      return {
+        savedSeq: updated.clientSeq,
+        answeredCount: updated.answeredCount,
+        serverNow: now,
+        ...(rejected.length ? { rejected, blockId: bv?.id ?? null } : {}),
+      };
+    }
     // Saqlanmadi: sabab aniqlanadi (eskirgan seq xato emas; topshirilgan/muddati o'tgan: 409)
     const fresh = await ExamAttempt.findById(attempt._id).select(
-      'status deadline clientSeq answeredCount',
+      'status deadline clientSeq answeredCount blockIndex',
     );
     if (!fresh) throw AppError.notFound('Urinish topilmadi');
     if (fresh.status !== 'in_progress') throw AppError.conflict('Imtihon topshirilgan');
+    if (bv && (fresh.blockIndex ?? 0) !== bv.index) {
+      // Blok almashgan (poyga): bu paketdagi javoblar eski blokniki, saqlanmaydi
+      return {
+        savedSeq: Math.max(fresh.clientSeq, body.clientSeq),
+        answeredCount: fresh.answeredCount,
+        serverNow: now,
+        rejected: items.map((i) => i.qid).concat(rejected),
+        blockId: bv.id,
+      };
+    }
     if (!fresh.deadline || fresh.deadline.getTime() <= now.getTime() - DEADLINE_GRACE_MS) {
       throw AppError.conflict('Imtihon vaqti tugagan');
     }
@@ -612,10 +866,16 @@ export const examClientService = {
     return { recorded: r.modifiedCount > 0, serverNow: now };
   },
 
-  async heartbeat(attempt: ExamAttemptDoc) {
+  async heartbeat(attempt0: ExamAttemptDoc) {
     const now = clock.now();
+    const attempt = await syncBlocks(attempt0, now);
     await ExamAttempt.updateOne({ _id: attempt._id }, { $set: { lastSeenAt: now } });
-    return { serverNow: now, status: attempt.status, deadline: attempt.deadline };
+    return {
+      serverNow: now,
+      status: attempt.status,
+      deadline: attempt.deadline,
+      block: blockView(attempt),
+    };
   },
 
   /** Topshirish (idempotent): in_progress -> submitted; qayta chaqirilsa mavjud natija qaytadi */

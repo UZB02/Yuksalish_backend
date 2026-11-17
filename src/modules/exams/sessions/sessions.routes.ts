@@ -13,6 +13,7 @@ import {
   candidatesService,
 } from './candidates.service';
 import {
+  deleteBody,
   extendBody,
   reopenBody,
   grantBody,
@@ -23,9 +24,16 @@ import {
   sessionListQuery,
   sessionPatchBody,
   sessionsService,
+  submitBody,
 } from './sessions.service';
 import { renderPinSheet } from './sessions.pdf';
-import { exportQuery, gradeBody, publishBody, resultsService } from '../results/results.service';
+import {
+  exportQuery,
+  gradeBody,
+  publishBody,
+  resultsListQuery,
+  resultsService,
+} from '../results/results.service';
 import {
   previewBody,
   templateBody,
@@ -124,6 +132,16 @@ sessionsRouter.delete(
   }),
 );
 
+// ---------- Natijalar moduli (yopilgan imtihonlar ro'yxati) ----------
+sessionsRouter.get(
+  '/results',
+  validate({ query: resultsListQuery }),
+  asyncHandler(async (req, res) => {
+    const r = await resultsService.listAll(getCtx(req), sid(req), req.query as never);
+    ok(res, r.items, r.meta);
+  }),
+);
+
 // ---------- Imtihonlar ----------
 // Statik yo'llar :id dan OLDIN
 sessionsRouter.get(
@@ -178,9 +196,23 @@ sessionsRouter.patch(
 );
 sessionsRouter.delete(
   '/sessions/:id',
+  validate({ params: idParams, body: deleteBody }),
+  asyncHandler(async (req, res) => {
+    ok(res, await sessionsService.remove(getCtx(req), sid(req), String(req.params.id), req.body));
+  }),
+);
+sessionsRouter.post(
+  '/sessions/:id/copy',
   validate({ params: idParams }),
   asyncHandler(async (req, res) => {
-    ok(res, await sessionsService.remove(getCtx(req), sid(req), String(req.params.id)));
+    created(res, await sessionsService.copy(getCtx(req), sid(req), String(req.params.id)));
+  }),
+);
+sessionsRouter.post(
+  '/sessions/:id/return-to-draft',
+  validate({ params: idParams }),
+  asyncHandler(async (req, res) => {
+    ok(res, await sessionsService.returnToDraft(getCtx(req), sid(req), String(req.params.id)));
   }),
 );
 
@@ -265,8 +297,14 @@ sessionsRouter.post(
 );
 
 // Holat o'tishlari
+sessionsRouter.post(
+  '/sessions/:id/submit',
+  validate({ params: idParams, body: submitBody }),
+  asyncHandler(async (req, res) => {
+    ok(res, await sessionsService.submit(getCtx(req), sid(req), String(req.params.id), req.body));
+  }),
+);
 const transitions = [
-  ['submit', 'submit'],
   ['approve', 'approve'],
   ['open', 'open'],
   ['close', 'close'],

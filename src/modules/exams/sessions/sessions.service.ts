@@ -10,6 +10,9 @@ import { ClassModel } from '../../../models/Class';
 import { ClassSubject } from '../../../models/ClassSubject';
 import { ExamAttempt } from '../../../models/ExamAttempt';
 import { ExamCandidate } from '../../../models/ExamCandidate';
+import { ExamJoinGuard } from '../../../models/ExamJoinGuard';
+import { ExamTopic } from '../../../models/ExamTopic';
+import { TelegramOutbox } from '../../../models/TelegramOutbox';
 import {
   ExamSession,
   RESULTS_MODES,
@@ -21,27 +24,45 @@ import type {
   ISessionParticipant,
   SessionStatus,
 } from '../../../models/ExamSession';
-import { ExamTemplate } from '../../../models/ExamTemplate';
+import { ExamTemplate, SCORING_MODES, TIMING_MODES } from '../../../models/ExamTemplate';
 import { Question } from '../../../models/Question';
 import { School } from '../../../models/School';
 import { Student } from '../../../models/Student';
 import { Subject } from '../../../models/Subject';
 import { User } from '../../../models/User';
-import { isDuplicateKeyError, isId, uniq } from '../../../utils/helpers';
-import { notifyExamClosed } from '../../telegram/telegram.exams';
+import { escapeRegex, isDuplicateKeyError, isId, uniq } from '../../../utils/helpers';
+import { notifyBlockAssignments, notifyExamClosed } from '../../telegram/telegram.exams';
 import { cleanText } from '../../../utils/text';
 import { auditService } from '../../audit/audit.service';
 import { resolveExamScope, type ExamScope } from '../exams.scope';
+import { persistResultsMeta } from '../results/results.meta';
 import {
   MAX_POOL,
   actorOfUser,
+  assertBlocksOk,
   assertSectionsOk,
+  blocksSchema,
   examSettings,
+  inspectBlockOfStored,
+  inspectBlocks,
   inspectSections,
+  itemsDto,
   sectionsDto,
   sectionsSchema,
+  storeBlocks,
   storeSections,
+  templateBlocksDto,
+  validateBlocksInput,
 } from './templates.service';
+import {
+  blockQuestionCount,
+  effectiveItems,
+  normalizeBlocks,
+  scoringModeOf,
+  sumBlockDurations,
+  timingModeOf,
+  type NBlock,
+} from '../blocks/blocks.core';
 import {
   decryptPin,
   encryptPin,
@@ -51,7 +72,14 @@ import {
   pinSecretConfigured,
   uniquePin,
 } from './pin';
-import { commonEnd, participantDeadline } from './timing';
+import {
+  commonEnd,
+  extendCurrentBlock,
+  participantDeadline,
+  projectedDeadline,
+  reclampCurrentBlock,
+  type BlockStateLike,
+} from './timing';
 
 type Actor = Ctx['actor'];
 
@@ -80,12 +108,19 @@ const sessionFields = {
   classIds: z.array(objectIdSchema).max(60).default([]),
   templateId: objectIdSchema.nullish(),
   sections: sectionsSchema.optional(),
+  blocks: blocksSchema.optional(),
+  scoringMode: z.enum(SCORING_MODES).optional(),
+  timingMode: z.enum(TIMING_MODES).optional(),
   scheduledStart: startSchema,
+  /** Savol topshirish muddati (biriktirilgan o'qituvchilar uchun); boshlanishdan keyin bo'lmasin */
+  contribDeadline: startSchema.nullish(),
+  /** umumiy vaqt rejimida majburiy; blokma-blok rejimda bloklar yig'indisidan hisoblanadi */
   durationMin: z
     .number()
     .int()
     .min(5, 'Kamida 5 daqiqa')
-    .max(600, '600 daqiqadan oshmasligi kerak'),
+    .max(600, '600 daqiqadan oshmasligi kerak')
+    .optional(),
   shuffleQuestions: z.boolean().optional(),
   shuffleOptions: z.boolean().optional(),
   resultsMode: z.enum(RESULTS_MODES).default('score'),
@@ -111,6 +146,7 @@ export const participantsBody = z
     candidateIds: z.array(objectIdSchema).max(MAX_PARTICIPANTS).default([]),
   })
   .strict();
+export const submitBody = z.object({ confirmShort: z.boolean().optional() }).strict();
 export const reopenBody = z.object({ reason: text('Sabab', 500), newEnd: startSchema }).strict();
 export const extendBody = z
   .object({
@@ -122,6 +158,12 @@ export const grantBody = z
   .object({
     fullTime: z.boolean().optional(),
     extraMinutes: z.number().int().min(0).max(240).optional(),
+  })
+  .strict();
+export const deleteBody = z
+  .object({
+    mode: z.enum(['exam_only', 'with_results']).optional(),
+    confirmTitle: z.string().max(300).optional(),
   })
   .strict();
 export const reasonBody = z.object({ reason: text('Sabab', 500) }).strict();
@@ -164,10 +206,24 @@ const summary = (s: ExamSessionDoc) => ({
   scheduledStart: s.scheduledStart,
   durationMin: s.durationMin,
   resultsMode: s.resultsMode,
+  blocks: s.blocks?.length ?? 0,
+  scoringMode: scoringModeOf(s),
+  timingMode: timingModeOf(s),
   participants: s.participants.length,
   supervisors: s.supervisorIds.length,
   classes: s.classIds.length,
 });
+
+/** Yangi biriktirilgan o'qituvchilar: blockId -> faqat avval bu blokda bo'lmaganlar */
+export function contributorDiff(prev: NBlock[], next: NBlock[]) {
+  const had = new Map(prev.map((b) => [b.blockId, new Set(b.contributors)]));
+  return next
+    .map((b) => ({
+      blockId: b.blockId,
+      userIds: b.contributors.filter((u) => !had.get(b.blockId)?.has(u)),
+    }))
+    .filter((x) => x.userIds.length);
+}
 
 export const isSupervisor = (s: ExamSessionDoc, actor: Actor) =>
   s.supervisorIds.some((x) => String(x) === actor.id);
@@ -197,9 +253,22 @@ async function teacherPairs(schoolId: string, teacherId: string, yearId: Types.O
   return new Set(rows.map((r) => `${r.classId}:${r.subjectId}`));
 }
 
-export async function findSession(ctx: Ctx, schoolId: string, scope: ExamScope, id: string) {
+export async function findSession(
+  ctx: Ctx,
+  schoolId: string,
+  scope: ExamScope,
+  id: string,
+  /** true: natijalari saqlangan (faqat imtihon o'chirilgan) sessiyani ham topadi: faqat natijalar uchun */
+  kept = false,
+) {
   const s = isId(id)
-    ? await ExamSession.findOne({ _id: id, schoolId, isDeleted: { $ne: true } })
+    ? await ExamSession.findOne({
+        _id: id,
+        schoolId,
+        ...(kept
+          ? { $or: [{ isDeleted: { $ne: true } }, { resultsKept: true }] }
+          : { isDeleted: { $ne: true } }),
+      })
     : null;
   if (!s) throw notFound();
   // O'qituvchi faqat o'zi yaratgan yoki nazoratchi bo'lgan imtihonni ko'radi
@@ -251,11 +320,22 @@ const participantDto = (p: ISessionParticipant) => ({
 });
 
 async function refs(docs: ExamSessionDoc[]) {
-  const userIds = uniq(docs.flatMap((d) => [String(d.createdBy), ...d.supervisorIds.map(String)]));
-  const classIds = uniq(docs.flatMap((d) => d.classIds.map(String)));
-  const subjectIds = uniq(
-    docs.map((d) => (d.subjectId ? String(d.subjectId) : '')).filter(Boolean),
+  const blocksOfDocs = docs.map((d) => normalizeBlocks(d));
+  const userIds = uniq(
+    docs.flatMap((d, i) => [
+      String(d.createdBy),
+      ...d.supervisorIds.map(String),
+      ...blocksOfDocs[i]!.flatMap((b) => [
+        ...b.contributors,
+        ...b.contribQuestions.map((c) => c.addedBy),
+      ]),
+    ]),
   );
+  const classIds = uniq(docs.flatMap((d) => d.classIds.map(String)));
+  const subjectIds = uniq([
+    ...docs.map((d) => (d.subjectId ? String(d.subjectId) : '')).filter(Boolean),
+    ...blocksOfDocs.flatMap((bs) => bs.map((b) => b.subjectId ?? '')).filter(Boolean),
+  ]);
   const [users, classes, subjects] = await Promise.all([
     User.find({ _id: { $in: userIds } })
       .select('fullName')
@@ -271,6 +351,31 @@ async function refs(docs: ExamSessionDoc[]) {
     user: new Map(users.map((u) => [String(u._id), u.fullName])),
     cls: new Map(classes.map((c) => [String(c._id), c.name])),
     subject: new Map(subjects.map((s) => [String(s._id), s.name])),
+  };
+}
+
+/** Tuzuvchi uchun blok DTO (eski hujjat: bitta sun'iy blok, legacy: true) */
+function blockDto(b: NBlock, r: Awaited<ReturnType<typeof refs>>) {
+  return {
+    id: b.blockId,
+    legacy: b.legacy,
+    subjectId: b.subjectId,
+    subjectName: b.subjectId ? (r.subject.get(b.subjectId) ?? null) : null,
+    title: b.title,
+    targetCount: b.targetCount,
+    coefficient: b.coefficient,
+    durationMin: b.durationMin,
+    status: b.status,
+    /** Har ishtirokchi shu blokdan oladigan savollar soni (qo'lda + qoidalar) */
+    count: blockQuestionCount(b),
+    contributors: b.contributors.map((id) => ({ id, fullName: r.user.get(id) ?? '' })),
+    items: itemsDto(b.items),
+    contribQuestions: b.contribQuestions.map((c) => ({
+      questionId: c.questionId,
+      addedBy: c.addedBy,
+      addedByName: r.user.get(c.addedBy) ?? null,
+      addedAt: c.addedAt,
+    })),
   };
 }
 
@@ -303,13 +408,22 @@ function flags(s: ExamSessionDoc, scope: ExamScope, actor: Actor, isSuper: boole
           (actor.permissions.includes('exams.results') ||
             actor.permissions.includes('exams.manage')))),
     canPrint: manager && ['scheduled', 'open', 'closed'].includes(s.status),
-    canDelete: manager && ['draft', 'cancelled'].includes(s.status),
+    canDelete: manager && s.status !== 'open',
+    canCopy: manager,
+    canReturnToDraft: manager && ['scheduled', 'pending_approval'].includes(s.status),
   };
 }
 
 async function toDto(ctx: Ctx, scope: ExamScope, docs: ExamSessionDoc[], full: boolean) {
   const r = await refs(docs);
   const isSuper = ctx.actor.role === 'superadmin';
+  const withAttempts = full
+    ? new Set(
+        (
+          await ExamAttempt.distinct('sessionId', { sessionId: { $in: docs.map((d) => d._id) } })
+        ).map(String),
+      )
+    : new Set<string>();
   return docs.map((s) => ({
     id: s.id as string,
     title: s.title,
@@ -328,6 +442,10 @@ async function toDto(ctx: Ctx, scope: ExamScope, docs: ExamSessionDoc[], full: b
     resultsPublished: !!s.resultsPublished,
     /** Umumiy vaqt tugagan, lekin sessiya hali yopilmagan (davom etayotgan urinishlar bor) */
     timeUp: s.status === 'open' && Date.now() > commonEnd(s).getTime(),
+    scoringMode: scoringModeOf(s),
+    timingMode: timingModeOf(s),
+    contribDeadline: s.contribDeadline ?? null,
+    blocksCount: normalizeBlocks(s).length,
     shuffleQuestions: s.shuffleQuestions,
     shuffleOptions: s.shuffleOptions,
     participantsCount: s.participants.length,
@@ -352,6 +470,9 @@ async function toDto(ctx: Ctx, scope: ExamScope, docs: ExamSessionDoc[], full: b
           templateId: s.templateId ? String(s.templateId) : null,
           period: s.period ?? null,
           sections: sectionsDto(s.sections),
+          blocks: normalizeBlocks(s).map((b) => blockDto(b, r)),
+          /** Urinish bor (kirgan/boshlagan/topshirgan): qoralamaga qaytarib bo'lmaydi, o'chirishda tanlov kerak */
+          hasAttempts: withAttempts.has(s.id as string),
           participants: s.participants.map(participantDto),
         }
       : {}),
@@ -368,10 +489,24 @@ async function freezePool(schoolId: string, s: ExamSessionDoc) {
   const creator = await actorOfUser(String(s.createdBy));
   if (!creator) throw AppError.conflict('Imtihon yaratuvchisi faol emas, tasdiqlab bo‘lmaydi');
   const scope = await resolveExamScope(creator, schoolId);
+  const nblocks = normalizeBlocks(s);
+  const blockMode = !nblocks[0]!.legacy;
   const sections = sectionsDto(s.sections);
-  const info = await inspectSections(creator, schoolId, scope, sections);
-  assertSectionsOk(info);
-  const docs = await Question.find({ _id: { $in: info.poolIds.map(oid) }, schoolId });
+  let poolIds: string[];
+  let rulePools: Map<string, string[]>;
+  if (blockMode) {
+    // Blokli imtihon: har blok o'z fanidagi savollar bilan tekshiriladi (biriktirilgan o'qituvchilar savollari ham)
+    const binfo = await inspectBlocks(creator, schoolId, scope, nblocks.map(inspectBlockOfStored));
+    assertBlocksOk(binfo);
+    poolIds = binfo.poolIds;
+    rulePools = binfo.rulePools;
+  } else {
+    const info = await inspectSections(creator, schoolId, scope, sections);
+    assertSectionsOk(info);
+    poolIds = info.poolIds;
+    rulePools = info.rulePools;
+  }
+  const docs = await Question.find({ _id: { $in: poolIds.map(oid) }, schoolId });
   if (docs.length > MAX_POOL) throw AppError.validation('Savollar to‘plami juda katta');
   const pool = docs.map((q) => ({
     questionId: q._id,
@@ -395,17 +530,28 @@ async function freezePool(schoolId: string, s: ExamSessionDoc) {
   const frozenSections = storeSections(sections).map((sec, si) => ({
     ...sec,
     items: sec.items.map((it, ii) =>
-      it.kind === 'rule'
-        ? { ...it, poolIds: (info.rulePools.get(`${si}.${ii}`) ?? []).map(oid) }
-        : it,
+      it.kind === 'rule' ? { ...it, poolIds: (rulePools.get(`${si}.${ii}`) ?? []).map(oid) } : it,
     ),
   }));
-  return { pool, frozenSections };
+  // Bloklar: har blokning (tuzuvchi) elementlari + qoida poolIds; o'qituvchi savollari o'z ro'yxatida qoladi
+  const frozenBlocks = blockMode
+    ? (s.blocks as unknown as Record<string, unknown>[]).map((b, bi) => ({
+        ...(typeof (b as { toObject?: () => object }).toObject === 'function'
+          ? (b as unknown as { toObject: () => object }).toObject()
+          : b),
+        items: ((b.items as Record<string, unknown>[]) ?? []).map((it, ii) =>
+          it.kind === 'rule'
+            ? { ...it, poolIds: (rulePools.get(`${bi}.${ii}`) ?? []).map(oid) }
+            : it,
+        ),
+      }))
+    : null;
+  return { pool, frozenSections, frozenBlocks };
 }
 
 /** draft/pending_approval -> scheduled: snapshot + noyob kod (to'qnashuvda qayta tanlanadi) */
 async function schedule(schoolId: string, s: ExamSessionDoc, ctx: Ctx, via: 'submit' | 'approve') {
-  const { pool, frozenSections } = await freezePool(schoolId, s);
+  const { pool, frozenSections, frozenBlocks } = await freezePool(schoolId, s);
   const from: SessionStatus[] = ['draft', 'pending_approval'];
   for (let i = 0; i < 25; i++) {
     const code = String(crypto.randomInt(100000, 1000000));
@@ -419,6 +565,7 @@ async function schedule(schoolId: string, s: ExamSessionDoc, ctx: Ctx, via: 'sub
             codeActive: true,
             questionPool: pool,
             sections: frozenSections as never,
+            ...(frozenBlocks ? { blocks: frozenBlocks as never } : {}),
             poolFrozenAt: new Date(),
             approval: {
               status: via === 'approve' ? 'approved' : (s.approval?.status ?? 'none'),
@@ -440,21 +587,72 @@ async function schedule(schoolId: string, s: ExamSessionDoc, ctx: Ctx, via: 'sub
 }
 
 /**
+ * Savollar sonini tekshiradi (rejalashtirishdan oldin): bo'sh blok (0 savol) har doim xato; maqsaddan kam bo'lsa
+ * `confirmShort` bilan tuzuvchi tasdiqlashi shart (409). Faqat blokli imtihon uchun.
+ */
+function assertBlockTargets(s: ExamSessionDoc, confirmShort: boolean) {
+  const blocks = normalizeBlocks(s);
+  if (blocks[0]!.legacy) return;
+  const empty = blocks.filter((b) => blockQuestionCount(b) === 0);
+  if (empty.length) {
+    throw AppError.validation(
+      'Bo‘sh blok bor',
+      empty.map((b) => ({ path: 'blocks', message: `${b.title || 'Blok'}: savol yo'q` })),
+    );
+  }
+  const short = blocks.filter((b) => blockQuestionCount(b) < b.targetCount);
+  if (short.length && !confirmShort) {
+    throw AppError.conflict(
+      'Ba‘zi bloklarda savollar maqsaddan kam',
+      short.map((b) => ({
+        path: 'blocks',
+        message: `${b.title || 'Blok'}: ${blockQuestionCount(b)}/${b.targetCount}`,
+      })),
+    );
+  }
+}
+
+/**
  * Davom etayotgan urinishlar deadline i ni sessiya hozirgi davomiyligidan qayta hisoblaydi (hamma uchun +N / yangi tugash).
  * participantDeadline: to'liq vaqtli = boshlagan vaqti + davomiylik (+extra); aks holda umumiy tugash (+extra).
+ * per_block: qattiq (hard) deadline shu formuladan; `extendMinutes` bo'lsa JORIY blokka shuncha qo'shiladi (har o'quvchi
+ * aynan N daqiqa ko'p oladi), joriy blok deadline qayta cheklanadi va urinish deadline i = min(hard, joriy + qolgan bloklar).
  */
-export async function recomputeDeadlines(s: ExamSessionDoc): Promise<void> {
+export async function recomputeDeadlines(s: ExamSessionDoc, extendMinutes = 0): Promise<void> {
+  const perBlock = timingModeOf(s) === 'per_block';
   const attempts = await ExamAttempt.find({ sessionId: s._id, status: 'in_progress' }).select(
-    'participantKey startedAt',
+    'participantKey startedAt blockState blockIndex',
   );
   const ops = [];
   for (const a of attempts) {
     const p = s.participants.find((x) => x.key === a.participantKey);
     if (!p || !a.startedAt) continue;
+    const hard = participantDeadline(s, p, a.startedAt);
+    if (perBlock && a.blockState?.length) {
+      const idx = a.blockIndex ?? 0;
+      const st = (
+        extendMinutes
+          ? extendCurrentBlock(a.blockState as BlockStateLike[], idx, extendMinutes, hard)
+          : reclampCurrentBlock(a.blockState as BlockStateLike[], idx, hard)
+      ) as never;
+      ops.push({
+        updateOne: {
+          filter: { _id: a._id, status: 'in_progress', blockIndex: idx },
+          update: {
+            $set: {
+              hardDeadline: hard,
+              blockState: st,
+              deadline: projectedDeadline(st as BlockStateLike[], idx, hard),
+            },
+          },
+        },
+      });
+      continue;
+    }
     ops.push({
       updateOne: {
         filter: { _id: a._id, status: 'in_progress' },
-        update: { $set: { deadline: participantDeadline(s, p, a.startedAt) } },
+        update: { $set: { deadline: hard } },
       },
     });
   }
@@ -501,9 +699,30 @@ export const sessionsService = {
       .select('fullName role')
       .limit(500)
       .lean();
+    // Blokka biriktirish uchun: har o'qituvchi faol yilda o'qitadigan fanlar (maktab admini istalgan fanga)
+    const year = await AcademicYear.findOne({ schoolId, isActive: true }).select('_id');
+    const taught = new Map<string, Set<string>>();
+    if (year && scope.all) {
+      const rows = await ClassSubject.find({ schoolId, academicYearId: year._id })
+        .select('teacherId subjectId')
+        .lean();
+      for (const r of rows) {
+        const k = String(r.teacherId);
+        taught.set(k, (taught.get(k) ?? new Set()).add(String(r.subjectId)));
+      }
+    }
     return {
       pinSecretConfigured: pinSecretConfigured(),
       isAdministration: scope.all,
+      contributors: scope.all
+        ? staff.map((u) => ({
+            id: String(u._id),
+            fullName: u.fullName,
+            role: u.role,
+            /** teacher: o'qitadigan fanlari; school_admin: null = istalgan fan */
+            subjectIds: u.role === 'teacher' ? [...(taught.get(String(u._id)) ?? [])] : null,
+          }))
+        : [],
       teachersCanCreateQuizzes: s.teachersCanCreateQuizzes,
       teacherQuizNeedsApproval: s.teacherQuizNeedsApproval,
       // O'qituvchi faqat nazorat ishi yarata oladi
@@ -611,6 +830,18 @@ export const sessionsService = {
     const scope = await resolveExamScope(ctx.actor, schoolId);
     const year = await activeYear(schoolId);
     const settings = await examSettings(schoolId);
+    if (body.blocks && body.sections) {
+      throw AppError.validation('Bloklar va bo‘limlarni birga berib bo‘lmaydi', [
+        { path: 'blocks', message: "Bo'limlar yoki bloklardan faqat bittasini bering" },
+      ]);
+    }
+    if (!scope.all && body.blocks && body.blocks.length !== 1) {
+      throw AppError.forbidden("Nazorat ishi o'z faningizdan bitta blokdan iborat bo'ladi");
+    }
+    // Bitta blokli imtihon: sessiya fani = blok fani (o'qituvchi nazorat ishi shu shaklda)
+    if (!body.subjectId && body.blocks?.length === 1) {
+      body = { ...body, subjectId: body.blocks[0]!.subjectId };
+    }
 
     if (!scope.all) {
       if (!settings.teachersCanCreateQuizzes) {
@@ -639,6 +870,11 @@ export const sessionsService = {
         }
       }
     }
+    if (!scope.all && body.blocks) {
+      if (body.blocks.length !== 1 || body.blocks[0]!.subjectId !== body.subjectId) {
+        throw AppError.forbidden("Nazorat ishi o'z faningizdan bitta blokdan iborat bo'ladi");
+      }
+    }
     if (body.subjectId) {
       const ok = await Subject.exists({
         _id: body.subjectId,
@@ -662,6 +898,9 @@ export const sessionsService = {
     }
 
     let sections = body.sections;
+    let blocksIn = body.blocks;
+    let scoringIn = body.scoringMode;
+    let timingIn = body.timingMode;
     let shuffleQ = body.shuffleQuestions;
     let shuffleO = body.shuffleOptions;
     let templateId: string | null = null;
@@ -675,16 +914,61 @@ export const sessionsService = {
         throw AppError.notFound('Shablon topilmadi');
       }
       templateId = t.id as string;
-      sections = sections ?? sectionsDto(t.sections);
+      if (!sections && !blocksIn) {
+        if (t.blocks?.length) {
+          blocksIn = templateBlocksDto(t).map((b) => ({ ...b, blockId: undefined }));
+        } else {
+          sections = sectionsDto(t.sections);
+        }
+      }
+      scoringIn = scoringIn ?? scoringModeOf(t);
+      timingIn = timingIn ?? timingModeOf(t);
       shuffleQ = shuffleQ ?? t.shuffleQuestions;
       shuffleO = shuffleO ?? t.shuffleOptions;
     }
-    if (!sections) {
+    if (!sections && !blocksIn) {
       throw AppError.validation("Savollar tanlovi yo'q", [
-        { path: 'sections', message: "Shablon yoki bo'limlarni bering" },
+        { path: 'sections', message: "Shablon, bo'limlar yoki bloklarni bering" },
       ]);
     }
-    assertSectionsOk(await inspectSections(ctx.actor, schoolId, scope, sections));
+    const timing = blocksIn ? (timingIn ?? 'common') : 'common';
+    const scoring = blocksIn ? (scoringIn ?? 'points') : 'points';
+    if (!blocksIn && (timingIn === 'per_block' || scoringIn === 'coefficient')) {
+      throw AppError.validation('Rejim faqat bloklar bilan', [
+        { path: 'blocks', message: 'Koeffitsiyent va blokma-blok vaqt uchun bloklar kerak' },
+      ]);
+    }
+    let storedBlocks: ReturnType<typeof storeBlocks> = [];
+    let durationMin = body.durationMin;
+    if (blocksIn) {
+      const names = await validateBlocksInput(schoolId, scope, blocksIn, timing);
+      assertBlocksOk(
+        await inspectBlocks(
+          ctx.actor,
+          schoolId,
+          scope,
+          blocksIn.map((b) => ({ title: b.title ?? '', subjectId: b.subjectId, items: b.items })),
+        ),
+      );
+      storedBlocks = storeBlocks(blocksIn, [], names, timing);
+      if (timing === 'per_block')
+        durationMin = sumBlockDurations(normalizeBlocks({ blocks: storedBlocks }));
+    } else {
+      assertSectionsOk(await inspectSections(ctx.actor, schoolId, scope, sections!));
+    }
+    if (!durationMin) {
+      throw AppError.validation('Davomiylik kerak', [
+        { path: 'durationMin', message: 'Davomiylikni kiriting' },
+      ]);
+    }
+    if (body.contribDeadline && body.contribDeadline.getTime() > body.scheduledStart.getTime()) {
+      throw AppError.validation('Muddat noto‘g‘ri', [
+        {
+          path: 'contribDeadline',
+          message: 'Savol topshirish muddati imtihon boshlanishidan oldin bo‘lsin',
+        },
+      ]);
+    }
 
     let period: unknown = null;
     if (body.periodId) {
@@ -711,8 +995,12 @@ export const sessionsService = {
       academicYearId: year._id,
       period: period as never,
       scheduledStart: body.scheduledStart,
-      durationMin: body.durationMin,
-      sections: storeSections(sections) as never,
+      durationMin,
+      sections: (blocksIn ? [] : storeSections(sections!)) as never,
+      blocks: storedBlocks as never,
+      scoringMode: scoring,
+      timingMode: timing,
+      contribDeadline: body.contribDeadline ?? null,
       shuffleQuestions: shuffleQ ?? true,
       shuffleOptions: shuffleO ?? true,
       resultsMode: body.resultsMode,
@@ -722,6 +1010,7 @@ export const sessionsService = {
       createdBy: ctx.actor.id,
     });
     await audit(ctx, schoolId, 'exam.session.create', doc.id, null, summary(doc));
+    void notifyBlockAssignments(doc.id as string, contributorDiff([], normalizeBlocks(doc)));
     return (await toDto(ctx, scope, [doc], true))[0]!;
   },
 
@@ -770,7 +1059,79 @@ export const sessionsService = {
     }
     if (body.title !== undefined) s.title = cleanText(body.title);
     if (body.scheduledStart !== undefined) s.scheduledStart = body.scheduledStart;
-    if (body.durationMin !== undefined) s.durationMin = body.durationMin;
+    const prevBlocks = normalizeBlocks(s);
+    const prevDeadline = s.contribDeadline;
+    const hadBlocks = !prevBlocks[0]!.legacy;
+    if (body.sections !== undefined && (hadBlocks || body.blocks)) {
+      throw AppError.validation('Bloklar va bo‘limlarni birga berib bo‘lmaydi', [
+        { path: 'sections', message: 'Blokli imtihonda bloklarni tahrirlang' },
+      ]);
+    }
+    if (body.scoringMode !== undefined || body.timingMode !== undefined) {
+      if (!hadBlocks && !body.blocks) {
+        throw AppError.validation('Rejim faqat bloklar bilan', [
+          { path: 'blocks', message: 'Koeffitsiyent va blokma-blok vaqt uchun bloklar kerak' },
+        ]);
+      }
+      if (body.scoringMode !== undefined) s.scoringMode = body.scoringMode;
+      if (body.timingMode !== undefined) s.timingMode = body.timingMode;
+    }
+    if (body.contribDeadline !== undefined)
+      s.contribDeadline = (body.contribDeadline ?? null) as never;
+    if (s.contribDeadline && s.contribDeadline.getTime() > s.scheduledStart.getTime()) {
+      throw AppError.validation('Muddat noto‘g‘ri', [
+        {
+          path: 'contribDeadline',
+          message: 'Savol topshirish muddati imtihon boshlanishidan oldin bo‘lsin',
+        },
+      ]);
+    }
+    if (body.blocks !== undefined) {
+      if (
+        !scope.all &&
+        (body.blocks.length !== 1 || body.blocks[0]!.subjectId !== String(s.subjectId))
+      ) {
+        throw AppError.forbidden("Nazorat ishi o'z faningizdan bitta blokdan iborat bo'ladi");
+      }
+      const timing = timingModeOf(s);
+      const names = await validateBlocksInput(schoolId, scope, body.blocks, timing);
+      assertBlocksOk(
+        await inspectBlocks(
+          ctx.actor,
+          schoolId,
+          scope,
+          body.blocks.map((b) => ({
+            title: b.title ?? '',
+            subjectId: b.subjectId,
+            items: b.items,
+          })),
+        ),
+      );
+      s.blocks = storeBlocks(
+        body.blocks.map((b) => ({ ...b, blockId: b.blockId === 'main' ? undefined : b.blockId })),
+        prevBlocks.filter((b) => !b.legacy),
+        names,
+        timing,
+      ) as never;
+      s.sections = [] as never;
+      s.templateId = null;
+    } else if (body.timingMode !== undefined && hadBlocks && timingModeOf(s) === 'per_block') {
+      if (normalizeBlocks(s).some((b) => !b.durationMin)) {
+        throw AppError.validation('Blok davomiyligi kerak', [
+          { path: 'blocks', message: 'Blokma-blok vaqtda har blokka davomiylik kiriting' },
+        ]);
+      }
+    }
+    if (timingModeOf(s) === 'per_block' && !s.blocks?.length) {
+      throw AppError.validation('Blokma-blok vaqt uchun bloklar kerak', [
+        { path: 'timingMode', message: 'Bloklar yo‘q' },
+      ]);
+    }
+    if (timingModeOf(s) === 'per_block') {
+      s.durationMin = sumBlockDurations(normalizeBlocks(s));
+    } else if (body.durationMin !== undefined) {
+      s.durationMin = body.durationMin;
+    }
     if (body.shuffleQuestions !== undefined) s.shuffleQuestions = body.shuffleQuestions;
     if (body.shuffleOptions !== undefined) s.shuffleOptions = body.shuffleOptions;
     if (body.resultsMode !== undefined) s.resultsMode = body.resultsMode;
@@ -788,6 +1149,13 @@ export const sessionsService = {
       s.sections = storeSections(body.sections) as never;
       s.templateId = null;
     }
+    let diff = body.blocks ? contributorDiff(prevBlocks, normalizeBlocks(s)) : [];
+    // Nusxadan keyin: contribDeadline birinchi marta qo'yilganda barcha biriktirilganlarga xabar (dedupe qayta yubormaydi)
+    if (!prevDeadline && s.contribDeadline) {
+      diff = normalizeBlocks(s)
+        .filter((b) => !b.legacy && b.contributors.length)
+        .map((b) => ({ blockId: b.blockId, userIds: b.contributors }));
+    }
     if (body.periodId !== undefined) {
       const p = body.periodId ? year.periods.find((x) => String(x._id) === body.periodId) : null;
       if (body.periodId && !p) {
@@ -801,20 +1169,294 @@ export const sessionsService = {
     }
     await s.save();
     await audit(ctx, schoolId, 'exam.session.update', s.id, before, summary(s));
+    void notifyBlockAssignments(s.id as string, diff);
     return (await toDto(ctx, scope, [s], true))[0]!;
   },
 
-  async remove(ctx: Ctx, schoolId: string, id: string) {
+  /**
+   * O'chirish. Ochiq (open) imtihonni o'chirib bo'lmaydi. Urinishlari yo'q imtihon: oddiy yumshoq o'chirish.
+   * Urinishlari bor imtihon: `mode` majburiy:
+   *  - exam_only: imtihon yashirinadi, natijalar "Natijalar" bo'limida qoladi (yopilgan imtihon uchun);
+   *  - with_results: `confirmTitle` imtihon nomiga AYNAN teng bo'lishi shart; urinishlar, Telegram dedupe yozuvlari,
+   *    kirish hisoblagichlari va sessiyaning o'zi BUTUNLAY o'chadi (qaytarib bo'lmaydi). Jurnal, baholar, reyting
+   *    va boshqa modullarga TEGILMAYDI (imtihon natijalari ularga hech qachon ko'chirilmagan). Audit qoladi (faqat xulosa).
+   */
+  async remove(ctx: Ctx, schoolId: string, id: string, body: z.output<typeof deleteBody> = {}) {
     const scope = await resolveExamScope(ctx.actor, schoolId);
     const s = await findSession(ctx, schoolId, scope, id);
     assertManager(s, scope, ctx.actor);
-    if (!['draft', 'cancelled'].includes(s.status)) {
-      throw AppError.conflict('Faqat qoralama yoki bekor qilingan imtihonni o‘chirish mumkin');
+    if (s.status === 'open') {
+      throw AppError.conflict('Davom etayotgan (ochiq) imtihonni o‘chirib bo‘lmaydi: avval yoping');
     }
-    s.isDeleted = true;
-    await s.save();
-    await audit(ctx, schoolId, 'exam.session.delete', s.id, summary(s), null);
-    return { id: s.id as string, deleted: true };
+    const attempts = await ExamAttempt.countDocuments({ sessionId: s._id, schoolId });
+    if (!attempts) {
+      const before = summary(s);
+      s.isDeleted = true;
+      s.codeActive = false;
+      await s.save();
+      await audit(ctx, schoolId, 'exam.session.delete', s.id, before, { attempts: 0 });
+      return { id: s.id as string, deleted: true, mode: 'none' as const };
+    }
+    if (!body.mode) {
+      throw AppError.validation('O‘chirish usulini tanlang', [
+        { path: 'mode', message: 'Faqat imtihon yoki natijalari bilan birga' },
+      ]);
+    }
+    if (body.mode === 'exam_only') {
+      if (s.status === 'closed') await persistResultsMeta(s.id);
+      const before = summary(s);
+      s.isDeleted = true;
+      s.codeActive = false;
+      s.resultsKept = s.status === 'closed';
+      await s.save();
+      await audit(ctx, schoolId, 'exam.session.delete', s.id, before, {
+        mode: 'exam_only',
+        attempts,
+        resultsKept: s.resultsKept,
+      });
+      return { id: s.id as string, deleted: true, mode: 'exam_only' as const };
+    }
+    if (body.confirmTitle !== s.title) {
+      throw AppError.validation('Imtihon nomi mos kelmadi', [
+        { path: 'confirmTitle', message: 'Tasdiqlash uchun imtihon nomini aynan yozing' },
+      ]);
+    }
+    const before = summary(s);
+    const sessionId = s._id;
+    const code = s.code;
+    // Audit AVVAL (xulosa): o'chirish yarim yo'lda to'xtasa ham izi qoladi
+    await audit(ctx, schoolId, 'exam.session.purge', s.id, before, {
+      mode: 'with_results',
+      attempts,
+    });
+    await ExamAttempt.deleteMany({ sessionId, schoolId });
+    await TelegramOutbox.deleteMany({ dedupeKey: new RegExp(`^exam:${String(sessionId)}:`) });
+    if (code) {
+      await ExamJoinGuard.deleteMany({ key: new RegExp(`^(dev|ip):${escapeRegex(code)}:`) });
+    }
+    await ExamSession.deleteOne({ _id: sessionId, schoolId });
+    return { id: String(sessionId), deleted: true, mode: 'with_results' as const };
+  },
+
+  /**
+   * "Nusxa olib yangi imtihon": yangi QORALAMA. Ko'chadi: nom (+ " (nusxa)"), bloklar (savollar, qoidalar, o'qituvchilar
+   * qo'shgan savollar ham blok elementi sifatida), rejimlar, davomiylik, sozlamalar, sinflar, nazoratchilar.
+   * Ko'chmaydi: ishtirokchilar, PIN, urinishlar, natijalar, sanalar (boshlanish ertangi 09:00 qo'yiladi),
+   * contribDeadline, tasdiq holati, muzlatilgan savollar. Bankdan o'chirilgan/arxivlangan savollar tashlanadi va
+   * `warnings` da qaytadi. Biriktirilgan o'qituvchilarga Telegram xabari NUSXA uchun yuborilmaydi: tuzuvchi yangi
+   * contribDeadline qo'yib saqlaganda yuboriladi (update()).
+   */
+  async copy(ctx: Ctx, schoolId: string, id: string) {
+    const scope = await resolveExamScope(ctx.actor, schoolId);
+    const s = await findSession(ctx, schoolId, scope, id);
+    assertManager(s, scope, ctx.actor);
+    const year = await activeYear(schoolId);
+    const nblocks = normalizeBlocks(s);
+    const legacy = nblocks[0]!.legacy;
+    const warnings: string[] = [];
+
+    const qids = new Set<string>();
+    const topicIds = new Set<string>();
+    const collect = (items: { kind: string; questionIds?: unknown[]; topicId?: unknown }[]) => {
+      for (const it of items) {
+        if (it.kind === 'manual') for (const q of it.questionIds ?? []) qids.add(String(q));
+        else if (it.topicId) topicIds.add(String(it.topicId));
+      }
+    };
+    if (legacy) for (const sec of s.sections) collect(sec.items as never);
+    else for (const b of nblocks) collect(effectiveItems(b) as never);
+    const [okQ, okT] = await Promise.all([
+      Question.find({
+        _id: { $in: [...qids].map(oid) },
+        schoolId,
+        isDeleted: { $ne: true },
+        status: { $ne: 'archived' },
+      })
+        .select('_id')
+        .lean(),
+      ExamTopic.find({ _id: { $in: [...topicIds].map(oid) }, schoolId, isDeleted: { $ne: true } })
+        .select('_id')
+        .lean(),
+    ]);
+    const liveQ = new Set(okQ.map((x) => String(x._id)));
+    const liveT = new Set(okT.map((x) => String(x._id)));
+    let droppedQ = 0;
+    let droppedRules = 0;
+    const clean = (items: { kind: string; questionIds?: unknown[]; topicId?: unknown }[]) => {
+      const seen = new Set<string>();
+      const out: Record<string, unknown>[] = [];
+      for (const it of items as Record<string, unknown>[]) {
+        if (it.kind === 'manual') {
+          const keep: string[] = [];
+          for (const q of (it.questionIds as unknown[]) ?? []) {
+            const k = String(q);
+            if (!liveQ.has(k)) droppedQ++;
+            else if (!seen.has(k)) {
+              seen.add(k);
+              keep.push(k);
+            }
+          }
+          if (keep.length) out.push({ kind: 'manual', questionIds: keep.map(oid) });
+        } else if (liveT.has(String(it.topicId))) {
+          out.push({
+            kind: 'rule',
+            topicId: oid(String(it.topicId)),
+            count: it.count,
+            difficulty: it.difficulty ?? null,
+            type: it.type ?? null,
+          });
+        } else {
+          droppedRules++;
+        }
+      }
+      return out;
+    };
+    const sections = legacy
+      ? s.sections.map((sec) => ({ title: sec.title, items: clean(sec.items as never) }))
+      : [];
+    const blocks = legacy
+      ? []
+      : nblocks.map((b) => ({
+          blockId: new Types.ObjectId().toHexString(),
+          subjectId: oid(b.subjectId as string),
+          title: b.title,
+          targetCount: b.targetCount,
+          coefficient: b.coefficient,
+          durationMin: b.durationMin,
+          contributors: b.contributors.map(oid),
+          items: clean(effectiveItems(b) as never),
+          contribQuestions: [],
+          status: 'open' as const,
+        }));
+    if (droppedQ) {
+      warnings.push(`${droppedQ} ta savol bankdan o'chirilgan yoki arxivlangan: nusxaga tushmadi`);
+    }
+    if (droppedRules) {
+      warnings.push(`${droppedRules} ta qoida mavzusi o'chirilgan: nusxaga tushmadi`);
+    }
+
+    const classIds = s.classIds.length
+      ? (
+          await ClassModel.find({
+            _id: { $in: s.classIds },
+            schoolId,
+            academicYearId: year._id,
+            isArchived: { $ne: true },
+          })
+            .select('_id')
+            .lean()
+        ).map((c) => String(c._id))
+      : [];
+    if (classIds.length !== s.classIds.length) {
+      warnings.push("Ba'zi sinflar joriy o'quv yilida yo'q: nusxaga tushmadi");
+    }
+    const sup = await User.find({
+      _id: {
+        $in: [
+          ...s.supervisorIds.map(String),
+          ...(ctx.actor.role === 'superadmin' ? [] : [ctx.actor.id]),
+        ],
+      },
+      schoolId,
+      role: { $in: ['teacher', 'school_admin'] },
+      isActive: true,
+    })
+      .select('_id')
+      .lean();
+    const now = new Date();
+    // Ertangi 09:00 (Toshkent, +05:00 = 04:00 UTC): foydalanuvchi ustada o'zgartiradi
+    const start = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 4, 0, 0),
+    );
+    const doc = await ExamSession.create({
+      schoolId,
+      templateId: null,
+      title: cleanText(`${s.title} (nusxa)`).slice(0, 150),
+      type: s.type,
+      subjectId: s.subjectId ?? null,
+      classIds: classIds.map(oid),
+      academicYearId: year._id,
+      period: null,
+      scheduledStart: start,
+      durationMin: s.durationMin,
+      sections: sections as never,
+      blocks: blocks as never,
+      scoringMode: scoringModeOf(s),
+      timingMode: timingModeOf(s),
+      contribDeadline: null,
+      shuffleQuestions: s.shuffleQuestions,
+      shuffleOptions: s.shuffleOptions,
+      resultsMode: s.resultsMode,
+      passPercent: s.passPercent ?? null,
+      supervisorIds: sup.map((u) => u._id),
+      pinSalt: newPinSalt(),
+      createdBy: ctx.actor.id,
+    });
+    await audit(ctx, schoolId, 'exam.session.copy', doc.id, { from: s.id }, summary(doc));
+    return { session: (await toDto(ctx, scope, [doc], true))[0]!, warnings };
+  },
+
+  /**
+   * "Tahrirlash uchun qaytarish": scheduled/pending_approval va HECH KIM boshlamagan (urinish yo'q) imtihon qoralamaga
+   * qaytadi. Poyga xavfsizligi: (1) shartli yangilash holatni draft + codeActive=false qiladi (yangi kirishlar
+   * to'xtaydi), (2) shundan keyin urinishlar QAYTA tekshiriladi; bor bo'lsa holat qaytariladi (409). Tekshiruvdan
+   * keyin kelgan "joined" urinish start() da rad etiladi (imtihon scheduled emas). Muzlatilgan savollar tozalanadi,
+   * tasdiq tiklanadi, ishtirokchilar saqlanadi, barcha PIN va pinSalt qayta yaratiladi (eski PIN va PIN varaqasi
+   * darhol yaroqsiz), scheduleVersion +1 (Telegram eslatma dedupe kaliti yangilanadi).
+   */
+  async returnToDraft(ctx: Ctx, schoolId: string, id: string) {
+    assertPinSecret();
+    const scope = await resolveExamScope(ctx.actor, schoolId);
+    const s = await findSession(ctx, schoolId, scope, id);
+    assertManager(s, scope, ctx.actor);
+    const prev = s.status;
+    if (prev !== 'scheduled' && prev !== 'pending_approval') {
+      throw AppError.conflict(
+        'Faqat rejalashtirilgan yoki tasdiq kutayotgan imtihonni qaytarish mumkin',
+      );
+    }
+    const prevActive = s.codeActive;
+    const r = await ExamSession.updateOne(
+      { _id: s._id, schoolId, status: prev, isDeleted: { $ne: true } },
+      { $set: { status: 'draft', codeActive: false } },
+    );
+    if (!r.matchedCount) throw AppError.conflict('Imtihon holati o‘zgargan, sahifani yangilang');
+    if (await ExamAttempt.exists({ sessionId: s._id, schoolId })) {
+      await ExamSession.updateOne(
+        { _id: s._id, status: 'draft' },
+        { $set: { status: prev, codeActive: prevActive } },
+      );
+      throw AppError.conflict('Imtihonga allaqachon kirilgan: qoralamaga qaytarib bo‘lmaydi');
+    }
+    const fresh = (await ExamSession.findById(s._id))!;
+    fresh.questionPool = [] as never;
+    fresh.poolFrozenAt = null;
+    fresh.code = null;
+    fresh.approval = { status: 'none', by: null, at: null, reason: '' } as never;
+    fresh.scheduleVersion = (fresh.scheduleVersion ?? 0) + 1;
+    fresh.pinSalt = newPinSalt();
+    const taken = new Set<string>();
+    for (const p of fresh.participants) {
+      const { pin, hash } = uniquePin(fresh.pinSalt, taken);
+      taken.add(hash);
+      p.pinHash = hash;
+      p.pinEnc = encryptPin(pin, fresh.id as string);
+      p.allowReentry = false;
+    }
+    await fresh.save();
+    await audit(
+      ctx,
+      schoolId,
+      'exam.session.return_draft',
+      fresh.id,
+      { status: prev },
+      {
+        status: 'draft',
+        participants: fresh.participants.length,
+        scheduleVersion: fresh.scheduleVersion,
+      },
+    );
+    return (await toDto(ctx, scope, [fresh], true))[0]!;
   },
 
   // ----- Ishtirokchilar -----
@@ -1027,7 +1669,7 @@ export const sessionsService = {
     const s = await findSession(ctx, schoolId, scope, id);
     const rows = await ExamAttempt.find({ sessionId: s._id, schoolId })
       .select(
-        'participantKey status answeredCount order.qid startedAt submittedAt deadline lastSeenAt counters',
+        'participantKey status answeredCount order.qid startedAt submittedAt deadline lastSeenAt counters blockIndex',
       )
       .lean();
     const byKey = new Map(rows.map((r) => [r.participantKey, r]));
@@ -1040,6 +1682,7 @@ export const sessionsService = {
         status: a?.status ?? 'not_started',
         answered: a?.answeredCount ?? 0,
         total: a?.order?.length ?? 0,
+        blockIndex: a?.blockIndex ?? 0,
         startedAt: a?.startedAt ?? null,
         submittedAt: a?.submittedAt ?? null,
         deadline: a?.deadline ?? null,
@@ -1093,7 +1736,7 @@ export const sessionsService = {
   },
 
   // ----- Holat o'tishlari -----
-  async submit(ctx: Ctx, schoolId: string, id: string) {
+  async submit(ctx: Ctx, schoolId: string, id: string, body: z.output<typeof submitBody> = {}) {
     const scope = await resolveExamScope(ctx.actor, schoolId);
     const s = await findSession(ctx, schoolId, scope, id);
     assertManager(s, scope, ctx.actor);
@@ -1111,9 +1754,19 @@ export const sessionsService = {
     const settings = await examSettings(schoolId);
     const needsApproval = !scope.all && settings.teacherQuizNeedsApproval;
     const before = summary(s);
+    assertBlockTargets(s, body.confirmShort === true);
     if (needsApproval) {
       // Savollar yaroqliligi hozir ham tekshiriladi (nusxa tasdiqdan keyin muzlatiladi)
-      assertSectionsOk(await inspectSections(ctx.actor, schoolId, scope, sectionsDto(s.sections)));
+      const nb = normalizeBlocks(s);
+      if (nb[0]!.legacy) {
+        assertSectionsOk(
+          await inspectSections(ctx.actor, schoolId, scope, sectionsDto(s.sections)),
+        );
+      } else {
+        assertBlocksOk(
+          await inspectBlocks(ctx.actor, schoolId, scope, nb.map(inspectBlockOfStored)),
+        );
+      }
       s.status = 'pending_approval';
       s.approval = { status: 'pending', by: null, at: null, reason: '' } as never;
       await s.save();
@@ -1284,7 +1937,7 @@ export const sessionsService = {
       { returnDocument: 'after' },
     );
     if (!r) throw AppError.conflict('Imtihon holati o‘zgargan, sahifani yangilang');
-    await recomputeDeadlines(r);
+    await recomputeDeadlines(r, body.minutes);
     await audit(
       ctx,
       schoolId,
@@ -1312,6 +1965,7 @@ export const sessionsService = {
     s.codeActive = false; // kod boshqa imtihon uchun bo'shaydi
     s.closedAt = new Date();
     await s.save();
+    await persistResultsMeta(s.id);
     await audit(ctx, schoolId, 'exam.session.close', s.id, { status: prev }, { status: 'closed' });
     void notifyExamClosed(s.id as string);
     return (await toDto(ctx, scope, [s], true))[0]!;

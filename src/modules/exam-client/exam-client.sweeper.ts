@@ -5,6 +5,7 @@ import { auditService } from '../audit/audit.service';
 import { notifyExamClosed } from '../telegram/telegram.exams';
 import { clock } from '../../utils/clock';
 import { commonEnd } from '../exams/sessions/timing';
+import { persistResultsMeta } from '../exams/results/results.meta';
 import { DEADLINE_GRACE_MS, ensureScored } from './exam-client.service';
 
 /** Bir yurishda hisoblanadigan urinishlar soni (sweeper yengil bo'lishi uchun) */
@@ -70,6 +71,7 @@ export async function autoCloseSessions(now: Date): Promise<number> {
     );
     if (!r.modifiedCount) continue;
     closed++;
+    await persistResultsMeta(s.id);
     await auditService.log({
       userId: null,
       schoolId: String(s.schoolId),

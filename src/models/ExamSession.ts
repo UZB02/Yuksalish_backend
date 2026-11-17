@@ -1,5 +1,14 @@
 import { HydratedDocument, Schema, Types, model } from 'mongoose';
-import { sectionsField, type IExamSection } from './ExamTemplate';
+import {
+  blocksField,
+  sectionsField,
+  SCORING_MODES,
+  TIMING_MODES,
+  type IExamBlock,
+  type IExamSection,
+  type ScoringMode,
+  type TimingMode,
+} from './ExamTemplate';
 
 export const SESSION_TYPES = ['quiz', 'quarter', 'annual', 'trial', 'admission'] as const;
 export type SessionType = (typeof SESSION_TYPES)[number];
@@ -65,12 +74,19 @@ export interface IExamSession {
   period: { periodId: Types.ObjectId; name: string; startDate: Date; endDate: Date } | null;
   /** Boshlanish vaqti (Toshkent +05:00 ma'nosida kiritilgan, Date sifatida saqlanadi) */
   scheduledStart: Date;
+  /** per_block rejimida: bloklar davomiyliklari yig'indisi (server hisoblaydi) */
   durationMin: number;
   status: SessionStatus;
   /** 6 xonali kod: faqat scheduled/open da (codeActive) maktab ichida noyob */
   code: string | null;
   codeActive: boolean;
   sections: IExamSection[];
+  /** Bloklar (bir nechta fanli imtihon). Eski hujjatlarda bo'sh: normalizator `sections` dan bitta blok yasaydi */
+  blocks: IExamBlock[];
+  scoringMode: ScoringMode;
+  timingMode: TimingMode;
+  /** Biriktirilgan o'qituvchilar savol topshirish muddati; o'tgach blok ularga faqat o'qish uchun */
+  contribDeadline: Date | null;
   shuffleQuestions: boolean;
   shuffleOptions: boolean;
   resultsMode: ResultsMode;
@@ -97,6 +113,12 @@ export interface IExamSession {
   cancelReason: string;
   createdBy: Types.ObjectId;
   isDeleted: boolean;
+  /** "Faqat imtihonni o'chirish": imtihon yashirin, natijalar "Natijalar" bo'limida qoladi */
+  resultsKept: boolean;
+  /** Natijalar ko'chirma (snapshot): yopilganda saqlanadi, eski yopilganlarda yo'q (kod lazily hisoblaydi) */
+  resultsMeta: unknown;
+  /** "Tahrirlash uchun qaytarish" har safar +1: eslatma dedupe kalitiga kiradi (0: eski kalit formati) */
+  scheduleVersion: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -137,6 +159,10 @@ const schema = new Schema<IExamSession>(
     code: { type: String, default: null },
     codeActive: { type: Boolean, default: false },
     sections: sectionsField,
+    blocks: blocksField,
+    scoringMode: { type: String, enum: SCORING_MODES, default: 'points' },
+    timingMode: { type: String, enum: TIMING_MODES, default: 'common' },
+    contribDeadline: { type: Date, default: null },
     shuffleQuestions: { type: Boolean, default: true },
     shuffleOptions: { type: Boolean, default: true },
     resultsMode: { type: String, enum: RESULTS_MODES, default: 'score' },
@@ -161,9 +187,15 @@ const schema = new Schema<IExamSession>(
     cancelReason: { type: String, default: '' },
     createdBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     isDeleted: { type: Boolean, default: false },
+    resultsKept: { type: Boolean, default: false },
+    resultsMeta: { type: Schema.Types.Mixed, default: null },
+    scheduleVersion: { type: Number, default: 0 },
   },
   { timestamps: true },
 );
+
+// Natijalar ro'yxati (yopilgan imtihonlar, sana bo'yicha)
+schema.index({ schoolId: 1, status: 1, scheduledStart: -1 });
 
 // Kod: faqat faol (scheduled/open) sessiyalar orasida maktab ichida noyob. Kod qayta ishlatilishi mumkin.
 // Partial indeks (codeActive:true): draft/yopilgan sessiyalar (code=null) indeksga kirmaydi.

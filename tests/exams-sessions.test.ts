@@ -529,8 +529,9 @@ describe('Holatlar, tasdiq, snapshot, kod', () => {
     expect((await api('delete', `/sessions/${s.id}`, tp)).status).toBe(404);
     await addParts(admin, s.id, { classIds: [c7a.id] });
     await submit(admin, s.id);
-    expect((await api('delete', `/sessions/${s.id}`, admin)).status).toBe(409);
     expect((await api('post', `/sessions/${s.id}/open`, admin)).body.data.status).toBe('open');
+    // Ochiq imtihonni o'chirib bo'lmaydi (rejalashtirilgan, urinishsizini mumkin: alohida testda)
+    expect((await api('delete', `/sessions/${s.id}`, admin)).status).toBe(409);
     expect((await api('post', `/sessions/${s.id}/open`, admin)).status).toBe(409);
     expect((await api('post', `/sessions/${s.id}/close`, admin)).body.data.status).toBe('closed');
     const c = await mkSession(admin);

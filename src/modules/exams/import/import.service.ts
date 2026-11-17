@@ -293,9 +293,12 @@ export const importService = {
         version: 1,
       });
     }
-    const created = docs.length ? (await Question.insertMany(docs, { ordered: false })).length : 0;
+    const inserted = docs.length ? await Question.insertMany(docs, { ordered: false }) : [];
+    const created = inserted.length;
     const result = {
       created,
+      /** Yaratilgan savollar id lari (blokka qo'shish uchun) */
+      ids: inserted.map((d) => String(d._id)),
       failed,
       excluded: exclude.size,
       total: (claimed.items as ImportItem[]).length,

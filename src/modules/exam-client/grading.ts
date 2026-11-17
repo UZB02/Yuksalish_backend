@@ -1,4 +1,5 @@
 import type {
+  IAttemptBlockScore,
   IAttemptOrderItem,
   IAttemptScore,
   IManualGrade,
@@ -46,11 +47,26 @@ export function gradeQuestion(
   return { got: 0, max, ok: null };
 }
 
+/** Blokli hisob: ball rejimi va bloklar (id, koeffitsiyent). Berilmasa eski (blokisiz) natija shakli */
+export interface ScoringOpts {
+  mode: 'points' | 'coefficient';
+  blocks: { blockId: string; coefficient: number }[];
+}
+
+/**
+ * Ball formulalari:
+ *  - 'points': blok bali = blokdagi savollar olgan ballar yig'indisi; maks = savol ballari yig'indisi.
+ *  - 'coefficient': har savol 1 birlik, "ulushi" = olgan/maks (to'liq to'g'ri = 1, multi qisman ball = ulush,
+ *    esse = qo'lda qo'yilgan ball / esse maksimumi). Blok bali = (ulushlar yig'indisi) x koeffitsiyent;
+ *    blok maksimumi = (savollar soni) x koeffitsiyent.
+ *  - umumiy ball/maks = bloklar yig'indisi. Foiz = ball / maks (ikkala rejimda ham ma'noli).
+ */
 export function gradeAttempt(
   order: readonly IAttemptOrderItem[],
   saved: readonly ISavedAnswer[],
   pool: Map<string, PoolQuestion>,
   manual: readonly IManualGrade[] = [],
+  opts?: ScoringOpts,
 ): IAttemptScore {
   const manualBy = new Map(manual.map((m) => [m.qid, m]));
   const byQid = new Map(saved.map((s) => [s.qid, s]));
@@ -82,5 +98,77 @@ export function gradeAttempt(
     items.push({ qid: o.qid, got: r.got, max: r.max, ok: r.ok });
   }
   const round = (n: number) => Math.round(n * 1000) / 1000;
-  return { earned: round(earned), max: round(max), autoMax: round(autoMax), essayPending, items };
+  const base = {
+    earned: round(earned),
+    max: round(max),
+    autoMax: round(autoMax),
+    essayPending,
+    items,
+  };
+  if (!opts || !opts.blocks.length) return base;
+
+  const firstId = opts.blocks[0]!.blockId;
+  const coef = new Map(opts.blocks.map((b) => [b.blockId, b.coefficient]));
+  const blockOf = new Map<string, string>();
+  for (const o of order) {
+    const id = o.blockId && coef.has(o.blockId) ? o.blockId : firstId;
+    blockOf.set(o.qid, id);
+  }
+  const acc = new Map<string, IAttemptBlockScore & { frac: number; autoQ: number }>();
+  for (const b of opts.blocks) {
+    acc.set(b.blockId, {
+      blockId: b.blockId,
+      earned: 0,
+      max: 0,
+      autoMax: 0,
+      essayPending: 0,
+      questions: 0,
+      correct: 0,
+      frac: 0,
+      autoQ: 0,
+    });
+  }
+  for (const it of items) {
+    const a = acc.get(blockOf.get(it.qid) ?? firstId)!;
+    a.questions++;
+    a.max += it.max;
+    a.frac += it.max > 0 ? it.got / it.max : 0;
+    a.earned += it.got;
+    if (it.ok === null) a.essayPending++;
+    else a.autoMax += it.max;
+    if (it.ok === true) a.correct++;
+    if (it.ok !== null) a.autoQ++;
+  }
+  const blocks: IAttemptBlockScore[] = opts.blocks.map((b) => {
+    const a = acc.get(b.blockId)!;
+    const k = b.coefficient;
+    if (opts.mode === 'coefficient') {
+      return {
+        blockId: a.blockId,
+        earned: round(a.frac * k),
+        max: round(a.questions * k),
+        autoMax: round(a.autoQ * k),
+        essayPending: a.essayPending,
+        questions: a.questions,
+        correct: a.correct,
+      };
+    }
+    return {
+      blockId: a.blockId,
+      earned: round(a.earned),
+      max: round(a.max),
+      autoMax: round(a.autoMax),
+      essayPending: a.essayPending,
+      questions: a.questions,
+      correct: a.correct,
+    };
+  });
+  return {
+    earned: round(blocks.reduce((n, b) => n + b.earned, 0)),
+    max: round(blocks.reduce((n, b) => n + b.max, 0)),
+    autoMax: round(blocks.reduce((n, b) => n + b.autoMax, 0)),
+    essayPending,
+    items,
+    blocks,
+  };
 }
