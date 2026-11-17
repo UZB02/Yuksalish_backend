@@ -1827,16 +1827,22 @@ export const sessionsService = {
       throw AppError.forbidden();
     if (s.status !== 'scheduled')
       throw AppError.conflict('Faqat rejalashtirilgan imtihonni ochish mumkin');
+    const now = new Date();
+    const prevStart = s.scheduledStart;
+    // Muddatidan oldin "Hozir ochish": boshlanish hozirga suriladi (davomiylik o'zgarmaydi), aks holda o'quvchilar
+    // eski boshlanish vaqtigacha kira olmaydi. Rejalashtirilgan imtihonda urinish bo'lmaydi (kirish boshlanishdan oldin yopiq).
+    const shifted = now < prevStart;
+    if (shifted) s.scheduledStart = now;
     s.status = 'open';
-    s.openedAt = new Date();
+    s.openedAt = now;
     await s.save();
     await audit(
       ctx,
       schoolId,
       'exam.session.open',
       s.id,
-      { status: 'scheduled' },
-      { status: 'open' },
+      { status: 'scheduled', ...(shifted ? { scheduledStart: prevStart } : {}) },
+      { status: 'open', ...(shifted ? { scheduledStart: now } : {}) },
     );
     return (await toDto(ctx, scope, [s], true))[0]!;
   },

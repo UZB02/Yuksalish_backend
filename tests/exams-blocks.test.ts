@@ -1483,3 +1483,26 @@ describe('Telegram: blokka biriktirish va muddat eslatmasi', () => {
     void adminId;
   });
 });
+
+describe('"Hozir ochish" muddatidan oldin', () => {
+  it('boshlanish hozirga suriladi va o`quvchi darhol kira oladi', async () => {
+    const s = await scheduled();
+    expect(s.start.getTime()).toBeGreaterThan(Date.now());
+    const before = await ec('post', '/join', null, {
+      code: s.code,
+      pin: s.pins['Oquvchi 1']!.pin,
+      deviceId: DEV,
+    });
+    expect(before.status).toBe(409);
+    expect(before.body.error.message).toContain('hali boshlanmagan');
+    const dur = s.doc.durationMin;
+    const o = await call('post', `/sessions/${s.id}/open`, admin);
+    expect(o.status, JSON.stringify(o.body)).toBe(200);
+    const doc = (await ExamSession.findById(s.id))!;
+    expect(doc.status).toBe('open');
+    expect(doc.scheduledStart.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(Date.now() - doc.scheduledStart.getTime()).toBeLessThan(60_000);
+    expect(doc.durationMin).toBe(dur);
+    await joinStart(s);
+  });
+});
