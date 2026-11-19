@@ -4,7 +4,11 @@ import { asyncHandler } from '../../core/asyncHandler';
 import { getCtx } from '../../core/context';
 import { created, ok } from '../../core/response';
 import { authenticate } from '../../middlewares/authenticate';
-import { examAssetUploadLimiter, examImportLimiter } from '../../middlewares/rateLimiters';
+import {
+  examAssetUploadLimiter,
+  examImportLimiter,
+  examPasteLimiter,
+} from '../../middlewares/rateLimiters';
 import { tenant } from '../../middlewares/tenant';
 import { validate } from '../../middlewares/validate';
 import { objectIdSchema } from '../../core/validators';
@@ -17,6 +21,7 @@ import {
   uploadDocxFile,
   uploadXlsxFile,
 } from './import/import.service';
+import { pasteCommitBody, pasteService, pastePreviewBody } from './import/import.paste.service';
 import { buildWordTemplate } from './import/import.template';
 import { requireExamsEnabled, requireQuestionsAccess } from './exams.gate';
 import { bulkStatusBody, listQuery, updateBody, type ListQuery } from './questions.schema';
@@ -124,6 +129,24 @@ examsRouter.post(
   validate({ body: bulkStatusBody }),
   asyncHandler(async (req, res) => {
     ok(res, await questionsService.bulkStatus(getCtx(req), sid(req), req.body));
+  }),
+);
+
+// "Matnni joylash" (savollar banki): jonli ko'rish va saqlash. `/questions/:id` dan OLDIN
+examsRouter.post(
+  '/questions/paste/preview',
+  examPasteLimiter,
+  validate({ body: pastePreviewBody }),
+  asyncHandler(async (req, res) => {
+    ok(res, pasteService.preview(req.body.text));
+  }),
+);
+examsRouter.post(
+  '/questions/paste/commit',
+  examPasteLimiter,
+  validate({ body: pasteCommitBody }),
+  asyncHandler(async (req, res) => {
+    created(res, await pasteService.commitToTopic(getCtx(req), sid(req), req.body));
   }),
 );
 

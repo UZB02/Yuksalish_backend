@@ -11,12 +11,20 @@ import {
   type IAttemptOrderItem,
   type IAttemptScore,
 } from '../../models/ExamAttempt';
+import { ExamEntryCode } from '../../models/ExamEntryCode';
 import { ExamJoinGuard } from '../../models/ExamJoinGuard';
 import { ExamSession, type ExamSessionDoc } from '../../models/ExamSession';
 import { School } from '../../models/School';
 import { clock } from '../../utils/clock';
 import { EXAMS_KEY, type ExamsSettings } from '../settings/exams.settings';
 import { settingsService } from '../settings/settings.service';
+import {
+  hashEntryCode,
+  isWellFormedEntryCode,
+  normalizeEntryCode,
+  signConfirm,
+  verifyConfirm,
+} from '../exams/sessions/entryCode';
 import { hashPin, normalizePin } from '../exams/sessions/pin';
 import { fmtTashkent } from '../exams/sessions/sessions.pdf';
 import {
@@ -53,6 +61,16 @@ const IP_BLOCK_MS = 10 * 60_000;
 export const SESSION_FAIL_ALERT = 200;
 const TOKEN_TAIL_MS = 12 * 3_600_000;
 
+/** Shaxsiy kod bilan kirishdagi himoya: qurilma (qattiq), IP (NAT uchun saxiy) va umumiy (taqsimlangan hujum) */
+const CODE_DEV_MAX_FAILS = 5;
+const CODE_DEV_BLOCK_MS = 5 * 60_000;
+const CODE_IP_MAX_FAILS = 100;
+const CODE_IP_BLOCK_MS = 10 * 60_000;
+const CODE_GLOBAL_MAX_FAILS = 3000;
+const CODE_GLOBAL_BLOCK_MS = 2 * 60_000;
+const CODE_MSG = "Kod noto'g'ri yoki muddati tugagan";
+const codeError = () => AppError.unauthorized(CODE_MSG);
+
 const GENERIC_MSG = "Kod yoki PIN noto'g'ri";
 /** Barcha muvaffaqiyatsiz kirishlar (noto'g'ri kod / PIN / mavjud emas / modul o'chiq) uchun BIR XIL javob */
 const generic = () => AppError.unauthorized(GENERIC_MSG);
@@ -79,6 +97,20 @@ export const joinBody = z
   })
   .strict();
 export type JoinBody = z.output<typeof joinBody>;
+
+const deviceIdField = z
+  .string()
+  .trim()
+  .regex(/^[A-Za-z0-9_-]{8,64}$/);
+/** Shaxsiy kod: erkin matn (bo'shliq/chiziqcha/kirill harflar normallashtiriladi), uzunlik cheklangan */
+export const joinCodeBody = z
+  .object({ code: z.string().trim().min(1).max(40), deviceId: deviceIdField })
+  .strict();
+export type JoinCodeBody = z.output<typeof joinCodeBody>;
+export const joinConfirmBody = z
+  .object({ confirmToken: z.string().trim().min(10).max(1000), deviceId: deviceIdField })
+  .strict();
+export type JoinConfirmBody = z.output<typeof joinConfirmBody>;
 
 const answerItem = z
   .object({
@@ -439,8 +471,119 @@ export const examClientService = {
       }
       throw generic();
     }
-    if (!(await assertSchoolActive(session.schoolId))) throw generic();
+    return examClientService.enter(session, participant, body.deviceId, now, devKey);
+  },
+
+  /**
+   * Shaxsiy kod bilan kirish, 1-qadam ("Bu sizmisiz?"): kod topilsa ishtirokchi va imtihon haqida minimal ma'lumot
+   * + qisqa muddatli tasdiqlash tokeni qaytadi. Urinish hujjati YARATILMAYDI va imtihon boshlanmaydi.
+   * Noto'g'ri/muddati tugagan/o'chirilgan imtihon kodi uchun BIR XIL xato; qurilma, IP va umumiy hisoblagichlar.
+   */
+  async joinCode(body: JoinCodeBody, ip: string) {
+    const now = clock.now();
+    const devKey = `cdev:${body.deviceId}`;
+    const ipKey = `cip:${ip}`;
+    const globKey = 'cglob';
+    if (await isBlocked([devKey, ipKey, globKey], now)) {
+      throw AppError.rateLimited(
+        "Ko'p noto'g'ri urinish. Bir necha daqiqadan so'ng qayta urinib ko'ring",
+      );
+    }
+    const norm = normalizeEntryCode(body.code);
+    let session: ExamSessionDoc | null = null;
+    let participant: ExamSessionDoc['participants'][number] | null = null;
+    // Shakli noto'g'ri kod bazaga umuman murojaat qilmaydi (lekin urinish sifatida hisoblanadi)
+    const hit = isWellFormedEntryCode(norm)
+      ? await ExamEntryCode.findOne({ codeHash: hashEntryCode(norm) }).lean()
+      : null;
+    if (hit) {
+      session = await ExamSession.findOne({
+        _id: hit.sessionId,
+        schoolId: hit.schoolId,
+        codeActive: true,
+        status: { $in: ['scheduled', 'open'] },
+        isDeleted: { $ne: true },
+      });
+      participant = session?.participants.find((p) => p.key === hit.participantKey) ?? null;
+    }
+    if (!session || !participant || !(await assertSchoolActive(session.schoolId))) {
+      await Promise.all([
+        recordFailure(devKey, now, CODE_DEV_MAX_FAILS, DEVICE_WINDOW_MS, CODE_DEV_BLOCK_MS),
+        recordFailure(ipKey, now, CODE_IP_MAX_FAILS, IP_WINDOW_MS, CODE_IP_BLOCK_MS),
+        recordFailure(globKey, now, CODE_GLOBAL_MAX_FAILS, IP_WINDOW_MS, CODE_GLOBAL_BLOCK_MS),
+      ]);
+      throw codeError();
+    }
     await ExamJoinGuard.deleteOne({ key: devKey });
+    const attempt = await ExamAttempt.findOne({
+      sessionId: session._id,
+      participantKey: participant.key,
+    }).select('status');
+    const blocks = normalizeBlocks(session).filter((b) => !b.legacy);
+    return {
+      confirmToken: signConfirm(
+        {
+          sessionId: session.id as string,
+          participantKey: participant.key,
+          deviceId: body.deviceId,
+        },
+        now,
+      ),
+      serverNow: now,
+      participant: {
+        fullName: participant.fullName,
+        className: participant.className ?? participant.origin ?? null,
+      },
+      exam: {
+        title: session.title,
+        subjectsCount: blocks.length || 1,
+        durationMin: session.durationMin,
+        startsAt: session.scheduledStart,
+        endsAt: commonEnd(session),
+        phase:
+          now < session.scheduledStart
+            ? 'upcoming'
+            : now < commonEnd(session)
+              ? 'running'
+              : 'ended',
+      },
+      attemptStatus: attempt?.status ?? null,
+    };
+  },
+
+  /** 2-qadam ("Ha, boshlash"): tasdiqlash tokeni yaroqli bo'lsa mavjud kirish oqimi (urinish + token) */
+  async joinConfirm(body: JoinConfirmBody) {
+    const now = clock.now();
+    const v = verifyConfirm(body.confirmToken, body.deviceId, now);
+    const expired = () =>
+      AppError.validation('Tasdiqlash muddati tugadi: kodni qayta kiriting', [
+        { path: 'confirmToken', message: 'Tasdiqlash muddati tugadi' },
+      ]);
+    if (!v) throw expired();
+    const session = await ExamSession.findOne({
+      _id: v.sessionId,
+      codeActive: true,
+      status: { $in: ['scheduled', 'open'] },
+      isDeleted: { $ne: true },
+    });
+    const participant = session?.participants.find((p) => p.key === v.participantKey) ?? null;
+    if (!session || !participant) throw expired();
+    return examClientService.enter(session, participant, body.deviceId, now);
+  },
+
+  /**
+   * Ishtirokchini imtihonga kiritadi (kod+PIN yoki shaxsiy kod tasdiqlangach): maktab faolligi, vaqt oynasi, urinish
+   * hujjati va token. Faqat TAYYOR (topilgan va tasdiqlangan) session+participant bilan chaqiriladi.
+   */
+  async enter(
+    session: ExamSessionDoc,
+    participant: ExamSessionDoc['participants'][number],
+    deviceId: string,
+    now: Date,
+    devKey?: string,
+  ) {
+    if (!(await assertSchoolActive(session.schoolId))) throw generic();
+    if (devKey) await ExamJoinGuard.deleteOne({ key: devKey });
 
     let attempt = await ExamAttempt.findOne({
       sessionId: session._id,
@@ -465,7 +608,7 @@ export const examClientService = {
     );
 
     if (attempt) {
-      if (attempt.deviceId !== body.deviceId) {
+      if (attempt.deviceId !== deviceId) {
         if (!participant.allowReentry) throw AppError.conflict('Boshqa qurilmada ochilgan');
         // Nazoratchi ruxsat bergan: yangi qurilmaga o'tkaziladi, ruxsat bir martalik
         await ExamSession.updateOne(
@@ -475,7 +618,7 @@ export const examClientService = {
       }
       attempt = await ExamAttempt.findOneAndUpdate(
         { _id: attempt._id },
-        { $set: { tokenHash, tokenExpiresAt, deviceId: body.deviceId, lastSeenAt: now } },
+        { $set: { tokenHash, tokenExpiresAt, deviceId: deviceId, lastSeenAt: now } },
         { returnDocument: 'after' },
       );
     } else {
@@ -489,7 +632,7 @@ export const examClientService = {
           className: participant.className ?? participant.origin ?? null,
           tokenHash,
           tokenExpiresAt,
-          deviceId: body.deviceId,
+          deviceId: deviceId,
           lastSeenAt: now,
         });
       } catch (e) {
@@ -499,7 +642,7 @@ export const examClientService = {
           sessionId: session._id,
           participantKey: participant.key,
         });
-        if (!other || other.deviceId !== body.deviceId)
+        if (!other || other.deviceId !== deviceId)
           throw AppError.conflict('Boshqa qurilmada ochilgan');
         attempt = await ExamAttempt.findOneAndUpdate(
           { _id: other._id },

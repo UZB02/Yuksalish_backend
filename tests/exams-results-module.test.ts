@@ -232,6 +232,10 @@ async function scheduled(o: BlockOpts = {}, extra: object = {}) {
   expect(
     (await call('post', `/sessions/${id}/participants`, admin, { classIds: [c7a.id] })).status,
   ).toBe(201);
+  // Fan bo'yicha tasdiq: o'qituvchisi bor fanlar rejalashtirishdan oldin tasdiqlanadi
+  for (const b of created.body.data.blocks ?? []) {
+    await call('post', `/sessions/${id}/blocks/${b.id}/ready`, admin, { ready: true });
+  }
   const sub = await call('post', `/sessions/${id}/submit`, admin, { confirmShort: true });
   expect(sub.status, JSON.stringify(sub.body)).toBe(200);
   const doc = (await ExamSession.findById(id))!;
@@ -336,7 +340,8 @@ describe('Natijalar moduli: ro`yxat', () => {
   it('filtrlar: sana oralig`i, fan, sinf, nom bo`yicha qidiruv; sahifalash', async () => {
     const a = await finished();
     const d = (await ExamSession.findById(a.id))!;
-    const day = d.scheduledStart.toISOString().slice(0, 10);
+    // Sana filtri Toshkent (UTC+5) kuni bo'yicha: UTC kuni bilan solishtirilsa kechqurun soatlarda xato chiqadi
+    const day = new Date(d.scheduledStart.getTime() + 5 * 3_600_000).toISOString().slice(0, 10);
     expect((await list(admin, `?from=${day}&to=${day}`)).body.data).toHaveLength(1);
     expect((await list(admin, '?from=2001-01-01&to=2001-01-02')).body.data).toHaveLength(0);
     expect((await list(admin, `?subjectId=${math.id}`)).body.data).toHaveLength(1);
@@ -700,5 +705,159 @@ describe('Ishtirokchi tafsiloti: blok ballari o`sha ishtirokchiniki', () => {
     expect(d.body.data.blockScores).toHaveLength(2);
     expect(d.body.data.blockScores[0].max).toBeGreaterThan(0);
     expect(d.body.data.percent).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// §16 3-bosqich: profil sahifalaridagi imtihon natijalari (o'quvchi va nomzod)
+import { ExamCandidate } from '../src/models/ExamCandidate';
+
+describe('Profil: yakunlangan imtihon natijalari', () => {
+  let viewer = '';
+  let oviewer = '';
+  beforeEach(async () => {
+    await makeUser({
+      username: 'viewer',
+      role: 'school_admin',
+      schoolId: school.id,
+      permissions: ['students.view'],
+    });
+    await makeUser({
+      username: 'oviewer',
+      role: 'school_admin',
+      schoolId: other.id,
+      permissions: ['students.view'],
+    });
+    viewer = (await login('viewer')).token;
+    oviewer = (await login('oviewer')).token;
+  });
+  const sres = (id: string, t = viewer, sid = school.id) =>
+    request(app).get(`/api/v1/students/${id}/exam-results`).set(bearer(t)).set('X-School-Id', sid);
+  const studentOf = async (name = 'Oquvchi 1') =>
+    (await Student.findOne({ fullName: name }))!.id as string;
+
+  it('o`quvchi: nom, sana, fanlar, jami/maks/foiz, fan bo`yicha ballar; yopilmagan va boshqa o`quvchi natijasi chiqmaydi', async () => {
+    const s = await finished();
+    await mkSession({}, { title: 'Qoralama' });
+    const id = await studentOf();
+    const r = await sres(id);
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    const d = r.body.data;
+    expect(d.items).toHaveLength(1);
+    expect(d.items[0]).toMatchObject({
+      sessionId: s.id,
+      title: 'DTM sinov',
+      scoringMode: 'coefficient',
+      passPercent: null,
+      passed: null,
+      examDeleted: false,
+    });
+    expect(d.items[0].subjects.sort()).toEqual(['Matematika', 'Ona tili']);
+    expect(d.items[0].max).toBeGreaterThan(0);
+    expect(d.items[0].percent).toBeCloseTo((d.items[0].earned / d.items[0].max) * 100, 1);
+    expect(d.items[0].blocks).toHaveLength(2);
+    expect(d.items[0].blocks.map((b: { subjectName: string }) => b.subjectName).sort()).toEqual([
+      'Matematika',
+      'Ona tili',
+    ]);
+    expect(d.items[0].blocks[0]).toEqual(
+      expect.objectContaining({
+        coefficient: expect.any(Number),
+        earned: expect.any(Number),
+        percent: expect.any(Number),
+      }),
+    );
+    expect(d.summary).toMatchObject({ count: 1, passedCount: 0 });
+    // topshirmagan o'quvchi: bo'sh
+    const other2 = await sres(await studentOf('Oquvchi 2'));
+    expect(other2.body.data).toEqual({
+      items: [],
+      summary: { count: 0, averagePercent: null, passedCount: 0 },
+    });
+    // javobda javob kaliti, token, PIN va kod yo'q
+    const raw = JSON.stringify(r.body);
+    for (const k of ['tokenHash', 'pinHash', 'pinEnc', 'codeEnc', 'deviceId', 'questionPool']) {
+      expect(raw).not.toContain(k);
+    }
+  });
+
+  it('o`tish bali: foiz >= passPercent bo`lsa passed=true, aks holda false', async () => {
+    const s = await finished({}, { passPercent: 1 });
+    await ExamSession.updateOne({ _id: s.id }, { $set: { 'resultsMeta.passPercent': 1 } });
+    const id = await studentOf();
+    let r = await sres(id);
+    expect(r.body.data.items[0].passPercent).toBe(1);
+    const percent = r.body.data.items[0].percent as number;
+    expect(r.body.data.items[0].passed).toBe(percent >= 1);
+    await ExamSession.updateOne({ _id: s.id }, { $set: { 'resultsMeta.passPercent': 101 } });
+    r = await sres(id);
+    expect(r.body.data.items[0].passed).toBe(false);
+    expect(r.body.data.summary.passedCount).toBe(0);
+  });
+
+  it('imtihon "faqat imtihon" rejimida o`chirilsa natija profilda qoladi (examDeleted); natijalari bilan o`chirilsa chiqmaydi', async () => {
+    const s = await finished();
+    const id = await studentOf();
+    expect((await call('delete', `/sessions/${s.id}`, admin, { mode: 'exam_only' })).status).toBe(
+      200,
+    );
+    let r = await sres(id);
+    expect(r.body.data.items).toHaveLength(1);
+    expect(r.body.data.items[0]).toMatchObject({ title: 'DTM sinov', examDeleted: true });
+    await ExamSession.updateOne({ _id: s.id }, { $set: { isDeleted: false } });
+    expect(
+      (
+        await call('delete', `/sessions/${s.id}`, admin, {
+          mode: 'with_results',
+          confirmTitle: 'DTM sinov',
+        })
+      ).status,
+    ).toBe(200);
+    r = await sres(id);
+    expect(r.body.data.items).toEqual([]);
+  });
+
+  it('ruxsat va izolyatsiya: tokensiz 401; boshqa maktab 404; begona maktab o`quvchisi 404; sinfga biriktirilmagan o`qituvchi 404', async () => {
+    await finished();
+    const id = await studentOf();
+    expect((await request(app).get(`/api/v1/students/${id}/exam-results`)).status).toBe(401);
+    const asOther = await sres(id, oviewer, other.id);
+    expect(asOther.status).toBe(404);
+    expect((await sres(id, oviewer)).status).toBeGreaterThanOrEqual(403);
+    // students.view ruxsati yo'q (faqat exams.manage): 403
+    expect((await sres(id, admin)).status).toBe(403);
+    expect((await sres('a'.repeat(24))).status).toBe(404);
+    expect((await sres('xato')).status).toBe(404);
+    expect((await sres(id, tfree)).status).toBeGreaterThanOrEqual(403);
+  });
+
+  it('nomzod: natijalari ma`muriyatga ko`rinadi (o`quvchidagi DTO); o`qituvchi 403, boshqa maktab 404', async () => {
+    const s = await finished();
+    const cand = await ExamCandidate.create({
+      schoolId: school.id,
+      fullName: 'Nomzod Ali',
+      createdBy: (await User.findOne({ username: 'admin' }))!._id,
+    });
+    const doc = (await ExamSession.findById(s.id))!;
+    const p = doc.participants.find((x) => x.fullName === 'Oquvchi 1')!;
+    await ExamSession.updateOne(
+      { _id: s.id, 'participants.key': p.key },
+      { $set: { 'participants.$.kind': 'candidate', 'participants.$.refId': cand._id } },
+    );
+    await ExamAttempt.updateOne(
+      { sessionId: s.id, participantKey: p.key },
+      { $set: { participantKind: 'candidate' } },
+    );
+    const r = await call('get', `/candidates/${cand.id}/results`, admin);
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.data.items).toHaveLength(1);
+    expect(r.body.data.items[0]).toMatchObject({ sessionId: s.id, title: 'DTM sinov' });
+    expect((await call('get', `/candidates/${cand.id}/results`, tmath)).status).toBe(403);
+    expect(
+      (await call('get', `/candidates/${cand.id}/results`, oadmin)).status,
+    ).toBeGreaterThanOrEqual(403);
+    expect((await call('get', `/candidates/${'b'.repeat(24)}/results`, admin)).status).toBe(404);
+    // o'quvchi sifatida endi chiqmaydi
+    expect((await sres(await studentOf())).body.data.items).toEqual([]);
   });
 });

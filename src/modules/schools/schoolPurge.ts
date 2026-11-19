@@ -9,6 +9,7 @@ import { ClassModel } from '../../models/Class';
 import { ClassSubject } from '../../models/ClassSubject';
 import { ExamAsset } from '../../models/ExamAsset';
 import { ExamAttempt } from '../../models/ExamAttempt';
+import { ExamEntryCode } from '../../models/ExamEntryCode';
 import { ExamCandidate } from '../../models/ExamCandidate';
 import { ExamImportSession } from '../../models/ExamImportSession';
 import { ExamSession } from '../../models/ExamSession';
@@ -93,6 +94,7 @@ export const SCHOOL_PURGE_STEPS: PurgeStep[] = [
   bySchool('examAssets', 'Imtihon rasmlari', ExamAsset),
   bySchool('examImportSessions', 'Imtihon import sessiyalari', ExamImportSession),
   bySchool('examAttempts', 'Imtihon urinishlari (javoblar, hodisalar)', ExamAttempt),
+  bySchool('examEntryCodes', 'Imtihon shaxsiy kirish kodlari', ExamEntryCode),
   bySchool('examSessions', 'Imtihon sessiyalari (PIN, savollar nusxasi)', ExamSession),
   bySchool('examTemplates', 'Imtihon shablonlari', ExamTemplate),
   bySchool('examCandidates', 'Imtihon nomzodlari', ExamCandidate),

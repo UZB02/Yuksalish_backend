@@ -6,6 +6,7 @@ import { created, ok } from '../../core/response';
 import { buildExport, buildTemplate } from './students.excel';
 import { studentsImportService } from './students-import.service';
 import { studentsService as s } from './students.service';
+import { profileExamResults } from '../exams/results/results.profile';
 
 const sid = (req: Request) => req.schoolId as string;
 const id = (req: Request) => String(req.params.id);
@@ -27,6 +28,14 @@ export const list = asyncHandler(async (req, res) => {
 });
 export const get = asyncHandler(async (req, res) => {
   ok(res, await s.get(getCtx(req).actor, sid(req), id(req)));
+});
+/**
+ * O'quvchining yakunlangan imtihon natijalari (profil "Imtihonlar" bo'limi; ota-onalar platformasi uchun ham
+ * barqaror DTO, qarang results.profile.ts). Kirish huquqi o'quvchi profili bilan bir xil (o'qituvchi: faqat o'z sinflari).
+ */
+export const examResults = asyncHandler(async (req, res) => {
+  const student = await s.get(getCtx(req).actor, sid(req), id(req)); // topilmasa/ruxsatsiz: 404
+  ok(res, await profileExamResults(sid(req), 'student', String(student!.id)));
 });
 export const create = asyncHandler(async (req, res) => {
   created(res, await s.create(getCtx(req), sid(req), req.body));

@@ -51,6 +51,7 @@ studentsRouter.get('/import/:importId/errors', ...write, c.importErrors);
 studentsRouter.get('/', ...read, validate({ query: listQuery }), c.list);
 studentsRouter.post('/', ...write, validate({ body: createBody }), c.create);
 studentsRouter.get('/:id', ...read, c.get);
+studentsRouter.get('/:id/exam-results', ...read, c.examResults);
 studentsRouter.get(
   '/:id/attendance-summary',
   requireAnyPermission('attendance.view', 'attendance.take', 'students.view'),

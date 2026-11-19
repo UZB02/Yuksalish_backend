@@ -117,6 +117,13 @@ sessionsRouter.get(
     ok(res, await candidatesService.get(getCtx(req), sid(req), String(req.params.id)));
   }),
 );
+sessionsRouter.get(
+  '/candidates/:id/results',
+  validate({ params: idParams }),
+  asyncHandler(async (req, res) => {
+    ok(res, await candidatesService.results(getCtx(req), sid(req), String(req.params.id)));
+  }),
+);
 sessionsRouter.patch(
   '/candidates/:id',
   validate({ params: idParams, body: candidatePatchBody }),
@@ -148,6 +155,24 @@ sessionsRouter.get(
   '/sessions/meta',
   asyncHandler(async (req, res) => {
     ok(res, await sessionsService.meta(getCtx(req), sid(req)));
+  }),
+);
+sessionsRouter.get(
+  '/sessions/suggest-teachers',
+  validate({
+    query: z.object({
+      subjectId: objectIdSchema,
+      classIds: z
+        .string()
+        .max(2000)
+        .default('')
+        .transform((v) => v.split(',').filter(Boolean))
+        .pipe(z.array(objectIdSchema).max(60)),
+    }),
+  }),
+  asyncHandler(async (req, res) => {
+    const q = req.query as unknown as { subjectId: string; classIds: string[] };
+    ok(res, await sessionsService.suggestTeachers(getCtx(req), sid(req), q.subjectId, q.classIds));
   }),
 );
 sessionsRouter.get(
@@ -249,6 +274,21 @@ sessionsRouter.post(
     ok(
       res,
       await sessionsService.regeneratePin(
+        getCtx(req),
+        sid(req),
+        String(req.params.id),
+        String(req.params.key),
+      ),
+    );
+  }),
+);
+sessionsRouter.get(
+  '/sessions/:id/participants/:key/code',
+  validate({ params: keyParams }),
+  asyncHandler(async (req, res) => {
+    ok(
+      res,
+      await sessionsService.participantCode(
         getCtx(req),
         sid(req),
         String(req.params.id),

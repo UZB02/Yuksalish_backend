@@ -40,6 +40,11 @@ const schema = z.object({
     (v) => (v === '' ? undefined : v),
     z.string().min(32, 'EXAM_PIN_SECRET kamida 32 belgi').optional(),
   ),
+  // Imtihon sahifasining ochiq manzili (kartochkada chop etiladi), masalan https://imtihon.example.uz. Bo'sh bo'lsa chop etilmaydi
+  EXAM_PUBLIC_URL: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z.string().trim().max(200).optional(),
+  ),
   RATING_DEBOUNCE_MS: z.coerce.number().int().min(0).default(5000),
 });
 

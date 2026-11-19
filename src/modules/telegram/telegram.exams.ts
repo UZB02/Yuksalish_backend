@@ -116,7 +116,7 @@ const subjectNames = async (ids: string[]): Promise<Map<string, string>> =>
 const deadlineText = (d: Date | null | undefined) => (d ? fmtTashkent(d) : 'belgilanmagan');
 
 /**
- * Blokka o'qituvchi biriktirilganda xabar: «Siz «{imtihon}» imtihonining {fan} blokiga biriktirildingiz.
+ * Blokka o'qituvchi biriktirilganda xabar: «Siz «{imtihon}» imtihonining {fan} fani bo'yicha biriktirildingiz.
  * Savollar soni: N. Muddat: {sana}.» dedupe: exam:<id>:contrib:<blockId>:<userId>:assigned. `notify.examReminders`
  * o'chiq bo'lsa yoki bot ishlamasa hech narsa. Hech qachon tashlamaydi (chaqiruvchi `void` qiladi).
  */
@@ -137,7 +137,7 @@ export async function notifyBlockAssignments(
       const b = blocks.get(a.blockId);
       if (!b) continue;
       const text =
-        `📝 Siz «${esc(s.title)}» imtihonining ${esc(names.get(b.subjectId ?? '') ?? b.title)} blokiga biriktirildingiz.` +
+        `📝 Siz «${esc(s.title)}» imtihoni uchun ${esc(names.get(b.subjectId ?? '') ?? b.title)} fanidan savollar tayyorlashga biriktirildingiz.` +
         ` Savollar soni: ${b.targetCount || blockQuestionCount(b)}. Muddat: ${esc(deadlineText(s.contribDeadline))}.`;
       for (const userId of a.userIds) {
         items.push({
@@ -153,6 +153,127 @@ export async function notifyBlockAssignments(
   } catch (err) {
     logger.error({ err, sessionId }, 'Blok biriktirish xabarini navbatga qo‘yishda xato');
     return 0;
+  }
+}
+
+/**
+ * Imtihonning barcha fanlari "tayyor" bo'lganda tuzuvchiga xabar (bir marta: dedupe exam:<id>:allready:<userId>).
+ * `notify.examReminders` o'chiq yoki bot ishlamasa hech narsa.
+ */
+export async function notifyAllBlocksReady(sessionId: string): Promise<number> {
+  try {
+    if (!telegramManager.isRunning()) return 0;
+    const s = await ExamSession.findById(sessionId).select(
+      'schoolId title blocks status createdBy',
+    );
+    if (!s || s.status !== 'draft') return 0;
+    const blocks = normalizeBlocks(s).filter((b) => !b.legacy);
+    if (!blocks.length || !blocks.every((b) => b.status === 'ready')) return 0;
+    const settings = await getTelegramSettings(String(s.schoolId));
+    if (!settings.notify.examReminders) return 0;
+    return await telegramNotify.enqueueMany([
+      {
+        userId: String(s.createdBy),
+        kind: 'examBlock',
+        parseMode: 'HTML',
+        dedupeKey: `exam:${sessionId}:allready:${String(s.createdBy)}`,
+        text: `✅ «${esc(s.title)}» imtihoni: barcha fanlar uchun savollar tayyor. Imtihonni rejalashtirishingiz mumkin.`,
+      },
+    ]);
+  } catch (err) {
+    logger.error({ err, sessionId }, 'Imtihon tayyorligi xabarini navbatga qo‘yishda xato');
+    return 0;
+  }
+}
+
+/** "Eslatma" tugmasi: bir fanga soatiga ko'pi bilan bir marta */
+export const REMIND_COOLDOWN_MS = 3_600_000;
+
+export interface RemindResult {
+  /** `notify.examReminders` o'chiq: hech narsa yuborilmadi */
+  disabled: boolean;
+  /** Telegram bot ulanmagan/ishlamayapti */
+  notConnected: boolean;
+  /** Navbatga qo'yilgan xabarlar soni */
+  sent: number;
+  blocks: { blockId: string; subjectName: string; state: 'sent' | 'recent' }[];
+}
+
+/**
+ * Ma'muriyat "Eslatma" tugmasi: tugallanmagan (o'qituvchi "tugatdim" demagan va tasdiqlanmagan), o'qituvchisi bor
+ * fanlarning o'qituvchilariga HOZIR Telegram eslatmasi. Har fanga soatiga bir marta (blokdagi `remindedAt` atomik
+ * band qilinadi, parallel bosishda ham bitta). `notify.examReminders` o'chiq yoki bot ishlamasa band qilinmaydi.
+ * Matn HTML-escape qilinadi. Hech qachon tashlamaydi.
+ */
+export async function remindBlocksNow(
+  sessionId: string,
+  now: Date = clock.now(),
+): Promise<RemindResult> {
+  const empty: RemindResult = { disabled: false, notConnected: false, sent: 0, blocks: [] };
+  try {
+    const s = await ExamSession.findById(sessionId).select(
+      'schoolId title blocks contribDeadline status',
+    );
+    if (!s || s.status !== 'draft') return empty;
+    const settings = await getTelegramSettings(String(s.schoolId));
+    if (!settings.notify.examReminders) return { ...empty, disabled: true };
+    if (!telegramManager.isRunning()) return { ...empty, notConnected: true };
+    const targets = normalizeBlocks(s).filter(
+      (b) => !b.legacy && b.contributors.length > 0 && b.status !== 'ready',
+    );
+    if (!targets.length) return empty;
+    const names = await subjectNames(targets.map((b) => b.subjectId ?? ''));
+    const before = new Date(now.getTime() - REMIND_COOLDOWN_MS);
+    const items: EnqueueItem[] = [];
+    const blocks: RemindResult['blocks'] = [];
+    for (const b of targets) {
+      const subjectName = names.get(b.subjectId ?? '') ?? b.title;
+      const claimed = await ExamSession.updateOne(
+        {
+          _id: s._id,
+          status: 'draft',
+          blocks: {
+            $elemMatch: {
+              blockId: b.blockId,
+              status: { $ne: 'ready' },
+              $or: [
+                { remindedAt: null },
+                { remindedAt: { $exists: false } },
+                { remindedAt: { $lte: before } },
+              ],
+            },
+          },
+        },
+        { $set: { 'blocks.$.remindedAt': now } },
+      );
+      if (!claimed.matchedCount) {
+        blocks.push({ blockId: b.blockId, subjectName, state: 'recent' });
+        continue;
+      }
+      blocks.push({ blockId: b.blockId, subjectName, state: 'sent' });
+      const text =
+        `🔔 <b>Eslatma: imtihon savollari</b>
+«${esc(s.title)}» · ${esc(subjectName)}: ` +
+        `${blockQuestionCount(b)}/${b.targetCount} ta savol.
+` +
+        `Muddat: ${esc(deadlineText(s.contribDeadline))}
+` +
+        `Savollar tayyor bo'lgach «Tugatdim» tugmasini bosing.`;
+      for (const userId of b.contributors) {
+        items.push({
+          userId,
+          kind: 'examBlock',
+          parseMode: 'HTML',
+          dedupeKey: `exam:${sessionId}:contrib:${b.blockId}:${userId}:remind:${now.getTime()}`,
+          text,
+        });
+      }
+    }
+    const sent = items.length ? await telegramNotify.enqueueMany(items) : 0;
+    return { ...empty, sent, blocks };
+  } catch (err) {
+    logger.error({ err, sessionId }, 'Eslatma xabarini navbatga qo‘yishda xato');
+    return empty;
   }
 }
 
@@ -187,7 +308,7 @@ export async function runBlockReminders(now: Date = clock.now()): Promise<number
       for (const b of blocks) {
         const text =
           `⏰ <b>Savol topshirish muddati yaqin</b>
-«${esc(s.title)}» · ${esc(names.get(b.subjectId ?? '') ?? b.title)} bloki: ` +
+«${esc(s.title)}» · ${esc(names.get(b.subjectId ?? '') ?? b.title)} fani: ` +
           `${blockQuestionCount(b)}/${b.targetCount} ta savol.
 Muddat: ${esc(deadlineText(s.contribDeadline))}`;
         for (const userId of b.contributors) {

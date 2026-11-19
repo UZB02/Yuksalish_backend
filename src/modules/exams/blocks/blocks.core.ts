@@ -37,6 +37,10 @@ export interface NBlock {
   items: StoredItem[];
   contribQuestions: NBlockContrib[];
   status: 'open' | 'ready';
+  /** tayyor belgisini qo'ygan: 'contributor' | 'composer' (eski tayyor ma'lumot = composer) | null (tayyor emas) */
+  readyBy: 'contributor' | 'composer' | null;
+  /** oxirgi "Eslatma" yuborilgan vaqt (yo'q = hech qachon) */
+  remindedAt: Date | null;
   /** true: eski (blokisiz) hujjatdan sun'iy yasalgan blok */
   legacy: boolean;
 }
@@ -58,7 +62,8 @@ export function normalizeBlocks(doc: BlocksSource): NBlock[] {
       title: typeof b.title === 'string' ? b.title : '',
       targetCount: Number(b.targetCount ?? 0),
       coefficient: Number(b.coefficient ?? 1),
-      durationMin: b.durationMin === null || b.durationMin === undefined ? null : Number(b.durationMin),
+      durationMin:
+        b.durationMin === null || b.durationMin === undefined ? null : Number(b.durationMin),
       contributors: ((b.contributors as unknown[]) ?? []).map(str),
       items: ((b.items as StoredItem[]) ?? []).map((i) => i),
       contribQuestions: ((b.contribQuestions as Record<string, unknown>[]) ?? []).map((c) => ({
@@ -67,6 +72,9 @@ export function normalizeBlocks(doc: BlocksSource): NBlock[] {
         addedAt: (c.addedAt as Date | null) ?? null,
       })),
       status: b.status === 'ready' ? 'ready' : 'open',
+      readyBy:
+        b.status === 'ready' ? (b.readyBy === 'contributor' ? 'contributor' : 'composer') : null,
+      remindedAt: (b.remindedAt as Date | null | undefined) ?? null,
       legacy: false,
     }));
   }
@@ -83,6 +91,8 @@ export function normalizeBlocks(doc: BlocksSource): NBlock[] {
       items: sections.flatMap((s) => s.items ?? []),
       contribQuestions: [],
       status: 'ready',
+      readyBy: 'composer',
+      remindedAt: null,
       legacy: true,
     },
   ];
@@ -96,10 +106,7 @@ export const timingModeOf = (d: { timingMode?: string | null }): TimingMode =>
 /** Blokning savol elementlari: tuzuvchi elementlari + biriktirilgan o'qituvchilar qo'shgan savollar */
 export function effectiveItems(b: Pick<NBlock, 'items' | 'contribQuestions'>): StoredItem[] {
   return b.contribQuestions.length
-    ? [
-        ...b.items,
-        { kind: 'manual', questionIds: b.contribQuestions.map((c) => c.questionId) },
-      ]
+    ? [...b.items, { kind: 'manual', questionIds: b.contribQuestions.map((c) => c.questionId) }]
     : b.items;
 }
 

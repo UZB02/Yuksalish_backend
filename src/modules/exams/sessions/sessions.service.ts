@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import { Types } from 'mongoose';
+import { env } from '../../../config/env';
 import { z } from 'zod';
 import type { Ctx } from '../../../core/context';
 import { AppError } from '../../../core/errors';
@@ -63,6 +64,14 @@ import {
   timingModeOf,
   type NBlock,
 } from '../blocks/blocks.core';
+import { ExamEntryCode } from '../../../models/ExamEntryCode';
+import {
+  decryptEntryCode,
+  encryptEntryCode,
+  formatEntryCode,
+  hashEntryCode,
+  randomEntryCode,
+} from './entryCode';
 import {
   decryptPin,
   encryptPin,
@@ -313,8 +322,9 @@ const participantDto = (p: ISessionParticipant) => ({
   className: p.className,
   grade: p.grade,
   origin: p.origin,
-  /** PIN ning o'zi hech qachon chiqmaydi */
+  /** PIN va kirish kodining o'zi hech qachon ro'yxatda chiqmaydi (kod faqat alohida ko'rsatish endpointida) */
   hasPin: !!p.pinHash,
+  hasCode: !!p.codeEnc,
   fullTimeGranted: p.fullTimeGranted,
   extraMinutes: p.extraMinutes,
 });
@@ -354,6 +364,18 @@ async function refs(docs: ExamSessionDoc[]) {
   };
 }
 
+/** Fanlar bo'yicha jamlama: jami, o'qituvchi tugatgan/tasdiqlangan (o'qituvchisiz fan tasdiqlangan hisoblanadi) */
+function blocksProgressOf(s: ExamSessionDoc) {
+  const blocks = normalizeBlocks(s).filter((b) => !b.legacy);
+  const approved = (b: NBlock) =>
+    b.contributors.length === 0 || (b.status === 'ready' && b.readyBy === 'composer');
+  return {
+    total: blocks.length,
+    done: blocks.filter((b) => approved(b) || b.status === 'ready').length,
+    approved: blocks.filter(approved).length,
+  };
+}
+
 /** Tuzuvchi uchun blok DTO (eski hujjat: bitta sun'iy blok, legacy: true) */
 function blockDto(b: NBlock, r: Awaited<ReturnType<typeof refs>>) {
   return {
@@ -366,6 +388,8 @@ function blockDto(b: NBlock, r: Awaited<ReturnType<typeof refs>>) {
     coefficient: b.coefficient,
     durationMin: b.durationMin,
     status: b.status,
+    readyBy: b.readyBy,
+    remindedAt: b.remindedAt,
     /** Har ishtirokchi shu blokdan oladigan savollar soni (qo'lda + qoidalar) */
     count: blockQuestionCount(b),
     contributors: b.contributors.map((id) => ({ id, fullName: r.user.get(id) ?? '' })),
@@ -446,6 +470,8 @@ async function toDto(ctx: Ctx, scope: ExamScope, docs: ExamSessionDoc[], full: b
     timingMode: timingModeOf(s),
     contribDeadline: s.contribDeadline ?? null,
     blocksCount: normalizeBlocks(s).length,
+    /** Fanlar holati (ro'yxatdagi bosqich belgisi uchun): o'qituvchisi borlar orasida tugatgan va tasdiqlanganlar */
+    blocksProgress: blocksProgressOf(s),
     shuffleQuestions: s.shuffleQuestions,
     shuffleOptions: s.shuffleOptions,
     participantsCount: s.participants.length,
@@ -590,6 +616,28 @@ async function schedule(schoolId: string, s: ExamSessionDoc, ctx: Ctx, via: 'sub
  * Savollar sonini tekshiradi (rejalashtirishdan oldin): bo'sh blok (0 savol) har doim xato; maqsaddan kam bo'lsa
  * `confirmShort` bilan tuzuvchi tasdiqlashi shart (409). Faqat blokli imtihon uchun.
  */
+/**
+ * Fan bo'yicha tasdiq: o'qituvchisi bor har fan ma'muriyat (tuzuvchi) tomonidan tasdiqlangan bo'lishi shart (409,
+ * path=approval, aylanib o'tib bo'lmaydi). O'qituvchisiz fan (tuzuvchi o'zi to'ldiradi) va eski blokisiz imtihon
+ * tasdiqni talab qilmaydi.
+ */
+function assertBlocksApproved(s: ExamSessionDoc) {
+  const blocks = normalizeBlocks(s);
+  if (blocks[0]!.legacy) return;
+  const missing = blocks.filter(
+    (b) => b.contributors.length > 0 && !(b.status === 'ready' && b.readyBy === 'composer'),
+  );
+  if (missing.length) {
+    throw AppError.conflict(
+      'Tasdiqlanmagan fanlar bor',
+      missing.map((b) => ({
+        path: 'approval',
+        message: `${b.title || 'Fan'}: ma'muriyat tasdiqlamagan`,
+      })),
+    );
+  }
+}
+
 function assertBlockTargets(s: ExamSessionDoc, confirmShort: boolean) {
   const blocks = normalizeBlocks(s);
   if (blocks[0]!.legacy) return;
@@ -603,7 +651,7 @@ function assertBlockTargets(s: ExamSessionDoc, confirmShort: boolean) {
   const short = blocks.filter((b) => blockQuestionCount(b) < b.targetCount);
   if (short.length && !confirmShort) {
     throw AppError.conflict(
-      'Ba‘zi bloklarda savollar maqsaddan kam',
+      'Ba‘zi fanlarda savollar maqsaddan kam',
       short.map((b) => ({
         path: 'blocks',
         message: `${b.title || 'Blok'}: ${blockQuestionCount(b)}/${b.targetCount}`,
@@ -659,6 +707,40 @@ export async function recomputeDeadlines(s: ExamSessionDoc, extendMinutes = 0): 
   if (ops.length) await ExamAttempt.bulkWrite(ops as never);
 }
 
+// ---------- Shaxsiy kirish kodlari ----------
+const CODE_KEEP_MS = 60 * 86_400_000;
+/** Kod yozuvi TTL: imtihon tugashidan 60 kun keyin (tozalash uchun; faollik kirishda sessiya holatidan tekshiriladi) */
+const entryExpiry = (s: ExamSessionDoc) =>
+  new Date(Math.max(Date.now(), commonEnd(s).getTime()) + CODE_KEEP_MS);
+
+/**
+ * Ishtirokchiga yangi shaxsiy kod beradi: global noyob qidiruv yozuvi (HMAC xesh) yaratiladi, ochiq kod faqat
+ * qaytariladi (shifrlangan nusxa ishtirokchiga yoziladi). Takror (11000) bo'lsa qayta tanlanadi.
+ */
+async function issueEntryCode(s: ExamSessionDoc, participantKey: string): Promise<string> {
+  for (let i = 0; i < 20; i++) {
+    const code = randomEntryCode();
+    try {
+      await ExamEntryCode.create({
+        codeHash: hashEntryCode(code),
+        schoolId: s.schoolId,
+        sessionId: s._id,
+        participantKey,
+        expiresAt: entryExpiry(s),
+      });
+      return encryptEntryCode(code, s.id as string);
+    } catch (e) {
+      if ((e as { code?: number }).code !== 11000) throw e;
+    }
+  }
+  throw AppError.unavailable('Kirish kodi yaratib bo‘lmadi, qayta urinib ko‘ring');
+}
+const dropEntryCodes = (sessionId: Types.ObjectId, participantKey?: string) =>
+  ExamEntryCode.deleteMany({
+    sessionId,
+    ...(participantKey ? { participantKey } : {}),
+  });
+
 // ---------- Ishtirokchilar ----------
 async function makeParticipants(
   s: ExamSessionDoc,
@@ -671,11 +753,13 @@ async function makeParticipants(
   const out: ISessionParticipant[] = [];
   for (const sp of specs) {
     const { pin, hash } = uniquePin(s.pinSalt, taken);
+    const key = newParticipantKey();
     out.push({
       ...sp,
-      key: newParticipantKey(),
+      key,
       pinHash: hash,
       pinEnc: encryptPin(pin, s.id as string),
+      codeEnc: await issueEntryCode(s, key),
       fullTimeGranted: false,
       extraMinutes: 0,
       allowReentry: false,
@@ -729,6 +813,32 @@ export const sessionsService = {
       allowedTypes: scope.all ? [...SESSION_TYPES] : s.teachersCanCreateQuizzes ? ['quiz'] : [],
       supervisors: staff.map((u) => ({ id: String(u._id), fullName: u.fullName, role: u.role })),
     };
+  },
+
+  /**
+   * Fan uchun o'qituvchi taklifi: faol o'quv yilida SHU sinflarda shu fanni o'qitadigan faol o'qituvchilar
+   * (ClassSubject). Faqat ma'muriyat. Hech kim topilmasa bo'sh ro'yxat (admin qo'lda tanlaydi).
+   */
+  async suggestTeachers(ctx: Ctx, schoolId: string, subjectId: string, classIds: string[]) {
+    const scope = await resolveExamScope(ctx.actor, schoolId);
+    if (!scope.all) throw AppError.forbidden("O'qituvchi taklifi faqat ma'muriyat uchun");
+    const year = await AcademicYear.findOne({ schoolId, isActive: true }).select('_id');
+    if (!year || !classIds.length) return { teacherIds: [] as string[] };
+    const ids = await ClassSubject.distinct('teacherId', {
+      schoolId,
+      subjectId,
+      classId: { $in: classIds },
+      academicYearId: year._id,
+    });
+    const users = await User.find({
+      _id: { $in: ids },
+      schoolId,
+      role: 'teacher',
+      isActive: true,
+    })
+      .select('_id')
+      .lean();
+    return { teacherIds: users.map((u) => String(u._id)) };
   },
 
   /** Sessiya yaratish uchun sinflar: o'qituvchi uchun faqat o'zi o'qitadigan (sinf, fan) juftliklari */
@@ -1194,6 +1304,7 @@ export const sessionsService = {
       s.isDeleted = true;
       s.codeActive = false;
       await s.save();
+      await dropEntryCodes(s._id);
       await audit(ctx, schoolId, 'exam.session.delete', s.id, before, { attempts: 0 });
       return { id: s.id as string, deleted: true, mode: 'none' as const };
     }
@@ -1209,6 +1320,7 @@ export const sessionsService = {
       s.codeActive = false;
       s.resultsKept = s.status === 'closed';
       await s.save();
+      await dropEntryCodes(s._id);
       await audit(ctx, schoolId, 'exam.session.delete', s.id, before, {
         mode: 'exam_only',
         attempts,
@@ -1230,6 +1342,7 @@ export const sessionsService = {
       attempts,
     });
     await ExamAttempt.deleteMany({ sessionId, schoolId });
+    await dropEntryCodes(sessionId);
     await TelegramOutbox.deleteMany({ dedupeKey: new RegExp(`^exam:${String(sessionId)}:`) });
     if (code) {
       await ExamJoinGuard.deleteMany({ key: new RegExp(`^(dev|ip):${escapeRegex(code)}:`) });
@@ -1443,6 +1556,9 @@ export const sessionsService = {
       p.pinEnc = encryptPin(pin, fresh.id as string);
       p.allowReentry = false;
     }
+    // Shaxsiy kodlar ham qayta yaratiladi (eski kartochkalar yaroqsiz)
+    await dropEntryCodes(fresh._id);
+    for (const p of fresh.participants) p.codeEnc = await issueEntryCode(fresh, p.key);
     await fresh.save();
     await audit(
       ctx,
@@ -1610,6 +1726,7 @@ export const sessionsService = {
     const kind = s.participants[i]!.kind;
     s.participants.splice(i, 1);
     await s.save();
+    await dropEntryCodes(s._id, key);
     await audit(
       ctx,
       schoolId,
@@ -1635,9 +1752,28 @@ export const sessionsService = {
     const { pin, hash } = uniquePin(s.pinSalt, taken);
     p.pinHash = hash;
     p.pinEnc = encryptPin(pin, s.id as string);
+    // Shaxsiy kod ham yangilanadi (eski ishtirokchida bo'lmasa yaratiladi): eski kod darhol yaroqsiz
+    await dropEntryCodes(s._id, key);
+    p.codeEnc = await issueEntryCode(s, key);
     await s.save();
     await audit(ctx, schoolId, 'exam.session.pin_regenerate', s.id, null, { kind: p.kind });
     return { regenerated: true };
+  },
+
+  /**
+   * Shaxsiy kodni ko'rsatish (admin paneldagi "ko'rsatish" tugmasi): kod ro'yxat DTO sida chiqmaydi, faqat shu
+   * endpoint orqali, audit bilan. Eski ishtirokchida kod bo'lmasa null (qayta yaratish kerak).
+   */
+  async participantCode(ctx: Ctx, schoolId: string, id: string, key: string) {
+    assertPinSecret();
+    const scope = await resolveExamScope(ctx.actor, schoolId);
+    const s = await findSession(ctx, schoolId, scope, id);
+    assertManager(s, scope, ctx.actor);
+    const p = s.participants.find((x) => x.key === key);
+    if (!p) throw AppError.notFound('Ishtirokchi topilmadi');
+    const raw = p.codeEnc ? decryptEntryCode(p.codeEnc, s.id as string) : null;
+    await audit(ctx, schoolId, 'exam.session.code_view', s.id, null, { kind: p.kind });
+    return { code: raw ? formatEntryCode(raw) : null };
   },
 
   /**
@@ -1754,6 +1890,7 @@ export const sessionsService = {
     const settings = await examSettings(schoolId);
     const needsApproval = !scope.all && settings.teacherQuizNeedsApproval;
     const before = summary(s);
+    assertBlocksApproved(s);
     assertBlockTargets(s, body.confirmShort === true);
     if (needsApproval) {
       // Savollar yaroqliligi hozir ham tekshiriladi (nusxa tasdiqdan keyin muzlatiladi)
@@ -2019,6 +2156,7 @@ export const sessionsService = {
         className: p.className ?? p.origin ?? '',
         kind: p.kind,
         pin: decryptPin(p.pinEnc, s.id as string),
+        code: p.codeEnc ? formatEntryCode(decryptEntryCode(p.codeEnc, s.id as string) ?? '') : null,
       }));
     await audit(ctx, schoolId, 'exam.session.pin_sheet', s.id, null, {
       count: list.length,
@@ -2028,6 +2166,7 @@ export const sessionsService = {
       schoolName: school?.name ?? '',
       title: s.title,
       code: s.code as string,
+      examUrl: env.EXAM_PUBLIC_URL ?? null,
       start: s.scheduledStart,
       durationMin: s.durationMin,
       list,

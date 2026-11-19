@@ -231,6 +231,10 @@ async function scheduled(o: BlockOpts = {}, extra: object = {}) {
   expect(
     (await call('post', `/sessions/${id}/participants`, admin, { classIds: [c7a.id] })).status,
   ).toBe(201);
+  // Fan bo'yicha tasdiq: o'qituvchisi bor fanlar rejalashtirishdan oldin tasdiqlanadi
+  for (const b of created.body.data.blocks ?? []) {
+    await call('post', `/sessions/${id}/blocks/${b.id}/ready`, admin, { ready: true });
+  }
   const sub = await call('post', `/sessions/${id}/submit`, admin, { confirmShort: true });
   expect(sub.status, JSON.stringify(sub.body)).toBe(200);
   const doc = (await ExamSession.findById(id))!;
@@ -1382,7 +1386,7 @@ describe('Telegram: blokka biriktirish va muddat eslatmasi', () => {
     expect(rows[0]!.dedupeKey).toBe(`exam:${r.body.data.id}:contrib:${bm}:${tmathId}:assigned`);
     expect(rows[0]!.parseMode).toBe('HTML');
     expect(rows[0]!.text).toContain(
-      '«A &amp; B &lt;i&gt;» imtihonining Matematika blokiga biriktirildingiz',
+      '«A &amp; B &lt;i&gt;» imtihoni uchun Matematika fanidan savollar tayyorlashga biriktirildingiz',
     );
     expect(rows[0]!.text).toContain('Savollar soni: 30');
     expect(rows[0]!.text).toContain('Muddat:');

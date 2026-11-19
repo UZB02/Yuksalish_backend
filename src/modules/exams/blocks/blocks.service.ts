@@ -14,17 +14,14 @@ import { cleanText, nameKeyOf } from '../../../utils/text';
 import { auditService } from '../../audit/audit.service';
 import { resolveExamScope } from '../exams.scope';
 import { visibilityFilter } from '../exams.visibility';
+import { pasteService, type PasteCommitBody } from '../import/import.paste.service';
 import { importService, type CommitBody } from '../import/import.service';
 import { questionsService } from '../questions.service';
-import { topicsService } from '../topics.service';
+import { loadTopic, topicsService } from '../topics.service';
 import { findSession, isCreator } from '../sessions/sessions.service';
-import {
-  blockQuestionCount,
-  effectiveItems,
-  normalizeBlocks,
-  type NBlock,
-} from './blocks.core';
+import { blockQuestionCount, effectiveItems, normalizeBlocks, type NBlock } from './blocks.core';
 import { MAX_POOL } from '../sessions/templates.service';
+import { notifyAllBlocksReady, remindBlocksNow } from '../../telegram/telegram.exams';
 
 type Actor = Ctx['actor'];
 const oid = (s: string) => new Types.ObjectId(s);
@@ -38,14 +35,21 @@ const notFoundBlock = () => AppError.notFound('Blok topilmadi');
 
 export type LockReason = 'status' | 'ready' | 'deadline' | null;
 
-/** Biriktirilgan o'qituvchi uchun blok qulfi: faqat qoralama, tayyor emas va muddat o'tmagan bo'lsa ochiq */
+export type Role = 'contributor' | 'composer';
+
+/**
+ * Blok qulfi. Tuzuvchi: faqat imtihon qoralamadan chiqqach. Biriktirilgan o'qituvchi: qoralama, muddat o'tmagan va
+ * tayyor belgisini TUZUVCHI qo'ymagan bo'lsa ochiq (o'qituvchining o'z "tayyor" belgisi tahrirni qulflamaydi).
+ */
 export function lockOf(
   s: Pick<ExamSessionDoc, 'status' | 'contribDeadline'>,
-  b: Pick<NBlock, 'status'>,
+  b: Pick<NBlock, 'status' | 'readyBy'>,
   now: Date = clock.now(),
+  role: Role = 'contributor',
 ): LockReason {
   if (s.status !== 'draft') return 'status';
-  if (b.status === 'ready') return 'ready';
+  if (role === 'composer') return null;
+  if (b.status === 'ready' && b.readyBy !== 'contributor') return 'ready';
   if (s.contribDeadline && now.getTime() > s.contribDeadline.getTime()) return 'deadline';
   return null;
 }
@@ -71,12 +75,16 @@ async function loadSession(schoolId: string, id: string): Promise<ExamSessionDoc
 async function contribAccess(ctx: Ctx, schoolId: string, sessionId: string, blockId: string) {
   const s = await loadSession(schoolId, sessionId);
   const b = normalizeBlocks(s).find((x) => x.blockId === blockId && !x.legacy);
-  if (!b || !b.contributors.includes(ctx.actor.id)) throw notFoundBlock();
-  return { s, b };
+  if (!b) throw notFoundBlock();
+  // Tuzuvchi (ma'muriyat) istalgan fanga kiradi; o'qituvchi faqat biriktirilgan fanga
+  const scope = await resolveExamScope(ctx.actor, schoolId);
+  const role: Role = scope.all ? 'composer' : 'contributor';
+  if (role === 'contributor' && !b.contributors.includes(ctx.actor.id)) throw notFoundBlock();
+  return { s, b, role };
 }
 
-function assertUnlocked(s: ExamSessionDoc, b: NBlock) {
-  const r = lockOf(s, b);
+function assertUnlocked(s: ExamSessionDoc, b: NBlock, role: Role = 'contributor') {
+  const r = lockOf(s, b, clock.now(), role);
   if (r) throw AppError.forbidden(LOCK_MSG[r]);
 }
 
@@ -107,7 +115,11 @@ const previewOf = (blocks: { type: string; text?: string; tex?: string }[]): str
 };
 
 /** Blok savollari ro'yxati: javob kalitisiz (preview), kim qo'shgani va olib tashlash huquqi bilan */
-async function questionList(schoolId: string, b: NBlock, canRemoveOf: (addedBy: string | null) => boolean) {
+async function questionList(
+  schoolId: string,
+  b: NBlock,
+  canRemoveOf: (addedBy: string | null) => boolean,
+) {
   const owner = new Map<string, string | null>(); // qid -> contributor id | null (tuzuvchi)
   for (const it of b.items) {
     if (it.kind === 'manual') for (const q of it.questionIds ?? []) owner.set(String(q), null);
@@ -115,12 +127,19 @@ async function questionList(schoolId: string, b: NBlock, canRemoveOf: (addedBy: 
   for (const c of b.contribQuestions) owner.set(c.questionId, c.addedBy);
   const ids = [...owner.keys()];
   const docs = ids.length
-    ? await Question.find({ _id: { $in: ids.map(oid) }, schoolId, isDeleted: { $ne: true } }).select(
-        '-answer',
-      )
+    ? await Question.find({
+        _id: { $in: ids.map(oid) },
+        schoolId,
+        isDeleted: { $ne: true },
+      }).select('-answer')
     : [];
   const users = await User.find({
-    _id: { $in: uniq([...[...owner.values()].filter(Boolean), ...docs.map((d) => String(d.authorId))] as string[]) },
+    _id: {
+      $in: uniq([
+        ...[...owner.values()].filter(Boolean),
+        ...docs.map((d) => String(d.authorId)),
+      ] as string[]),
+    },
   })
     .select('fullName')
     .lean();
@@ -199,6 +218,7 @@ async function pushContrib(
   s: ExamSessionDoc,
   b: NBlock,
   ids: string[],
+  role: Role = 'contributor',
 ) {
   const now = clock.now();
   const have = new Set(
@@ -215,21 +235,35 @@ async function pushContrib(
     ]);
   }
   if (!fresh.length) return { added: 0, skipped: ids.length };
+  const guard =
+    role === 'composer'
+      ? { blocks: { $elemMatch: { blockId: b.blockId } } }
+      : {
+          $or: [{ contribDeadline: null }, { contribDeadline: { $gt: now } }],
+          blocks: {
+            $elemMatch: {
+              blockId: b.blockId,
+              contributors: oid(ctx.actor.id),
+              $or: [{ status: { $ne: 'ready' } }, { readyBy: 'contributor' }],
+            },
+          },
+        };
   const r = await ExamSession.updateOne(
     {
       _id: s._id,
       schoolId,
       status: 'draft',
       isDeleted: { $ne: true },
-      $or: [{ contribDeadline: null }, { contribDeadline: { $gt: now } }],
-      blocks: {
-        $elemMatch: { blockId: b.blockId, status: { $ne: 'ready' }, contributors: oid(ctx.actor.id) },
-      },
+      ...guard,
     },
     {
       $push: {
         'blocks.$.contribQuestions': {
-          $each: fresh.map((id) => ({ questionId: oid(id), addedBy: oid(ctx.actor.id), addedAt: now })),
+          $each: fresh.map((id) => ({
+            questionId: oid(id),
+            addedBy: oid(ctx.actor.id),
+            addedAt: now,
+          })),
         },
       },
     },
@@ -261,11 +295,13 @@ export const blocksService = {
       .sort({ createdAt: -1 })
       .limit(100);
     const subjectIds = uniq(
-      sessions.flatMap((s) =>
-        normalizeBlocks(s)
-          .filter((b) => b.contributors.includes(ctx.actor.id))
-          .map((b) => b.subjectId ?? ''),
-      ).filter(Boolean),
+      sessions
+        .flatMap((s) =>
+          normalizeBlocks(s)
+            .filter((b) => b.contributors.includes(ctx.actor.id))
+            .map((b) => b.subjectId ?? ''),
+        )
+        .filter(Boolean),
     );
     const subs = await Subject.find({ _id: { $in: subjectIds } })
       .select('name')
@@ -278,6 +314,7 @@ export const blocksService = {
         .map((b) => {
           const lock = lockOf(s, b, now);
           return {
+            readyBy: b.readyBy,
             sessionId: s.id as string,
             blockId: b.blockId,
             examTitle: s.title,
@@ -298,13 +335,26 @@ export const blocksService = {
 
   /** Blok sahifasi (biriktirilgan o'qituvchi): imtihon nomi, fan, maqsad, muddat va hozirgi savollar */
   async myBlock(ctx: Ctx, schoolId: string, sessionId: string, blockId: string) {
-    const { s, b } = await contribAccess(ctx, schoolId, sessionId, blockId);
+    const { s, b, role } = await contribAccess(ctx, schoolId, sessionId, blockId);
     const subject = b.subjectId ? await Subject.findById(b.subjectId).select('name').lean() : null;
-    const lock = lockOf(s, b);
-    const list = await questionList(schoolId, b, (addedBy) => lock === null && addedBy === ctx.actor.id);
+    const lock = lockOf(s, b, clock.now(), role);
+    const list = await questionList(
+      schoolId,
+      b,
+      (addedBy) => lock === null && (role === 'composer' || addedBy === ctx.actor.id),
+    );
     return {
+      role,
       exam: { id: s.id as string, title: s.title, contribDeadline: s.contribDeadline ?? null },
       block: {
+        readyBy: b.readyBy,
+        /** "Tayyor" belgisini qo'yish/qaytarish mumkinmi */
+        canMarkReady:
+          lock === null ||
+          (b.status === 'ready' &&
+            b.readyBy === 'contributor' &&
+            s.status === 'draft' &&
+            (role === 'composer' || !s.contribDeadline || clock.now() <= s.contribDeadline)),
         id: b.blockId,
         subjectId: b.subjectId,
         subjectName: subject?.name ?? null,
@@ -327,8 +377,8 @@ export const blocksService = {
     blockId: string,
     body: z.output<typeof addQuestionsBody>,
   ) {
-    const { s, b } = await contribAccess(ctx, schoolId, sessionId, blockId);
-    assertUnlocked(s, b);
+    const { s, b, role } = await contribAccess(ctx, schoolId, sessionId, blockId);
+    assertUnlocked(s, b, role);
     const scope = await resolveExamScope(ctx.actor, schoolId);
     const ids = uniq(body.questionIds);
     const found = await Question.find({
@@ -349,7 +399,7 @@ export const blocksService = {
         },
       ]);
     }
-    const r = await pushContrib(ctx, schoolId, s, b, ids);
+    const r = await pushContrib(ctx, schoolId, s, b, ids, role);
     return { ...r, ...(await blockSummary(schoolId, sessionId, blockId)) };
   },
 
@@ -361,8 +411,8 @@ export const blocksService = {
     blockId: string,
     raw: Record<string, unknown>,
   ) {
-    const { s, b } = await contribAccess(ctx, schoolId, sessionId, blockId);
-    assertUnlocked(s, b);
+    const { s, b, role } = await contribAccess(ctx, schoolId, sessionId, blockId);
+    assertUnlocked(s, b, role);
     const topic = await ensureExamTopic(ctx, schoolId, b.subjectId!, s.title);
     const q = await questionsService.create(ctx, schoolId, {
       ...raw,
@@ -371,7 +421,7 @@ export const blocksService = {
       status: 'active',
       sharing: { mode: 'private', userIds: [] },
     });
-    await pushContrib(ctx, schoolId, s, b, [q.id]);
+    await pushContrib(ctx, schoolId, s, b, [q.id], role);
     return { question: q, ...(await blockSummary(schoolId, sessionId, blockId)) };
   },
 
@@ -384,8 +434,8 @@ export const blocksService = {
     kind: 'word' | 'excel',
     file: Express.Multer.File | undefined,
   ) {
-    const { s, b } = await contribAccess(ctx, schoolId, sessionId, blockId);
-    assertUnlocked(s, b);
+    const { s, b, role } = await contribAccess(ctx, schoolId, sessionId, blockId);
+    assertUnlocked(s, b, role);
     const topic = await ensureExamTopic(ctx, schoolId, b.subjectId!, s.title);
     return importService.preview(ctx, schoolId, kind, file, topic.id as string);
   },
@@ -399,8 +449,8 @@ export const blocksService = {
     importId: string,
     body: CommitBody,
   ) {
-    const { s, b } = await contribAccess(ctx, schoolId, sessionId, blockId);
-    assertUnlocked(s, b);
+    const { s, b, role } = await contribAccess(ctx, schoolId, sessionId, blockId);
+    assertUnlocked(s, b, role);
     const r = (await importService.commit(ctx, schoolId, importId, {
       ...body,
       status: 'active',
@@ -408,15 +458,68 @@ export const blocksService = {
     let added = 0;
     if (r.ids?.length) {
       // Qulf import paytida o'zgargan bo'lsa pushContrib rad etadi; savollar bankda qoladi
-      added = (await pushContrib(ctx, schoolId, s, b, r.ids)).added;
+      added = (await pushContrib(ctx, schoolId, s, b, r.ids, role)).added;
+    }
+    return { ...r, addedToBlock: added, ...(await blockSummary(schoolId, sessionId, blockId)) };
+  },
+
+  /** "Matnni joylash": jonli ko'rish (DB yozilmaydi). Kirish va qulf import bilan bir xil */
+  async pastePreview(
+    ctx: Ctx,
+    schoolId: string,
+    sessionId: string,
+    blockId: string,
+    body: { text: string },
+  ) {
+    const { s, b, role } = await contribAccess(ctx, schoolId, sessionId, blockId);
+    assertUnlocked(s, b, role);
+    return pasteService.preview(body.text);
+  },
+
+  /**
+   * "Matnni joylash" saqlash: savollar FAOL holatda bankka (mavzu: tanlangan yoki avtomatik "Imtihon: ‹nomi›")
+   * yoziladi va blokka qo'shiladi. Blokka sig'maydigan hajm bankka yozishdan OLDIN rad etiladi.
+   */
+  async pasteCommit(
+    ctx: Ctx,
+    schoolId: string,
+    sessionId: string,
+    blockId: string,
+    body: PasteCommitBody,
+  ) {
+    const { s, b, role } = await contribAccess(ctx, schoolId, sessionId, blockId);
+    assertUnlocked(s, b, role);
+    let topic: { id: string; subjectId: string };
+    if (body.topicId) {
+      const scope = await resolveExamScope(ctx.actor, schoolId);
+      const t = await loadTopic(schoolId, scope, body.topicId);
+      // Mavzu shu blok fanidan bo'lishi shart (aks holda savol boshqa fanga tushib qoladi)
+      if (String(t.subjectId) !== b.subjectId) throw AppError.notFound('Mavzu topilmadi');
+      topic = { id: t.id as string, subjectId: String(t.subjectId) };
+    } else {
+      const t = await ensureExamTopic(ctx, schoolId, b.subjectId!, s.title);
+      topic = { id: t.id as string, subjectId: String(t.subjectId) };
+    }
+    const r = await pasteService.commit(ctx, schoolId, topic, body, {
+      status: 'active',
+      maxCreate: MAX_POOL - blockQuestionCount(b),
+      auditTag: 'block',
+    });
+    let added = 0;
+    if (r.ids.length) {
+      // Qulf yozish paytida o'zgargan bo'lsa pushContrib rad etadi; savollar bankda qoladi
+      added = (await pushContrib(ctx, schoolId, s, b, r.ids, role)).added;
     }
     return { ...r, addedToBlock: added, ...(await blockSummary(schoolId, sessionId, blockId)) };
   },
 
   /** O'qituvchi faqat O'Z qo'shgan savolini blokdan olib tashlaydi (bankdan o'chirmaydi) */
   async removeOwn(ctx: Ctx, schoolId: string, sessionId: string, blockId: string, qid: string) {
-    const { s, b } = await contribAccess(ctx, schoolId, sessionId, blockId);
-    assertUnlocked(s, b);
+    const { s, b, role } = await contribAccess(ctx, schoolId, sessionId, blockId);
+    assertUnlocked(s, b, role);
+    // Tuzuvchi istalgan savolni olib tashlaydi (o'qituvchi qo'shganini ham)
+    if (role === 'composer')
+      return blocksService.composerRemove(ctx, schoolId, sessionId, blockId, qid);
     const mine = b.contribQuestions.find((c) => c.questionId === qid && c.addedBy === ctx.actor.id);
     if (!mine) throw AppError.notFound('Savol topilmadi');
     const now = clock.now();
@@ -426,9 +529,19 @@ export const blocksService = {
         schoolId,
         status: 'draft',
         $or: [{ contribDeadline: null }, { contribDeadline: { $gt: now } }],
-        blocks: { $elemMatch: { blockId, status: { $ne: 'ready' }, contributors: oid(ctx.actor.id) } },
+        blocks: {
+          $elemMatch: {
+            blockId,
+            contributors: oid(ctx.actor.id),
+            $or: [{ status: { $ne: 'ready' } }, { readyBy: 'contributor' }],
+          },
+        },
       },
-      { $pull: { 'blocks.$.contribQuestions': { questionId: oid(qid), addedBy: oid(ctx.actor.id) } } },
+      {
+        $pull: {
+          'blocks.$.contribQuestions': { questionId: oid(qid), addedBy: oid(ctx.actor.id) },
+        },
+      },
     );
     if (!r.matchedCount) throw AppError.forbidden('Blok hozir tahrirlash uchun yopiq');
     await audit(ctx, schoolId, 'exam.block.question_remove', sessionId, null, { blockId });
@@ -446,7 +559,13 @@ export const blocksService = {
   },
 
   /** Tuzuvchi: istalgan blokdan istalgan savolni olib tashlaydi (tuzuvchi elementidan yoki o'qituvchi qo'shganidan) */
-  async composerRemove(ctx: Ctx, schoolId: string, sessionId: string, blockId: string, qid: string) {
+  async composerRemove(
+    ctx: Ctx,
+    schoolId: string,
+    sessionId: string,
+    blockId: string,
+    qid: string,
+  ) {
     const scope = await resolveExamScope(ctx.actor, schoolId);
     const s = await findSession(ctx, schoolId, scope, sessionId);
     if (!scope.all && !isCreator(s, ctx.actor)) throw AppError.forbidden();
@@ -504,14 +623,115 @@ export const blocksService = {
     if (!b) throw notFoundBlock();
     await ExamSession.updateOne(
       { _id: s._id, schoolId, status: 'draft' },
-      { $set: { 'blocks.$[b].status': body.ready ? 'ready' : 'open' } },
+      {
+        $set: {
+          'blocks.$[b].status': body.ready ? 'ready' : 'open',
+          'blocks.$[b].readyBy': body.ready ? 'composer' : null,
+        },
+      },
       { arrayFilters: [{ 'b.blockId': blockId }] },
     );
-    await audit(ctx, schoolId, 'exam.block.ready', sessionId, { status: b.status }, {
-      blockId,
-      status: body.ready ? 'ready' : 'open',
-    });
+    await audit(
+      ctx,
+      schoolId,
+      'exam.block.ready',
+      sessionId,
+      { status: b.status },
+      {
+        blockId,
+        status: body.ready ? 'ready' : 'open',
+        by: 'composer',
+      },
+    );
+    if (body.ready) void notifyAllBlocksReady(sessionId);
     return { blockId, status: body.ready ? ('ready' as const) : ('open' as const) };
+  },
+
+  /**
+   * "Tayyor" belgisi (o'qituvchi YOKI tuzuvchi, bitta oqim). O'qituvchi: faqat o'z fani, imtihon qoralama va muddat
+   * o'tmagan bo'lsa qo'yadi/qaytaradi; tuzuvchi qo'ygan belgini o'qituvchi qaytara olmaydi. Belgini kim qo'ygani
+   * `readyBy` da saqlanadi: o'qituvchining belgisi tahrirni qulflamaydi, tuzuvchinikisi qulflaydi.
+   */
+  async markReady(
+    ctx: Ctx,
+    schoolId: string,
+    sessionId: string,
+    blockId: string,
+    body: z.output<typeof readyBody>,
+  ) {
+    const { s, b, role } = await contribAccess(ctx, schoolId, sessionId, blockId);
+    if (s.status !== 'draft') throw AppError.forbidden(LOCK_MSG.status);
+    if (role === 'composer') {
+      return blocksService.setReady(ctx, schoolId, sessionId, blockId, body);
+    }
+    if (s.contribDeadline && clock.now().getTime() > s.contribDeadline.getTime()) {
+      throw AppError.forbidden(LOCK_MSG.deadline);
+    }
+    if (b.status === 'ready' && b.readyBy !== 'contributor') {
+      throw AppError.forbidden(LOCK_MSG.ready);
+    }
+    const r = await ExamSession.updateOne(
+      {
+        _id: s._id,
+        schoolId,
+        status: 'draft',
+        isDeleted: { $ne: true },
+        $or: [{ contribDeadline: null }, { contribDeadline: { $gt: clock.now() } }],
+        blocks: {
+          $elemMatch: {
+            blockId,
+            contributors: oid(ctx.actor.id),
+            $or: [{ status: { $ne: 'ready' } }, { readyBy: 'contributor' }],
+          },
+        },
+      },
+      {
+        $set: {
+          'blocks.$.status': body.ready ? 'ready' : 'open',
+          'blocks.$.readyBy': body.ready ? 'contributor' : null,
+        },
+      },
+    );
+    if (!r.matchedCount) throw AppError.forbidden('Blok hozir tahrirlash uchun yopiq');
+    await audit(
+      ctx,
+      schoolId,
+      'exam.block.ready',
+      sessionId,
+      { status: b.status },
+      {
+        blockId,
+        status: body.ready ? 'ready' : 'open',
+        by: 'contributor',
+      },
+    );
+    if (body.ready) void notifyAllBlocksReady(sessionId);
+    return { blockId, status: body.ready ? ('ready' as const) : ('open' as const) };
+  },
+
+  /** Yon menyu nishoni uchun: menga biriktirilgan, qulflanmagan va hali to'lmagan yoki tayyor emas fanlar soni */
+  /**
+   * "Eslatma": tugallanmagan fanlarning o'qituvchilariga Telegram eslatmasi (faqat tuzuvchi, faqat qoralama).
+   * Har fanga soatiga bir marta; sozlama o'chiq yoki bot ulanmagan bo'lsa tushuntirish qaytadi.
+   */
+  async remind(ctx: Ctx, schoolId: string, sessionId: string) {
+    const scope = await resolveExamScope(ctx.actor, schoolId);
+    if (!scope.all) throw AppError.forbidden("Eslatmani faqat ma'muriyat yuboradi");
+    const s = await loadSession(schoolId, sessionId);
+    if (s.status !== 'draft') throw AppError.conflict('Eslatma faqat qoralama imtihon uchun');
+    const r = await remindBlocksNow(sessionId, clock.now());
+    await audit(ctx, schoolId, 'exam.block.remind', sessionId, null, {
+      sent: r.sent,
+      blocks: r.blocks.length,
+    });
+    return r;
+  },
+
+  async mySummary(ctx: Ctx, schoolId: string) {
+    const list = await blocksService.myBlocks(ctx, schoolId);
+    // Ochiq vazifa: qulflanmagan va "Tugatdim" (tayyor) belgisi qo'yilmagan
+    const pending = list.filter((x) => !x.locked && x.blockStatus !== 'ready').length;
+    return { pending, total: list.length };
   },
 };
 

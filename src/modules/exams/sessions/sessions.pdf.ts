@@ -4,11 +4,15 @@ export interface PinCard {
   fullName: string;
   className: string;
   pin: string | null;
+  /** Shaxsiy kirish kodi (XXX-XXX-XXX); eski ishtirokchida yo'q: kod+PIN ko'rinishi chop etiladi */
+  code?: string | null;
 }
 export interface PinSheetInput {
   schoolName: string;
   title: string;
   code: string;
+  /** Imtihon sahifasi manzili (EXAM_PUBLIC_URL), bo'lsa chop etiladi */
+  examUrl?: string | null;
   start: Date;
   durationMin: number;
   list: PinCard[];
@@ -87,17 +91,48 @@ export function renderPinSheet(input: PinSheetInput): Promise<Buffer> {
         .font(FONT)
         .fontSize(9)
         .text(fit(c.className, iw, FONT, 9), x + pad, y + 70, { lineBreak: false });
-      doc
-        .fontSize(8)
-        .fillColor('#444')
-        .text('Imtihon kodi', x + pad, y + 92, { lineBreak: false });
-      doc.text('PIN', x + pad + iw / 2, y + 92, { lineBreak: false });
-      doc
-        .fillColor('#000')
-        .font(FONT_BOLD)
-        .fontSize(18)
-        .text(input.code, x + pad, y + 104, { lineBreak: false });
-      doc.text(c.pin ?? '(qayta yarating)', x + pad + iw / 2, y + 104, { lineBreak: false });
+      if (c.code) {
+        // Yagona shaxsiy kod: katta, qolgani kichik eslatma
+        doc
+          .fontSize(8)
+          .fillColor('#444')
+          .text('Shaxsiy kirish kodi', x + pad, y + 90, { lineBreak: false });
+        doc
+          .fillColor('#000')
+          .font(FONT_BOLD)
+          .fontSize(24)
+          .text(c.code, x + pad, y + 102, { lineBreak: false });
+        doc
+          .font(FONT)
+          .fontSize(7.5)
+          .fillColor('#444')
+          .text(
+            fit(
+              input.examUrl ? `Sahifa: ${input.examUrl}` : 'Imtihon sahifasiga kiring',
+              iw,
+              FONT,
+              7.5,
+            ),
+            x + pad,
+            y + 134,
+            { lineBreak: false },
+          );
+        doc.text(fit('Kodni hech kimga bermang', iw, FONT, 7.5), x + pad, y + 145, {
+          lineBreak: false,
+        });
+      } else {
+        doc
+          .fontSize(8)
+          .fillColor('#444')
+          .text('Imtihon kodi', x + pad, y + 92, { lineBreak: false });
+        doc.text('PIN', x + pad + iw / 2, y + 92, { lineBreak: false });
+        doc
+          .fillColor('#000')
+          .font(FONT_BOLD)
+          .fontSize(18)
+          .text(input.code, x + pad, y + 104, { lineBreak: false });
+        doc.text(c.pin ?? '(qayta yarating)', x + pad + iw / 2, y + 104, { lineBreak: false });
+      }
     });
     if (!input.list.length) doc.font(FONT).fontSize(12).text("Ishtirokchilar yo'q", MARGIN, MARGIN);
     doc.end();

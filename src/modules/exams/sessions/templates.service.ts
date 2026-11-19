@@ -469,7 +469,24 @@ export async function validateBlocksInput(
     .select('name')
     .lean();
   if (subs.length !== ids.length) {
-    throw AppError.validation('Fan topilmadi', [{ path: 'blocks', message: 'Fan topilmadi' }]);
+    // Sababini aniq aytamiz: fan nofaol (savollar bankida nofaol fanlar ham ko'rinadi) yoki topilmadi
+    const found = new Set(subs.map((x) => String(x._id)));
+    const missing = ids.filter((i) => !found.has(i));
+    const inactive = await Subject.find({
+      _id: { $in: missing },
+      isActive: false,
+      $or: [{ schoolId: null }, { schoolId }],
+    })
+      .select('name')
+      .lean();
+    throw AppError.validation('Fan topilmadi', [
+      {
+        path: 'blocks',
+        message: inactive.length
+          ? `Fan faol emas: ${inactive.map((x) => x.name).join(', ')}. Avval fanni faollashtiring`
+          : 'Fan topilmadi',
+      },
+    ]);
   }
   if (!scope.all) {
     for (const id of ids) {
@@ -578,6 +595,8 @@ export function storeBlocks(
           }))
         : [],
       status: sameSubject ? prev!.status : ('open' as const),
+      readyBy: sameSubject ? (prev!.readyBy ?? null) : null,
+      remindedAt: sameSubject ? (prev!.remindedAt ?? null) : null,
     };
   });
 }

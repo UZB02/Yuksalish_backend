@@ -41,6 +41,8 @@ export interface ISessionParticipant {
   pinHash: string;
   /** AES-256-GCM (EXAM_PIN_SECRET): faqat chop etish uchun, API ga chiqmaydi */
   pinEnc: string;
+  /** Shaxsiy kirish kodi: AES-256-GCM nusxa (faqat chop etish/ko'rsatish uchun). Eski ishtirokchida yo'q */
+  codeEnc?: string | null;
   /** To'liq davomiylik berilgan (kechikkan o'quvchi uchun): deadline = boshlagan vaqti + davomiylik */
   fullTimeGranted: boolean;
   extraMinutes: number;
@@ -135,6 +137,7 @@ const participantSchema = new Schema<ISessionParticipant>(
     origin: { type: String, default: null },
     pinHash: { type: String, required: true },
     pinEnc: { type: String, required: true },
+    codeEnc: { type: String, default: null },
     fullTimeGranted: { type: Boolean, default: false },
     extraMinutes: { type: Number, default: 0 },
     allowReentry: { type: Boolean, default: false },

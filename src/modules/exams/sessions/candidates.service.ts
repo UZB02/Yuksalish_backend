@@ -10,6 +10,7 @@ import { isId } from '../../../utils/helpers';
 import { cleanText } from '../../../utils/text';
 import { auditService } from '../../audit/audit.service';
 import { resolveExamScope } from '../exams.scope';
+import { profileExamResults } from '../results/results.profile';
 import { examSettings } from './templates.service';
 import { commonEnd } from './timing';
 
@@ -94,6 +95,12 @@ async function find(schoolId: string, id: string) {
 const dateOf = (s: string | null | undefined) => (s ? new Date(`${s}T00:00:00.000Z`) : null);
 
 export const candidatesService = {
+  /** Nomzodning yakunlangan imtihon natijalari (faqat ma'muriyat; DTO o'quvchinikidek) */
+  async results(ctx: Ctx, schoolId: string, id: string) {
+    await admin(ctx, schoolId);
+    const c = await find(schoolId, id);
+    return profileExamResults(schoolId, 'candidate', c.id as string);
+  },
   async list(ctx: Ctx, schoolId: string, q: CandidateListQuery) {
     await admin(ctx, schoolId);
     const filter: Record<string, unknown> = { schoolId };

@@ -230,3 +230,10 @@ export const examImportLimiter = perUser(
   10,
   "Import so'rovlari juda ko'p. Birozdan so'ng urinib ko'ring",
 );
+
+/** "Matnni joylash": jonli ko'rish (debounce ~300 ms) ko'p so'rov yuboradi: minutiga 120 ta */
+export const examPasteLimiter = perUser(
+  60_000,
+  120,
+  "Matnni tekshirish so'rovlari juda ko'p. Birozdan so'ng urinib ko'ring",
+);

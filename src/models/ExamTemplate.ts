@@ -54,6 +54,11 @@ export interface IExamBlock {
   items: IExamItem[];
   contribQuestions: IBlockContribQuestion[];
   status: BlockStatus;
+  /** "tayyor" belgisini kim qo'ydi: 'contributor' = o'qituvchi (muddatgacha qaytara oladi, tahrir qulflanmaydi);
+   *  'composer' yoki yo'q (eski ma'lumot) = tuzuvchi (o'qituvchi uchun qulflaydi) */
+  readyBy?: 'composer' | 'contributor' | null;
+  /** Ma'muriyat oxirgi marta shu fan o'qituvchilariga eslatma yuborgan vaqt (soatiga bir marta cheklash) */
+  remindedAt?: Date | null;
 }
 
 export interface IExamTemplate {
@@ -103,6 +108,8 @@ export const blocksField = {
         items: { type: [Schema.Types.Mixed], default: [] },
         contribQuestions: { type: [Schema.Types.Mixed], default: [] },
         status: { type: String, enum: BLOCK_STATUSES, default: 'open' },
+        readyBy: { type: String, default: null },
+        remindedAt: { type: Date, default: null },
       },
       { _id: false },
     ),

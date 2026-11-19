@@ -53,6 +53,13 @@ const SEEDERS: Record<string, Seeder> = {
     tokenExpiresAt: FUTURE,
     deviceId: 'device-12345',
   }),
+  examEntryCodes: ({ sid, tag }) => ({
+    schoolId: sid,
+    sessionId: oid(),
+    participantKey: `k-${tag}`,
+    codeHash: `ch-${tag}-${oid()}`,
+    expiresAt: FUTURE,
+  }),
   examTemplates: ({ sid, tag }) => ({ schoolId: sid, title: `t-${tag}`, createdBy: oid() }),
   examCandidates: ({ sid, tag }) => ({ schoolId: sid, fullName: `c-${tag}`, createdBy: oid() }),
   subjectGrades: ({ sid }) => ({ schoolId: sid, studentId: oid(), value: 5, isDeleted: true }),

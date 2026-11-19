@@ -4,8 +4,9 @@ import { asyncHandler } from '../../../core/asyncHandler';
 import { getCtx } from '../../../core/context';
 import { created, ok } from '../../../core/response';
 import { objectIdSchema } from '../../../core/validators';
-import { examImportLimiter } from '../../../middlewares/rateLimiters';
+import { examImportLimiter, examPasteLimiter } from '../../../middlewares/rateLimiters';
 import { validate } from '../../../middlewares/validate';
+import { pasteCommitBody, pastePreviewBody } from '../import/import.paste.service';
 import { commitBody, uploadDocxFile, uploadXlsxFile } from '../import/import.service';
 import { addQuestionsBody, blocksService, readyBody } from './blocks.service';
 
@@ -27,6 +28,23 @@ const compQ = comp.extend({ qid: objectIdSchema });
 const P = (req: { params: unknown }) => req.params as Record<string, string>;
 
 // ---------- Biriktirilgan o'qituvchi ----------
+blocksRouter.get(
+  '/my-blocks/summary',
+  asyncHandler(async (req, res) => {
+    ok(res, await blocksService.mySummary(getCtx(req), sid(req)));
+  }),
+);
+blocksRouter.post(
+  '/my-blocks/:sessionId/:blockId/ready',
+  validate({ params: mine, body: readyBody }),
+  asyncHandler(async (req, res) => {
+    const p = P(req);
+    ok(
+      res,
+      await blocksService.markReady(getCtx(req), sid(req), p.sessionId!, p.blockId!, req.body),
+    );
+  }),
+);
 blocksRouter.get(
   '/my-blocks',
   asyncHandler(async (req, res) => {
@@ -68,9 +86,30 @@ blocksRouter.delete(
   validate({ params: mineQ }),
   asyncHandler(async (req, res) => {
     const p = P(req);
+    ok(res, await blocksService.removeOwn(getCtx(req), sid(req), p.sessionId!, p.blockId!, p.qid!));
+  }),
+);
+blocksRouter.post(
+  '/my-blocks/:sessionId/:blockId/paste/preview',
+  examPasteLimiter,
+  validate({ params: mine, body: pastePreviewBody }),
+  asyncHandler(async (req, res) => {
+    const p = P(req);
     ok(
       res,
-      await blocksService.removeOwn(getCtx(req), sid(req), p.sessionId!, p.blockId!, p.qid!),
+      await blocksService.pastePreview(getCtx(req), sid(req), p.sessionId!, p.blockId!, req.body),
+    );
+  }),
+);
+blocksRouter.post(
+  '/my-blocks/:sessionId/:blockId/paste/commit',
+  examPasteLimiter,
+  validate({ params: mine, body: pasteCommitBody }),
+  asyncHandler(async (req, res) => {
+    const p = P(req);
+    created(
+      res,
+      await blocksService.pasteCommit(getCtx(req), sid(req), p.sessionId!, p.blockId!, req.body),
     );
   }),
 );
@@ -148,6 +187,13 @@ blocksRouter.delete(
   asyncHandler(async (req, res) => {
     const p = P(req);
     ok(res, await blocksService.composerRemove(getCtx(req), sid(req), p.id!, p.blockId!, p.qid!));
+  }),
+);
+blocksRouter.post(
+  '/sessions/:id/remind',
+  validate({ params: z.object({ id: objectIdSchema }) }),
+  asyncHandler(async (req, res) => {
+    ok(res, await blocksService.remind(getCtx(req), sid(req), P(req).id!));
   }),
 );
 blocksRouter.post(

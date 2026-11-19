@@ -12,6 +12,8 @@ import {
   examClientService,
   finishBlockBody,
   joinBody,
+  joinCodeBody,
+  joinConfirmBody,
 } from './exam-client.service';
 
 /**
@@ -42,6 +44,23 @@ examClientRouter.post(
   validate({ body: joinBody }),
   asyncHandler(async (req, res) => {
     ok(res, await examClientService.join(req.body, req.ip ?? ''));
+  }),
+);
+
+// Shaxsiy kod bilan kirish: 1) kod -> "Bu sizmisiz?" ma'lumoti (urinish yaratilmaydi), 2) tasdiqlash -> token
+examClientRouter.post(
+  '/join-code',
+  validate({ body: joinCodeBody }),
+  asyncHandler(async (req, res) => {
+    ok(res, await examClientService.joinCode(req.body, req.ip ?? ''));
+  }),
+);
+
+examClientRouter.post(
+  '/join-confirm',
+  validate({ body: joinConfirmBody }),
+  asyncHandler(async (req, res) => {
+    ok(res, await examClientService.joinConfirm(req.body));
   }),
 );
 
