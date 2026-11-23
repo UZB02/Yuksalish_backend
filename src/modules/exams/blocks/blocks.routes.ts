@@ -8,6 +8,14 @@ import { examImportLimiter, examPasteLimiter } from '../../../middlewares/rateLi
 import { validate } from '../../../middlewares/validate';
 import { pasteCommitBody, pastePreviewBody } from '../import/import.paste.service';
 import { commitBody, uploadDocxFile, uploadXlsxFile } from '../import/import.service';
+import {
+  availabilityBody,
+  previewBody,
+  randomService,
+  replaceBody,
+  rulePatchBody,
+  ruleBody,
+} from './blocks.random';
 import { addQuestionsBody, blocksService, readyBody } from './blocks.service';
 
 /**
@@ -21,9 +29,11 @@ const sid = (req: { schoolId?: string }) => req.schoolId as string;
 const blockId = z.string().regex(/^[0-9a-f]{24}$/);
 const mine = z.object({ sessionId: objectIdSchema, blockId });
 const mineQ = mine.extend({ qid: objectIdSchema });
+const mineRule = mine.extend({ ruleId: z.string().regex(/^[0-9a-f]{24}$/) });
 const mineImport = mine.extend({ importId: objectIdSchema });
 const comp = z.object({ id: objectIdSchema, blockId });
 const compQ = comp.extend({ qid: objectIdSchema });
+const compRule = comp.extend({ ruleId: z.string().regex(/^[0-9a-f]{24}$/) });
 
 const P = (req: { params: unknown }) => req.params as Record<string, string>;
 
@@ -172,6 +182,75 @@ blocksRouter.post(
   }),
 );
 
+// ---------- Daraja bo'yicha tasodifiy tanlash (E8) ----------
+blocksRouter.post(
+  '/my-blocks/:sessionId/:blockId/random/availability',
+  validate({ params: mine, body: availabilityBody }),
+  asyncHandler(async (req, res) => {
+    const p = P(req);
+    ok(
+      res,
+      await randomService.availability(getCtx(req), sid(req), p.sessionId!, p.blockId!, req.body),
+    );
+  }),
+);
+blocksRouter.post(
+  '/my-blocks/:sessionId/:blockId/random/preview',
+  validate({ params: mine, body: previewBody }),
+  asyncHandler(async (req, res) => {
+    const p = P(req);
+    ok(res, await randomService.preview(getCtx(req), sid(req), p.sessionId!, p.blockId!, req.body));
+  }),
+);
+blocksRouter.post(
+  '/my-blocks/:sessionId/:blockId/random/replace',
+  validate({ params: mine, body: replaceBody }),
+  asyncHandler(async (req, res) => {
+    const p = P(req);
+    ok(res, await randomService.replace(getCtx(req), sid(req), p.sessionId!, p.blockId!, req.body));
+  }),
+);
+blocksRouter.post(
+  '/my-blocks/:sessionId/:blockId/rules',
+  validate({ params: mine, body: ruleBody }),
+  asyncHandler(async (req, res) => {
+    const p = P(req);
+    created(
+      res,
+      await randomService.addRule(getCtx(req), sid(req), p.sessionId!, p.blockId!, req.body),
+    );
+  }),
+);
+blocksRouter.patch(
+  '/my-blocks/:sessionId/:blockId/rules/:ruleId',
+  validate({ params: mineRule, body: rulePatchBody }),
+  asyncHandler(async (req, res) => {
+    const p = P(req);
+    ok(
+      res,
+      await randomService.updateRule(
+        getCtx(req),
+        sid(req),
+        p.sessionId!,
+        p.blockId!,
+        p.ruleId!,
+        req.body,
+      ),
+    );
+  }),
+);
+blocksRouter.delete(
+  '/my-blocks/:sessionId/:blockId/rules/:ruleId',
+  validate({ params: mineRule }),
+  asyncHandler(async (req, res) => {
+    const p = P(req);
+    ok(
+      res,
+      await randomService.removeRule(getCtx(req), sid(req), p.sessionId!, p.blockId!, p.ruleId!),
+    );
+  }),
+);
+
 // ---------- Tuzuvchi ----------
 blocksRouter.get(
   '/sessions/:id/blocks/:blockId/questions',
@@ -187,6 +266,17 @@ blocksRouter.delete(
   asyncHandler(async (req, res) => {
     const p = P(req);
     ok(res, await blocksService.composerRemove(getCtx(req), sid(req), p.id!, p.blockId!, p.qid!));
+  }),
+);
+blocksRouter.delete(
+  '/sessions/:id/blocks/:blockId/rules/:ruleId',
+  validate({ params: compRule }),
+  asyncHandler(async (req, res) => {
+    const p = P(req);
+    ok(
+      res,
+      await randomService.composerRemoveRule(getCtx(req), sid(req), p.id!, p.blockId!, p.ruleId!),
+    );
   }),
 );
 blocksRouter.post(

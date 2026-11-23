@@ -31,10 +31,14 @@ import {
   timingModeOf,
   type NBlock,
 } from '../blocks/blocks.core';
+import { cryptoShuffle } from '../blocks/blocks.pool';
 
 type Actor = Ctx['actor'];
 
 export const MAX_POOL = 500;
+/** Qoida hovuzi: har o'quvchi oladigan sonning kamida shuncha baravari (va eng kami RULE_POOL_MIN) saqlanadi */
+const RULE_POOL_FACTOR = 10;
+const RULE_POOL_MIN = 100;
 export const MAX_SECTIONS = 20;
 
 // ---------- Sxemalar ----------
@@ -47,12 +51,19 @@ const manualItem = z
 const ruleItem = z
   .object({
     kind: z.literal('rule'),
-    topicId: objectIdSchema,
+    /** Eski shakl: bitta mavzu. Yangi: `topicIds` (birlashma) yoki `allTopics` (blok fanidagi hamma mavzu) */
+    topicId: objectIdSchema.optional(),
+    topicIds: z.array(objectIdSchema).min(1).max(50).optional(),
+    allTopics: z.boolean().optional(),
     count: z.number().int().min(1, 'Kamida 1 ta').max(200, '200 tadan oshmasligi kerak'),
     difficulty: z.number().int().min(1).max(3).nullish(),
     type: z.enum(QUESTION_TYPES).nullish(),
   })
-  .strict();
+  .strict()
+  .refine((r) => !!r.topicId || !!r.topicIds?.length || r.allTopics === true, {
+    message: 'Mavzu tanlang',
+    path: ['topicId'],
+  });
 export const item = z.discriminatedUnion('kind', [manualItem, ruleItem]);
 // eslint-disable-next-line no-control-regex
 const NOCTRL = /^[^\u0000-\u001F\u007F]*$/;
@@ -204,6 +215,7 @@ export async function inspectSections(
   const errors: string[] = [];
   const poolIds = new Set<string>();
   const rulePools = new Map<string, string[]>();
+  const fullRulePools = new Map<string, string[]>();
   let perParticipant = 0;
   const out: SectionsInfo['sections'] = [];
 
@@ -233,19 +245,32 @@ export async function inspectSections(
         items.push({ kind: 'manual', available: found.length, requested: ids.length, ok, draft });
         continue;
       }
-      // qoida
-      const topic = await ExamTopic.findOne({
-        _id: it.topicId,
-        schoolId,
-        isDeleted: { $ne: true },
-      }).lean();
-      if (
-        !topic ||
-        (!scope.all && !scope.subjectIds.includes(String(topic.subjectId))) ||
-        (opts.subjectId && String(topic.subjectId) !== opts.subjectId)
-      ) {
+      // qoida: bitta mavzu (eski), mavzular birlashmasi yoki blok fanidagi hamma mavzu
+      const wanted = uniq([...(it.topicIds ?? []), ...(it.topicId ? [it.topicId] : [])]);
+      const topics = it.allTopics
+        ? opts.subjectId
+          ? await ExamTopic.find({
+              schoolId,
+              subjectId: oid(opts.subjectId),
+              isDeleted: { $ne: true },
+            }).lean()
+          : []
+        : await ExamTopic.find({
+            _id: { $in: wanted.map(oid) },
+            schoolId,
+            isDeleted: { $ne: true },
+          }).lean();
+      const topicsOk =
+        topics.length > 0 &&
+        (it.allTopics || topics.length === wanted.length) &&
+        topics.every(
+          (tp) =>
+            (scope.all || scope.subjectIds.includes(String(tp.subjectId))) &&
+            (!opts.subjectId || String(tp.subjectId) === opts.subjectId),
+        );
+      if (!topicsOk) {
         errors.push(
-          `${where}: mavzu topilmadi${opts.subjectId ? ', blok faniga mos emas' : ''} yoki bu fan sizga biriktirilmagan`,
+          `${where}: ${it.allTopics ? 'blok fanida mavzu topilmadi' : 'mavzu topilmadi'}${opts.subjectId ? ', blok faniga mos emas' : ''} yoki bu fan sizga biriktirilmagan`,
         );
         items.push({
           kind: 'rule',
@@ -257,7 +282,11 @@ export async function inspectSections(
         });
         continue;
       }
-      const filter: Record<string, unknown>[] = [...base, { topicId: oid(it.topicId) }];
+      const topicNames = topics.map((tp) => tp.name).join(', ');
+      const filter: Record<string, unknown>[] = [
+        ...base,
+        { topicId: { $in: topics.map((tp) => tp._id) } },
+      ];
       if (it.difficulty) filter.push({ difficulty: it.difficulty });
       if (it.type) filter.push({ type: it.type });
       const ids = (await Question.find({ $and: filter }).select('_id').lean()).map((q) =>
@@ -271,24 +300,47 @@ export async function inspectSections(
           });
       if (!ok) {
         errors.push(
-          `${where}: "${topic.name}" mavzusida mos FAOL savol yetarli emas (kerak ${it.count}, bor ${ids.length})` +
+          `${where}: "${topicNames}" mavzusida${it.difficulty ? ` ${['oson', "o'rta", 'qiyin'][it.difficulty - 1]}` : ''} mos FAOL savol yetarli emas (kerak ${it.count}, bor ${ids.length})` +
             (draft ? `. Qoralamada ${draft} ta savol bor: mavzuni ochib faollashtiring` : ''),
         );
       }
-      for (const id of ids) poolIds.add(id);
-      rulePools.set(`${si}.${ii}`, ids);
+      // Katta bank: hovuz tasodifiy qisqartiriladi (muzlatilgan nusxa hajmi chegaralangan); yetarlilik TO'LIQ ro'yxat bo'yicha
+      const cap = Math.max(it.count * RULE_POOL_FACTOR, RULE_POOL_MIN);
+      const keep = ids.length > cap ? cryptoShuffle(ids).slice(0, cap) : ids;
+      for (const id of keep) poolIds.add(id);
+      rulePools.set(`${si}.${ii}`, keep);
+      fullRulePools.set(`${si}.${ii}`, ids);
       perParticipant += it.count;
       items.push({
         kind: 'rule',
         available: ids.length,
         requested: it.count,
         ok,
-        topicName: topic.name,
-        topicId: String(topic._id),
+        topicName: topicNames,
+        topicId: String(topics[0]!._id),
         draft,
       });
     }
     out.push({ title: sec.title, items });
+  }
+  // Bir nechta qoida bir-birining savollarini olishi mumkin (mavzular kesishsa): umumiy yetarlilikni tekshiramiz
+  for (const [si, sec] of sections.entries()) {
+    const manual = new Set(
+      sec.items.flatMap((i) => (i.kind === 'manual' ? uniq(i.questionIds) : [])),
+    );
+    const ruleKeys = sec.items.flatMap((i, ii) => (i.kind === 'rule' ? [ii] : []));
+    if (ruleKeys.length < 2) continue;
+    const union = new Set<string>();
+    let need = 0;
+    for (const ii of ruleKeys) {
+      for (const id of fullRulePools.get(`${si}.${ii}`) ?? []) if (!manual.has(id)) union.add(id);
+      need += (sec.items[ii] as { count: number }).count;
+    }
+    if (union.size < need) {
+      errors.push(
+        `${si + 1}-bo'lim: qoidalar umumiy ${need} ta savol talab qiladi, lekin ularning mavzularida jami ${union.size} ta mos FAOL savol bor (qoidalar bir-birining savollarini oladi)`,
+      );
+    }
   }
   if (poolIds.size > MAX_POOL) {
     errors.push(`Savollar to'plami ${MAX_POOL} tadan oshmasligi kerak (hozir ${poolIds.size})`);
@@ -318,7 +370,9 @@ export const storeItems = (items: ItemsInput) =>
       ? { kind: 'manual', questionIds: uniq(i.questionIds).map(oid) }
       : {
           kind: 'rule',
-          topicId: oid(i.topicId),
+          topicId: i.topicId ? oid(i.topicId) : i.topicIds?.[0] ? oid(i.topicIds[0]) : null,
+          ...(i.topicIds?.length ? { topicIds: uniq(i.topicIds).map(oid) } : {}),
+          ...(i.allTopics ? { allTopics: true } : {}),
           count: i.count,
           difficulty: i.difficulty ?? null,
           type: i.type ?? null,
@@ -336,7 +390,11 @@ export const itemsDto = (stored: unknown): ItemsInput =>
       ? { kind: 'manual' as const, questionIds: (i.questionIds as unknown[]).map(String) }
       : {
           kind: 'rule' as const,
-          topicId: String(i.topicId),
+          ...(i.topicId ? { topicId: String(i.topicId) } : {}),
+          ...((i.topicIds as unknown[] | undefined)?.length
+            ? { topicIds: (i.topicIds as unknown[]).map(String) }
+            : {}),
+          ...(i.allTopics === true ? { allTopics: true } : {}),
           count: Number(i.count),
           difficulty: (i.difficulty as number | null) ?? null,
           type: (i.type as (typeof QUESTION_TYPES)[number] | null) ?? null,
@@ -592,6 +650,18 @@ export function storeBlocks(
             questionId: oid(c.questionId),
             addedBy: oid(c.addedBy),
             addedAt: c.addedAt,
+          }))
+        : [],
+      contribRules: sameSubject
+        ? prev!.contribRules.map((r) => ({
+            ruleId: r.ruleId,
+            topicIds: r.topicIds.map(oid),
+            allTopics: r.allTopics,
+            difficulty: r.difficulty,
+            type: r.type,
+            count: r.count,
+            addedBy: oid(r.addedBy),
+            addedAt: r.addedAt,
           }))
         : [],
       status: sameSubject ? prev!.status : ('open' as const),

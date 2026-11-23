@@ -21,6 +21,7 @@ import { loadTopic, topicsService } from '../topics.service';
 import { findSession, isCreator } from '../sessions/sessions.service';
 import { blockQuestionCount, effectiveItems, normalizeBlocks, type NBlock } from './blocks.core';
 import { MAX_POOL } from '../sessions/templates.service';
+import { examManualIds, rulePoolSize } from './blocks.pool';
 import { notifyAllBlocksReady, remindBlocksNow } from '../../telegram/telegram.exams';
 
 type Actor = Ctx['actor'];
@@ -72,7 +73,12 @@ async function loadSession(schoolId: string, id: string): Promise<ExamSessionDoc
  * Biriktirilgan o'qituvchi kirishi: faqat O'Z bloki. Boshqa blok, eski (blokisiz) imtihon, boshqa maktab yoki
  * biriktirilmagan foydalanuvchi: 404 (mavjudligi oshkor qilinmaydi).
  */
-async function contribAccess(ctx: Ctx, schoolId: string, sessionId: string, blockId: string) {
+export async function contribAccess(
+  ctx: Ctx,
+  schoolId: string,
+  sessionId: string,
+  blockId: string,
+) {
   const s = await loadSession(schoolId, sessionId);
   const b = normalizeBlocks(s).find((x) => x.blockId === blockId && !x.legacy);
   if (!b) throw notFoundBlock();
@@ -83,12 +89,12 @@ async function contribAccess(ctx: Ctx, schoolId: string, sessionId: string, bloc
   return { s, b, role };
 }
 
-function assertUnlocked(s: ExamSessionDoc, b: NBlock, role: Role = 'contributor') {
+export function assertUnlocked(s: ExamSessionDoc, b: NBlock, role: Role = 'contributor') {
   const r = lockOf(s, b, clock.now(), role);
   if (r) throw AppError.forbidden(LOCK_MSG[r]);
 }
 
-const audit = (
+export const audit = (
   ctx: Ctx,
   schoolId: string,
   action: string,
@@ -137,6 +143,7 @@ async function questionList(
     _id: {
       $in: uniq([
         ...[...owner.values()].filter(Boolean),
+        ...b.contribRules.map((r) => r.addedBy),
         ...docs.map((d) => String(d.authorId)),
       ] as string[]),
     },
@@ -147,7 +154,17 @@ async function questionList(
   const byId = new Map(docs.map((d) => [d.id as string, d]));
   const topics = await ExamTopic.find({
     _id: {
-      $in: b.items.filter((i) => i.kind === 'rule').map((i) => String(i.topicId)),
+      $in: [
+        ...b.items.flatMap((i) =>
+          i.kind === 'rule'
+            ? ((i.topicIds as unknown[] | undefined)?.length
+                ? (i.topicIds as unknown[])
+                : [i.topicId]
+              ).map(String)
+            : [],
+        ),
+        ...b.contribRules.flatMap((r) => r.topicIds),
+      ].filter((x) => x && x !== 'undefined' && x !== 'null'),
     },
   })
     .select('name')
@@ -175,15 +192,49 @@ async function questionList(
         };
       })
       .sort((x, y) => Number(x.missing) - Number(y.missing)),
-    rules: b.items
-      .filter((i) => i.kind === 'rule')
-      .map((i) => ({
-        topicId: String(i.topicId),
-        topicName: tn.get(String(i.topicId)) ?? null,
-        count: i.count ?? 0,
-        difficulty: i.difficulty ?? null,
-        type: i.type ?? null,
+    rules: [
+      ...b.items
+        .filter((i) => i.kind === 'rule')
+        .map((i) => {
+          const tids = (
+            (i.topicIds as unknown[] | undefined)?.length ? (i.topicIds as unknown[]) : [i.topicId]
+          ).map(String);
+          return {
+            ruleId: null as string | null,
+            topicId: tids[0] ?? '',
+            topicIds: tids,
+            allTopics: i.allTopics === true,
+            topicName: i.allTopics
+              ? null
+              : tids
+                  .map((t) => tn.get(t))
+                  .filter(Boolean)
+                  .join(', ') || null,
+            count: i.count ?? 0,
+            difficulty: i.difficulty ?? null,
+            type: i.type ?? null,
+            addedByName: null as string | null,
+            canRemove: false,
+          };
+        }),
+      ...b.contribRules.map((r) => ({
+        ruleId: r.ruleId as string | null,
+        topicId: r.topicIds[0] ?? '',
+        topicIds: r.topicIds,
+        allTopics: r.allTopics,
+        topicName: r.allTopics
+          ? null
+          : r.topicIds
+              .map((t) => tn.get(t))
+              .filter(Boolean)
+              .join(', ') || null,
+        count: r.count,
+        difficulty: r.difficulty,
+        type: r.type,
+        addedByName: names.get(r.addedBy) ?? null,
+        canRemove: canRemoveOf(r.addedBy),
       })),
+    ],
   };
 }
 
@@ -211,6 +262,22 @@ async function ensureExamTopic(ctx: Ctx, schoolId: string, subjectId: string, ex
   return t;
 }
 
+/** Yozuv sharti (atomik): tuzuvchi - blok mavjud; o'qituvchi - muddat, tayyorlik va biriktirilganlik shartlari */
+export function writeGuard(ctx: Ctx, role: Role, blockId: string, now: Date) {
+  return role === 'composer'
+    ? { blocks: { $elemMatch: { blockId } } }
+    : {
+        $or: [{ contribDeadline: null }, { contribDeadline: { $gt: now } }],
+        blocks: {
+          $elemMatch: {
+            blockId,
+            contributors: oid(ctx.actor.id),
+            $or: [{ status: { $ne: 'ready' } }, { readyBy: 'contributor' }],
+          },
+        },
+      };
+}
+
 /** Savollarni blokka atomik qo'shadi (qulf shartlari filtrda: muddat/tayyorlik/holat poygasiga chidamli) */
 async function pushContrib(
   ctx: Ctx,
@@ -235,19 +302,7 @@ async function pushContrib(
     ]);
   }
   if (!fresh.length) return { added: 0, skipped: ids.length };
-  const guard =
-    role === 'composer'
-      ? { blocks: { $elemMatch: { blockId: b.blockId } } }
-      : {
-          $or: [{ contribDeadline: null }, { contribDeadline: { $gt: now } }],
-          blocks: {
-            $elemMatch: {
-              blockId: b.blockId,
-              contributors: oid(ctx.actor.id),
-              $or: [{ status: { $ne: 'ready' } }, { readyBy: 'contributor' }],
-            },
-          },
-        };
+  const guard = writeGuard(ctx, role, b.blockId, now);
   const r = await ExamSession.updateOne(
     {
       _id: s._id,
@@ -276,10 +331,32 @@ async function pushContrib(
   return { added: fresh.length, skipped: ids.length - fresh.length };
 }
 
-async function blockSummary(schoolId: string, sessionId: string, blockId: string) {
+export async function blockSummary(schoolId: string, sessionId: string, blockId: string) {
   const s = await loadSession(schoolId, sessionId);
   const b = normalizeBlocks(s).find((x) => x.blockId === blockId)!;
   return { count: blockQuestionCount(b), target: b.targetCount };
+}
+
+/** Qoidalarga "bankda mos savollar soni" (har o'quvchi shundan tanlaydi) qo'shadi: ko'ruvchi ko'rinishida */
+async function withPoolSizes<
+  T extends {
+    rules: {
+      topicIds: string[];
+      allTopics: boolean;
+      difficulty: number | null;
+      type: string | null;
+    }[];
+  },
+>(ctx: Ctx, schoolId: string, s: ExamSessionDoc, b: NBlock, list: T) {
+  const scope = await resolveExamScope(ctx.actor, schoolId);
+  const manual = examManualIds(s);
+  const rules = await Promise.all(
+    list.rules.map(async (r) => ({
+      ...r,
+      poolSize: await rulePoolSize(ctx, schoolId, scope, b, r, manual),
+    })),
+  );
+  return { ...list, rules };
 }
 
 export const blocksService = {
@@ -338,10 +415,16 @@ export const blocksService = {
     const { s, b, role } = await contribAccess(ctx, schoolId, sessionId, blockId);
     const subject = b.subjectId ? await Subject.findById(b.subjectId).select('name').lean() : null;
     const lock = lockOf(s, b, clock.now(), role);
-    const list = await questionList(
+    const list = await withPoolSizes(
+      ctx,
       schoolId,
+      s,
       b,
-      (addedBy) => lock === null && (role === 'composer' || addedBy === ctx.actor.id),
+      await questionList(
+        schoolId,
+        b,
+        (addedBy) => lock === null && (role === 'composer' || addedBy === ctx.actor.id),
+      ),
     );
     return {
       role,
@@ -555,7 +638,13 @@ export const blocksService = {
     if (!scope.all && !isCreator(s, ctx.actor)) throw AppError.forbidden();
     const b = normalizeBlocks(s).find((x) => x.blockId === blockId && !x.legacy);
     if (!b) throw notFoundBlock();
-    return questionList(schoolId, b, () => s.status === 'draft');
+    return withPoolSizes(
+      ctx,
+      schoolId,
+      s,
+      b,
+      await questionList(schoolId, b, () => s.status === 'draft'),
+    );
   },
 
   /** Tuzuvchi: istalgan blokdan istalgan savolni olib tashlaydi (tuzuvchi elementidan yoki o'qituvchi qo'shganidan) */

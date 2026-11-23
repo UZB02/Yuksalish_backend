@@ -57,6 +57,7 @@ import {
 } from './templates.service';
 import {
   blockQuestionCount,
+  contribRuleOffset,
   effectiveItems,
   normalizeBlocks,
   scoringModeOf,
@@ -338,6 +339,7 @@ async function refs(docs: ExamSessionDoc[]) {
       ...blocksOfDocs[i]!.flatMap((b) => [
         ...b.contributors,
         ...b.contribQuestions.map((c) => c.addedBy),
+        ...b.contribRules.map((c) => c.addedBy),
       ]),
     ]),
   );
@@ -396,6 +398,18 @@ function blockDto(b: NBlock, r: Awaited<ReturnType<typeof refs>>) {
     items: itemsDto(b.items),
     contribQuestions: b.contribQuestions.map((c) => ({
       questionId: c.questionId,
+      addedBy: c.addedBy,
+      addedByName: r.user.get(c.addedBy) ?? null,
+      addedAt: c.addedAt,
+    })),
+    /** Tasodifiy tanlash qoidalari (har o'quvchiga boshqacha), poolIds chiqarilmaydi */
+    contribRules: b.contribRules.map((c) => ({
+      ruleId: c.ruleId,
+      topicIds: c.topicIds,
+      allTopics: c.allTopics,
+      difficulty: c.difficulty,
+      type: c.type,
+      count: c.count,
       addedBy: c.addedBy,
       addedByName: r.user.get(c.addedBy) ?? null,
       addedAt: c.addedAt,
@@ -567,16 +581,32 @@ async function freezePool(schoolId: string, s: ExamSessionDoc) {
   }));
   // Bloklar: har blokning (tuzuvchi) elementlari + qoida poolIds; o'qituvchi savollari o'z ro'yxatida qoladi
   const frozenBlocks = blockMode
-    ? (s.blocks as unknown as Record<string, unknown>[]).map((b, bi) => ({
-        ...(typeof (b as { toObject?: () => object }).toObject === 'function'
-          ? (b as unknown as { toObject: () => object }).toObject()
-          : b),
-        items: ((b.items as Record<string, unknown>[]) ?? []).map((it, ii) =>
-          it.kind === 'rule'
-            ? { ...it, poolIds: (rulePools.get(`${bi}.${ii}`) ?? []).map(oid) }
-            : it,
-        ),
-      }))
+    ? (s.blocks as unknown as Record<string, unknown>[]).map((b, bi) => {
+        const nb = nblocks[bi]!;
+        const offset = contribRuleOffset(nb);
+        return {
+          ...(typeof (b as { toObject?: () => object }).toObject === 'function'
+            ? (b as unknown as { toObject: () => object }).toObject()
+            : b),
+          items: ((b.items as Record<string, unknown>[]) ?? []).map((it, ii) =>
+            it.kind === 'rule'
+              ? { ...it, poolIds: (rulePools.get(`${bi}.${ii}`) ?? []).map(oid) }
+              : it,
+          ),
+          // Tasodifiy tanlash qoidalari (E8): effectiveItems ichida items(+1 qo'lda) dan keyin turadi
+          contribRules: nb.contribRules.map((r, ri) => ({
+            ruleId: r.ruleId,
+            topicIds: r.topicIds.map(oid),
+            allTopics: r.allTopics,
+            difficulty: r.difficulty,
+            type: r.type,
+            count: r.count,
+            addedBy: oid(r.addedBy),
+            addedAt: r.addedAt,
+            poolIds: (rulePools.get(`${bi}.${offset + ri}`) ?? []).map(oid),
+          })),
+        };
+      })
     : null;
   return { pool, frozenSections, frozenBlocks };
 }
@@ -1401,7 +1431,15 @@ export const sessionsService = {
     const liveT = new Set(okT.map((x) => String(x._id)));
     let droppedQ = 0;
     let droppedRules = 0;
-    const clean = (items: { kind: string; questionIds?: unknown[]; topicId?: unknown }[]) => {
+    const clean = (
+      items: {
+        kind: string;
+        questionIds?: unknown[];
+        topicId?: unknown;
+        topicIds?: unknown[];
+        allTopics?: boolean;
+      }[],
+    ) => {
       const seen = new Set<string>();
       const out: Record<string, unknown>[] = [];
       for (const it of items as Record<string, unknown>[]) {
@@ -1416,10 +1454,25 @@ export const sessionsService = {
             }
           }
           if (keep.length) out.push({ kind: 'manual', questionIds: keep.map(oid) });
-        } else if (liveT.has(String(it.topicId))) {
+        } else if (
+          it.allTopics === true ||
+          [...((it.topicIds as unknown[]) ?? []), ...(it.topicId ? [it.topicId] : [])]
+            .map(String)
+            .some((t) => liveT.has(t))
+        ) {
+          const keepTopics = [
+            ...((it.topicIds as unknown[]) ?? []),
+            ...(it.topicId ? [it.topicId] : []),
+          ]
+            .map(String)
+            .filter((t) => liveT.has(t));
           out.push({
             kind: 'rule',
-            topicId: oid(String(it.topicId)),
+            topicId: keepTopics[0] ? oid(keepTopics[0]) : null,
+            ...(it.allTopics === true ? { allTopics: true } : {}),
+            ...(keepTopics.length > 1 || (it.topicIds as unknown[] | undefined)?.length
+              ? { topicIds: [...new Set(keepTopics)].map(oid) }
+              : {}),
             count: it.count,
             difficulty: it.difficulty ?? null,
             type: it.type ?? null,
@@ -1445,6 +1498,7 @@ export const sessionsService = {
           contributors: b.contributors.map(oid),
           items: clean(effectiveItems(b) as never),
           contribQuestions: [],
+          contribRules: [],
           status: 'open' as const,
         }));
     if (droppedQ) {

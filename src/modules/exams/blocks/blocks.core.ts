@@ -16,8 +16,28 @@ export interface StoredItem {
   count?: number;
   poolIds?: unknown[];
   topicId?: unknown;
+  /**
+   * Qoida: bir nechta mavzu (E8). Bo'lsa mavzular birlashmasi, yo'q bo'lsa [topicId] (eski hujjatlar).
+   * `allTopics`: blok fanidagi BARCHA mavzular (keyin qo'shilganlari ham); topicIds bo'sh.
+   */
+  topicIds?: unknown[];
+  allTopics?: boolean;
   difficulty?: number | null;
   type?: string | null;
+}
+
+/** Tasodifiy tanlash qoidasi (rejim 2), biriktirilgan o'qituvchi/tuzuvchi qo'shgan: egasi `addedBy` */
+export interface NBlockRule {
+  ruleId: string;
+  topicIds: string[];
+  allTopics: boolean;
+  difficulty: number | null;
+  type: string | null;
+  count: number;
+  addedBy: string;
+  addedAt: Date | null;
+  /** Rejalashtirilganda muzlatilgan savol id lari (bo'lmasa: hali muzlatilmagan) */
+  poolIds?: unknown[];
 }
 
 export interface NBlockContrib {
@@ -36,6 +56,8 @@ export interface NBlock {
   contributors: string[];
   items: StoredItem[];
   contribQuestions: NBlockContrib[];
+  /** Tasodifiy tanlash qoidalari (E8): items dagi qoidalar kabi ishlaydi */
+  contribRules: NBlockRule[];
   status: 'open' | 'ready';
   /** tayyor belgisini qo'ygan: 'contributor' | 'composer' (eski tayyor ma'lumot = composer) | null (tayyor emas) */
   readyBy: 'contributor' | 'composer' | null;
@@ -71,6 +93,17 @@ export function normalizeBlocks(doc: BlocksSource): NBlock[] {
         addedBy: str(c.addedBy),
         addedAt: (c.addedAt as Date | null) ?? null,
       })),
+      contribRules: ((b.contribRules as Record<string, unknown>[]) ?? []).map((r) => ({
+        ruleId: str(r.ruleId),
+        topicIds: ((r.topicIds as unknown[]) ?? []).map(str),
+        allTopics: r.allTopics === true,
+        difficulty: typeof r.difficulty === 'number' ? r.difficulty : null,
+        type: typeof r.type === 'string' ? r.type : null,
+        count: Number(r.count ?? 0),
+        addedBy: str(r.addedBy),
+        addedAt: (r.addedAt as Date | null) ?? null,
+        ...(r.poolIds ? { poolIds: r.poolIds as unknown[] } : {}),
+      })),
       status: b.status === 'ready' ? 'ready' : 'open',
       readyBy:
         b.status === 'ready' ? (b.readyBy === 'contributor' ? 'contributor' : 'composer') : null,
@@ -90,6 +123,7 @@ export function normalizeBlocks(doc: BlocksSource): NBlock[] {
       contributors: [],
       items: sections.flatMap((s) => s.items ?? []),
       contribQuestions: [],
+      contribRules: [],
       status: 'ready',
       readyBy: 'composer',
       remindedAt: null,
@@ -104,14 +138,37 @@ export const timingModeOf = (d: { timingMode?: string | null }): TimingMode =>
   d.timingMode === 'per_block' ? 'per_block' : 'common';
 
 /** Blokning savol elementlari: tuzuvchi elementlari + biriktirilgan o'qituvchilar qo'shgan savollar */
-export function effectiveItems(b: Pick<NBlock, 'items' | 'contribQuestions'>): StoredItem[] {
-  return b.contribQuestions.length
+export function effectiveItems(
+  b: Pick<NBlock, 'items' | 'contribQuestions'> & { contribRules?: NBlockRule[] },
+): StoredItem[] {
+  const out: StoredItem[] = b.contribQuestions.length
     ? [...b.items, { kind: 'manual', questionIds: b.contribQuestions.map((c) => c.questionId) }]
-    : b.items;
+    : [...b.items];
+  // Tasodifiy tanlash qoidalari oxirida: rejalashtirishda poolIds shu tartib bo'yicha muzlatiladi (contribRuleOffset)
+  for (const r of b.contribRules ?? []) out.push(ruleItemOf(r));
+  return out;
 }
 
+/** Qoida (rejim 2) ni oddiy qoida elementi shaklida beradi (selection/inspect shu bilan ishlaydi) */
+export const ruleItemOf = (r: NBlockRule): StoredItem => ({
+  kind: 'rule',
+  topicId: r.topicIds[0] ?? null,
+  topicIds: r.topicIds,
+  allTopics: r.allTopics,
+  count: r.count,
+  difficulty: r.difficulty,
+  type: r.type,
+  ...(r.poolIds ? { poolIds: r.poolIds } : {}),
+});
+
+/** effectiveItems ichida contribRules boshlanadigan indeks */
+export const contribRuleOffset = (b: Pick<NBlock, 'items' | 'contribQuestions'>): number =>
+  b.items.length + (b.contribQuestions.length ? 1 : 0);
+
 /** Har ishtirokchi blokdan oladigan savollar soni: qo'lda (takrorsiz) + qoidalar */
-export function blockQuestionCount(b: Pick<NBlock, 'items' | 'contribQuestions'>): number {
+export function blockQuestionCount(
+  b: Pick<NBlock, 'items' | 'contribQuestions'> & { contribRules?: NBlockRule[] },
+): number {
   const manual = new Set<string>();
   let rules = 0;
   for (const it of effectiveItems(b)) {

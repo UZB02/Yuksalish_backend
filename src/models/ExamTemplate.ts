@@ -53,6 +53,8 @@ export interface IExamBlock {
   contributors: Types.ObjectId[];
   items: IExamItem[];
   contribQuestions: IBlockContribQuestion[];
+  /** Tasodifiy tanlash qoidalari (E8): eski hujjatlarda yo'q (= bo'sh) */
+  contribRules?: Record<string, unknown>[];
   status: BlockStatus;
   /** "tayyor" belgisini kim qo'ydi: 'contributor' = o'qituvchi (muddatgacha qaytara oladi, tahrir qulflanmaydi);
    *  'composer' yoki yo'q (eski ma'lumot) = tuzuvchi (o'qituvchi uchun qulflaydi) */
@@ -107,6 +109,7 @@ export const blocksField = {
         contributors: { type: [Schema.Types.ObjectId], default: [] },
         items: { type: [Schema.Types.Mixed], default: [] },
         contribQuestions: { type: [Schema.Types.Mixed], default: [] },
+        contribRules: { type: [Schema.Types.Mixed], default: [] },
         status: { type: String, enum: BLOCK_STATUSES, default: 'open' },
         readyBy: { type: String, default: null },
         remindedAt: { type: Date, default: null },
