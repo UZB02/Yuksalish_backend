@@ -6,6 +6,7 @@ import { examClientTokenOf } from '../../middlewares/rateLimiters';
 import { validate } from '../../middlewares/validate';
 import type { ExamAttemptDoc } from '../../models/ExamAttempt';
 import {
+  ackBody,
   answersBody,
   authenticateAttempt,
   eventBody,
@@ -33,10 +34,14 @@ examClientRouter.use((_req, res, next) => {
   next();
 });
 
-const requireAttempt: RequestHandler = asyncHandler(async (req, res, next) => {
-  res.locals.attempt = await authenticateAttempt(examClientTokenOf(req));
-  next();
-});
+const attemptLoader = (mode: 'full' | 'light'): RequestHandler =>
+  asyncHandler(async (req, res, next) => {
+    res.locals.attempt = await authenticateAttempt(examClientTokenOf(req), mode);
+    next();
+  });
+const requireAttempt = attemptLoader('full');
+/** Heartbeat, hodisa va tasdiq: katta massivlar (order/saved/...) yuklanmaydi */
+const requireAttemptLight = attemptLoader('light');
 const attemptOf = (res: Response) => res.locals.attempt as ExamAttemptDoc;
 
 examClientRouter.post(
@@ -91,7 +96,7 @@ examClientRouter.put(
 
 examClientRouter.post(
   '/events',
-  requireAttempt,
+  requireAttemptLight,
   validate({ body: eventBody }),
   asyncHandler(async (req, res) => {
     ok(res, await examClientService.recordEvent(attemptOf(res), req.body));
@@ -100,9 +105,18 @@ examClientRouter.post(
 
 examClientRouter.post(
   '/heartbeat',
-  requireAttempt,
+  requireAttemptLight,
   asyncHandler(async (_req, res) => {
     ok(res, await examClientService.heartbeat(attemptOf(res)));
+  }),
+);
+
+examClientRouter.post(
+  '/warnings/ack',
+  requireAttemptLight,
+  validate({ body: ackBody }),
+  asyncHandler(async (req, res) => {
+    ok(res, await examClientService.ackWarnings(attemptOf(res), req.body));
   }),
 );
 

@@ -41,6 +41,8 @@ export interface ProfileExamResult {
     percent: number;
   }[];
   examDeleted: boolean;
+  /** Nazoratchi to'xtatgan: sabab (natija shu paytgacha berilgan javoblardan) */
+  terminated: { reason: string } | null;
 }
 
 const round1 = (n: number) => Math.round(n * 10) / 10;
@@ -116,6 +118,7 @@ export async function profileExamResults(
         };
       }),
       examDeleted: !!s.isDeleted,
+      terminated: a.terminated ? { reason: a.terminated.reason } : null,
     });
   }
   const percents = items.map((i) => i.percent);

@@ -12,7 +12,12 @@ export const ATTEMPT_STATUSES = ['joined', 'in_progress', 'submitted', 'auto_sub
 export type AttemptStatus = (typeof ATTEMPT_STATUSES)[number];
 export const EVENT_TYPES = ['blur', 'fullscreen_exit', 'visibility_hidden', 'reconnect'] as const;
 export type AttemptEventType = (typeof EVENT_TYPES)[number];
+/** Serverda yoziladigan hodisalar (nazoratchi amallari): mijoz yubora olmaydi (EVENT_TYPES dan alohida) */
+export const SERVER_EVENT_TYPES = ['warning_sent', 'warning_ack', 'terminated'] as const;
+export type AttemptServerEventType = (typeof SERVER_EVENT_TYPES)[number];
 export const MAX_EVENTS = 200;
+/** Bitta urinishda saqlanadigan nazoratchi ogohlantirishlari soni (eskilari tushadi) */
+export const MAX_WARNINGS = 50;
 
 export interface IAttemptOrderItem {
   /** Blok id (eski urinishlarda yo'q: birinchi/yagona blok) */
@@ -35,10 +40,29 @@ export interface ISavedAnswer {
 }
 
 export interface IAttemptEvent {
-  type: AttemptEventType;
+  type: AttemptEventType | AttemptServerEventType;
   /** Klient vaqti (ishonchsiz, faqat ma'lumot uchun) */
   at: Date | null;
   serverAt: Date;
+}
+
+/** Nazoratchi ogohlantirishi: o'quvchi ekranida chiqadi, tasdiqlagach `ackAt` qo'yiladi */
+export interface IAttemptWarning {
+  id: string;
+  /** Oddiy matn (<=200 belgi) */
+  text: string;
+  at: Date;
+  by: string;
+  byName: string;
+  ackAt: Date | null;
+}
+
+/** Nazoratchi imtihonni to'xtatgan: urinish `submitted` bo'ladi (shu paytgacha javoblar baholangan), bu belgi qo'shiladi */
+export interface IAttemptTerminated {
+  at: Date;
+  by: string;
+  byName: string;
+  reason: string;
 }
 
 /** Esse uchun qo'lda qo'yilgan ball (E6) */
@@ -111,6 +135,13 @@ export interface IExamAttempt {
   events: IAttemptEvent[];
   counters: { blur: number; fullscreenExit: number; visibilityHidden: number; reconnect: number };
   lastSeenAt: Date | null;
+  /** Oxirgi oynadan chiqish (blur / visibility_hidden / fullscreen_exit) serverda yozilgan vaqt; eski urinishlarda yo'q */
+  lastLeaveAt: Date | null;
+  /** Nazoratchi ogohlantirishlari (eng ko'pi MAX_WARNINGS) va oxirgisi yuborilgan vaqt (tezlik cheklovi uchun) */
+  warnings: IAttemptWarning[];
+  lastWarnAt: Date | null;
+  /** Nazoratchi to'xtatgan bo'lsa; aks holda null. Eski urinishlarda yo'q (= null) */
+  terminated: IAttemptTerminated | null;
   /** Esse baholari (massiv; qid bo'yicha bitta) */
   manual: IManualGrade[];
   score: IAttemptScore | null;
@@ -149,6 +180,10 @@ const schema = new Schema<IExamAttempt>(
       default: () => ({ blur: 0, fullscreenExit: 0, visibilityHidden: 0, reconnect: 0 }),
     },
     lastSeenAt: { type: Date, default: null },
+    lastLeaveAt: { type: Date, default: null },
+    warnings: { type: [Schema.Types.Mixed] as never, default: [] },
+    lastWarnAt: { type: Date, default: null },
+    terminated: { type: Schema.Types.Mixed, default: null },
     manual: { type: [Schema.Types.Mixed] as never, default: [] },
     score: { type: Schema.Types.Mixed, default: null },
     scoredAt: { type: Date, default: null },
@@ -163,5 +198,10 @@ schema.index({ tokenHash: 1 }, { unique: true });
 // Sweeper: muddati o'tgan in_progress urinishlar
 schema.index({ status: 1, deadline: 1 });
 schema.index({ schoolId: 1, sessionId: 1 });
+// Sweeper: bahosiz avtomatik topshirilganlar (kichik qisman indeks; boshqa hujjatlar indeksga kirmaydi)
+schema.index(
+  { status: 1, sessionId: 1 },
+  { partialFilterExpression: { score: null }, name: 'attempts_unscored' },
+);
 
 export const ExamAttempt = model<IExamAttempt>('ExamAttempt', schema);

@@ -17,6 +17,10 @@ import {
   sumBlockDurations,
 } from '../src/modules/exams/blocks/blocks.core';
 import { gradeAttempt } from '../src/modules/exam-client/grading';
+import {
+  CODE_IP_BLOCK_MS,
+  CODE_IP_MAX_FAILS,
+} from '../src/modules/exam-client/exam-client.service';
 import { runExamSweeper } from '../src/modules/exam-client/exam-client.sweeper';
 import { selectQuestions } from '../src/modules/exam-client/selection';
 import { decryptPin } from '../src/modules/exams/sessions/pin';
@@ -1046,7 +1050,7 @@ describe('Shaxsiy kod bilan kirish: tasdiqlash oqimi', () => {
     expect((await jc(c, 'device-disabledx')).status).toBe(401);
   });
 
-  it('qo`pol kuch himoyasi: qurilma 5 xatodan keyin bloklanadi (to`g`ri kodda ham 429); boshqa qurilma o`tadi; IP bo`yicha saxiy chegara', async () => {
+  it('qo`pol kuch himoyasi: qurilma 5 xatodan keyin bloklanadi (to`g`ri kodda ham 429); boshqa qurilma o`tadi', async () => {
     const s = await scheduled();
     const c = (await codes(s.id))['Oquvchi 1']!;
     for (let i = 0; i < 5; i++)
@@ -1057,14 +1061,30 @@ describe('Shaxsiy kod bilan kirish: tasdiqlash oqimi', () => {
     expect(JSON.stringify(blocked.body)).not.toContain(c);
     expect((await jc(c, 'device-otherdevice')).status).toBe(200);
     expect(await ExamJoinGuard.countDocuments({ key: 'cdev:device-bruteforce' })).toBe(1);
-    // IP bo'yicha: 100 xato (har xil qurilma)
-    for (let i = 0; i < 100; i++) {
-      await jc('AAA-AAA-AAA', `device-ip-${String(i).padStart(4, '0')}x`, '10.9.9.9');
-    }
-    expect((await jc(c, 'device-fresh-aaaa', '10.9.9.9')).status).toBe(429);
-    // IP bo'yicha blok shu IP dagi yangi qurilmaga ham tegadi (testda barcha so'rovlar bitta IP dan keladi)
-    expect((await jc(c, 'device-fresh-bbbb', '10.8.8.8')).status).toBe(429);
   }, 60_000);
+
+  it('maktab NAT i (E7): bitta IP dan yuzlab noto`g`ri urinish (har xil qurilma) yaroqli kirishni BLOKLAMAYDI; IP chegarasi (500) oshsa 5 daqiqaga bloklanadi', async () => {
+    const s = await scheduled();
+    const c = (await codes(s.id))['Oquvchi 1']!;
+    for (let i = 0; i < 150; i++) {
+      expect(
+        (await jc('AAA-AAA-AAA', `device-nat-${String(i).padStart(4, '0')}x`, '10.9.9.9')).status,
+      ).toBe(401);
+    }
+    // eski chegara (100) oshdi, lekin maktab hali ishlaydi
+    expect((await jc(c, 'device-fresh-aaaa', '10.9.9.9')).status).toBe(200);
+    // chegaraga yaqinlashtiramiz (hisoblagichni to'g'ridan-to'g'ri qo'yamiz) va bitta xato blok qo'yadi
+    const g = (await ExamJoinGuard.findOne({ key: /^cip:/ }))!;
+    await ExamJoinGuard.updateOne({ _id: g._id }, { $set: { count: CODE_IP_MAX_FAILS - 1 } });
+    expect((await jc('AAA-AAA-AAA', 'device-trip-aaaaa', '10.9.9.9')).status).toBe(401);
+    const blocked = await jc(c, 'device-fresh-bbbb', '10.9.9.9');
+    expect(blocked.status).toBe(429);
+    expect(JSON.stringify(blocked.body)).not.toContain(c);
+    // blok 5 daqiqa: shundan keyin yana ishlaydi
+    const blockedUntil = (await ExamJoinGuard.findOne({ key: g.key }))!.blockedUntil!;
+    expect(blockedUntil.getTime() - Date.now()).toBeLessThanOrEqual(CODE_IP_BLOCK_MS + 1000);
+    expect(blockedUntil.getTime() - Date.now()).toBeGreaterThan(CODE_IP_BLOCK_MS - 60_000);
+  }, 120_000);
 
   it('qoralamaga qaytarilsa: eski kod yaroqsiz, yangi kod bor; qayta rejalashtirilgach yangi kod ishlaydi', async () => {
     const s = await scheduled();

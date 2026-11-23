@@ -6,17 +6,22 @@ import { notifyExamClosed } from '../telegram/telegram.exams';
 import { clock } from '../../utils/clock';
 import { commonEnd } from '../exams/sessions/timing';
 import { persistResultsMeta } from '../exams/results/results.meta';
-import { DEADLINE_GRACE_MS, ensureScored } from './exam-client.service';
+import { DEADLINE_GRACE_MS, ensureScored, loadLiteSession } from './exam-client.service';
 
 /** Bir yurishda hisoblanadigan urinishlar soni (sweeper yengil bo'lishi uchun) */
-const SCORE_BATCH = 100;
+const SCORE_BATCH = 200;
+/** Shuncha urinishdan keyin event-loop ga nafas beriladi (yuzlab avtomatik topshirishda API qotib qolmasin) */
+const SCORE_CHUNK = 20;
+const yieldLoop = () => new Promise<void>((r) => setImmediate(r));
 
 /**
  * Muddati o'tgan urinishlarni avtomatik topshiradi (mavjud minutlik vazifa ichida chaqiriladi).
  *  1) bitta `updateMany` (indeks {status, deadline}): in_progress va deadline + grace < hozir -> auto_submitted,
  *     submittedAt = deadline. Xotirada hech narsa yo'q: restartdan keyin ham keyingi yurishda tugallanadi.
  *  2) ball hisoblash: bir yurishda eng ko'pi SCORE_BATCH ta urinish (sessiya bo'yicha guruhlab, savollar nusxasi
- *     bir marta o'qiladi). Qolganlari keyingi yurishda; natija so'ralganda ham lazy hisoblanadi (ensureScored).
+ *     bir marta o'qiladi), SCORE_CHUNK talik bo'laklarda va bo'laklar orasida event-loop ga nafas berib; lean
+ *     (Mongoose hujjatisiz). Qolganlari keyingi yurishda; natija so'ralganda ham lazy hisoblanadi (ensureScored).
+ *     Qidiruv `attempts_unscored` qisman indeksidan (faqat bahosizlar) foydalanadi.
  * Qaytadi: avtomatik topshirilganlar soni.
  */
 export async function runExamSweeper(): Promise<number> {
@@ -29,7 +34,9 @@ export async function runExamSweeper(): Promise<number> {
   );
   const pending = await ExamAttempt.find({ status: 'auto_submitted', score: null })
     .sort({ sessionId: 1 })
-    .limit(SCORE_BATCH);
+    .limit(SCORE_BATCH)
+    .select('sessionId order saved manual score')
+    .lean();
   const bySession = new Map<string, typeof pending>();
   for (const a of pending) {
     const k = String(a.sessionId);
@@ -37,9 +44,12 @@ export async function runExamSweeper(): Promise<number> {
   }
   for (const [sid, list] of bySession) {
     try {
-      const session = await ExamSession.findById(sid).select('+questionPool');
+      const session = await loadLiteSession({ _id: sid }, { pool: true });
       if (!session) continue;
-      for (const a of list) await ensureScored(a, session);
+      for (const [i, a] of list.entries()) {
+        await ensureScored(a as never, session);
+        if ((i + 1) % SCORE_CHUNK === 0) await yieldLoop();
+      }
     } catch (err) {
       logger.error({ err, sessionId: sid }, 'Imtihon urinishlarini hisoblash xatosi');
     }

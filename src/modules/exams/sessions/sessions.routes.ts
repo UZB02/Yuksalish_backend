@@ -27,6 +27,7 @@ import {
   submitBody,
 } from './sessions.service';
 import { renderPinSheet } from './sessions.pdf';
+import { liveService, terminateBody, warnBody } from './sessions.live';
 import {
   exportQuery,
   gradeBody,
@@ -317,6 +318,53 @@ sessionsRouter.get(
   validate({ params: idParams }),
   asyncHandler(async (req, res) => {
     ok(res, await sessionsService.attempts(getCtx(req), sid(req), String(req.params.id)));
+  }),
+);
+sessionsRouter.get(
+  '/sessions/:id/live',
+  validate({ params: idParams }),
+  asyncHandler(async (req, res) => {
+    ok(
+      res,
+      await liveService.live(
+        getCtx(req),
+        sid(req),
+        String(req.params.id),
+        typeof req.query.roster === 'string' ? req.query.roster.slice(0, 40) : '',
+      ),
+    );
+  }),
+);
+sessionsRouter.post(
+  '/sessions/:id/participants/:key/warn',
+  validate({ params: keyParams, body: warnBody }),
+  asyncHandler(async (req, res) => {
+    ok(
+      res,
+      await liveService.warn(
+        getCtx(req),
+        sid(req),
+        String(req.params.id),
+        String(req.params.key),
+        req.body,
+      ),
+    );
+  }),
+);
+sessionsRouter.post(
+  '/sessions/:id/participants/:key/terminate',
+  validate({ params: keyParams, body: terminateBody }),
+  asyncHandler(async (req, res) => {
+    ok(
+      res,
+      await liveService.terminate(
+        getCtx(req),
+        sid(req),
+        String(req.params.id),
+        String(req.params.key),
+        req.body,
+      ),
+    );
   }),
 );
 sessionsRouter.post(

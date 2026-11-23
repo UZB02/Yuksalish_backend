@@ -297,6 +297,9 @@ export const resultsService = {
     return {
       participant: { key, fullName: p.fullName, className: p.className ?? p.origin, kind: p.kind },
       status: a.status,
+      terminated: a.terminated
+        ? { reason: a.terminated.reason, at: a.terminated.at, byName: a.terminated.byName }
+        : null,
       startedAt: a.startedAt,
       submittedAt: a.submittedAt,
       score: a.score
@@ -596,7 +599,9 @@ export const resultsService = {
         rank: r.rank,
         name: r.fullName,
         cls: r.className ?? '',
-        status: STATUS_UZ[r.status] ?? r.status,
+        status: r.terminated
+          ? `Nazoratchi to'xtatgan: ${r.terminated.reason}`
+          : (STATUS_UZ[r.status] ?? r.status),
         ...Object.fromEntries(
           heads.map((h, i) => [`b${i}`, r.blocks.find((b) => b.blockId === h.id)?.earned ?? null]),
         ),

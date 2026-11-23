@@ -61,12 +61,19 @@ const IP_BLOCK_MS = 10 * 60_000;
 export const SESSION_FAIL_ALERT = 200;
 const TOKEN_TAIL_MS = 12 * 3_600_000;
 
-/** Shaxsiy kod bilan kirishdagi himoya: qurilma (qattiq), IP (NAT uchun saxiy) va umumiy (taqsimlangan hujum) */
-const CODE_DEV_MAX_FAILS = 5;
+/**
+ * Shaxsiy kod bilan kirishdagi himoya: qurilma (qattiq), IP va umumiy.
+ * E7 qarori (egasi, 2026-11-23): IP chegarasi 100 -> 500 xato (10 daqiqada), blok 10 -> 5 daqiqa. Sabab: butun maktab
+ * bitta NAT IP dan kiradi; eski 100 chegarasi 300-500 o'quvchining oddiy yozuv xatolarida butun maktabni 10 daqiqaga
+ * bloklardi. Xavfsizlik narxi: 9 belgili kod (31^9 = 2,6e13) va ~500 ta yaroqli kod bilan bitta IP dan kuniga eng
+ * ko'pi ~144 oyna x 500 = ~72 ming taxmin: muvaffaqiyat ehtimoli ~1,4e-6 (kuniga). Qurilma chegarasi (5 xato/5 daq)
+ * mijoz bergan deviceId bo'yicha, shuning uchun asosiy to'siq emas; umumiy chegara taqsimlangan hujumni ushlaydi.
+ */
+export const CODE_DEV_MAX_FAILS = 5;
 const CODE_DEV_BLOCK_MS = 5 * 60_000;
-const CODE_IP_MAX_FAILS = 100;
-const CODE_IP_BLOCK_MS = 10 * 60_000;
-const CODE_GLOBAL_MAX_FAILS = 3000;
+export const CODE_IP_MAX_FAILS = 500;
+export const CODE_IP_BLOCK_MS = 5 * 60_000;
+export const CODE_GLOBAL_MAX_FAILS = 20_000;
 const CODE_GLOBAL_BLOCK_MS = 2 * 60_000;
 const CODE_MSG = "Kod noto'g'ri yoki muddati tugagan";
 const codeError = () => AppError.unauthorized(CODE_MSG);
@@ -134,6 +141,12 @@ export const eventBody = z
   })
   .strict();
 export type EventBody = z.output<typeof eventBody>;
+
+/** Nazoratchi ogohlantirishlarini ko'rdim deb tasdiqlash (urinish tokeni bilan: faqat o'z ogohlantirishlari) */
+export const ackBody = z
+  .object({ ids: z.array(z.string().min(1).max(40)).min(1).max(20) })
+  .strict();
+export type AckBody = z.output<typeof ackBody>;
 
 /** Blokni yakunlash: faqat JORIY blok id si (ikki marta bosish keyingi blokni o'tkazib yubormasin) */
 export const finishBlockBody = z.object({ blockId: z.string().min(1).max(40) }).strict();
@@ -229,9 +242,60 @@ function assetIdsOf(questions: ReturnType<typeof toClientQuestions>): string[] {
 const poolOf = (s: ExamSessionDoc): Map<string, PoolQuestion> =>
   new Map((s.questionPool as unknown as PoolQuestion[]).map((q) => [String(q.questionId), q]));
 
-async function loadSessionWithPool(id: unknown): Promise<ExamSessionDoc> {
-  const s = await ExamSession.findOne({ _id: id, isDeleted: { $ne: true } }).select(
-    '+questionPool',
+/**
+ * Qaynoq yo'llar (kirish, boshlash, blok, baholash) uchun YENGIL sessiya: Mongoose hujjatiga aylantirilmaydi (lean),
+ * faqat kerakli maydonlar olinadi; 300-500 ishtirokchili ro'yxatdan faqat BITTA ishtirokchi (`$elemMatch`),
+ * savollar hovuzi (`questionPool`) faqat kerak bo'lganda. Yuklama testi (E7): to'liq hujjatni har so'rovda
+ * Mongoose subhujjatlariga aylantirish CPU ning asosiy qismini yeyardi. Natija `ExamSessionDoc` sifatida ishlatiladi
+ * (faqat quyidagi maydonlar to'ldirilgan; `id` qo'shiladi); yozuvlar baribir atomik `updateOne` bilan qilinadi.
+ */
+const LITE_FIELDS = {
+  schoolId: 1,
+  title: 1,
+  type: 1,
+  subjectId: 1,
+  scheduledStart: 1,
+  durationMin: 1,
+  status: 1,
+  code: 1,
+  codeActive: 1,
+  sections: 1,
+  blocks: 1,
+  scoringMode: 1,
+  timingMode: 1,
+  shuffleQuestions: 1,
+  shuffleOptions: 1,
+  resultsMode: 1,
+  passPercent: 1,
+  resultsPublished: 1,
+  isDeleted: 1,
+} as const;
+
+export async function loadLiteSession(
+  filter: Record<string, unknown>,
+  opts: { participantKey?: string; pool?: boolean } = {},
+): Promise<ExamSessionDoc | null> {
+  const projection: Record<string, unknown> = { ...LITE_FIELDS };
+  if (opts.participantKey) projection.participants = { $elemMatch: { key: opts.participantKey } };
+  if (opts.pool) projection.questionPool = 1;
+  const s = (await ExamSession.findOne(filter, projection as never).lean()) as {
+    _id: unknown;
+    participants?: unknown[];
+    questionPool?: unknown[];
+  } | null;
+  if (!s) return null;
+  return {
+    ...s,
+    id: String(s._id),
+    participants: s.participants ?? [],
+    questionPool: opts.pool ? (s.questionPool ?? []) : [],
+  } as unknown as ExamSessionDoc;
+}
+
+async function loadSessionWithPool(id: unknown, participantKey?: string): Promise<ExamSessionDoc> {
+  const s = await loadLiteSession(
+    { _id: id, isDeleted: { $ne: true } },
+    { pool: true, participantKey },
   );
   if (!s) throw AppError.notFound('Imtihon topilmadi');
   return s;
@@ -308,6 +372,14 @@ export async function syncBlocks(attempt: ExamAttemptDoc, now: Date): Promise<Ex
   return upd ?? (await ExamAttempt.findById(attempt._id)) ?? attempt;
 }
 
+/** Hali tasdiqlanmagan nazoratchi ogohlantirishlari (eng ko'pi 5 ta, eskisidan boshlab): state/heartbeat javobida */
+export function pendingWarnings(a: Pick<ExamAttemptDoc, 'warnings'>) {
+  return (a.warnings ?? [])
+    .filter((w) => !w.ackAt)
+    .slice(0, 5)
+    .map((w) => ({ id: w.id, text: w.text, at: w.at }));
+}
+
 /** Klientga: joriy blok holati (blokma-blok urinish) yoki null */
 function blockView(a: ExamAttemptDoc) {
   const st = (a.blockState ?? []) as BlockStateLike[];
@@ -337,6 +409,8 @@ function resultPayload(
     submittedAt: attempt.submittedAt,
     answeredCount: attempt.answeredCount,
     total: attempt.order.length,
+    /** Nazoratchi to'xtatgan (sabab o'quvchiga ko'rsatilmaydi) */
+    terminated: !!attempt.terminated,
   };
   if ((mode !== 'score' && mode !== 'score_answers') || !score) {
     return { ...base, available: false as const };
@@ -497,13 +571,16 @@ export const examClientService = {
       ? await ExamEntryCode.findOne({ codeHash: hashEntryCode(norm) }).lean()
       : null;
     if (hit) {
-      session = await ExamSession.findOne({
-        _id: hit.sessionId,
-        schoolId: hit.schoolId,
-        codeActive: true,
-        status: { $in: ['scheduled', 'open'] },
-        isDeleted: { $ne: true },
-      });
+      session = await loadLiteSession(
+        {
+          _id: hit.sessionId,
+          schoolId: hit.schoolId,
+          codeActive: true,
+          status: { $in: ['scheduled', 'open'] },
+          isDeleted: { $ne: true },
+        },
+        { participantKey: hit.participantKey },
+      );
       participant = session?.participants.find((p) => p.key === hit.participantKey) ?? null;
     }
     if (!session || !participant || !(await assertSchoolActive(session.schoolId))) {
@@ -560,12 +637,15 @@ export const examClientService = {
         { path: 'confirmToken', message: 'Tasdiqlash muddati tugadi' },
       ]);
     if (!v) throw expired();
-    const session = await ExamSession.findOne({
-      _id: v.sessionId,
-      codeActive: true,
-      status: { $in: ['scheduled', 'open'] },
-      isDeleted: { $ne: true },
-    });
+    const session = await loadLiteSession(
+      {
+        _id: v.sessionId,
+        codeActive: true,
+        status: { $in: ['scheduled', 'open'] },
+        isDeleted: { $ne: true },
+      },
+      { participantKey: v.participantKey },
+    );
     const participant = session?.participants.find((p) => p.key === v.participantKey) ?? null;
     if (!session || !participant) throw expired();
     return examClientService.enter(session, participant, body.deviceId, now);
@@ -665,6 +745,7 @@ export const examClientService = {
       token,
       serverNow: now,
       attemptStatus: attempt.status,
+      terminated: !!attempt.terminated,
       participant: { fullName: attempt.fullName, className: attempt.className },
       exam: {
         title: session.title,
@@ -693,7 +774,7 @@ export const examClientService = {
     if (attempt.status === 'submitted' || attempt.status === 'auto_submitted') {
       throw AppError.conflict('Imtihon topshirilgan');
     }
-    const session = await loadSessionWithPool(attempt.sessionId);
+    const session = await loadSessionWithPool(attempt.sessionId, attempt.participantKey);
     const pool = poolOf(session);
     let current: ExamAttemptDoc;
     if (attempt.status === 'joined') {
@@ -803,6 +884,8 @@ export const examClientService = {
       total: attempt.order.length,
       clientSeq: attempt.clientSeq,
       block: blockView(attempt),
+      terminated: !!attempt.terminated,
+      warnings: pendingWarnings(attempt),
     };
   },
 
@@ -964,10 +1047,14 @@ export const examClientService = {
     }
     // Saqlanmadi: sabab aniqlanadi (eskirgan seq xato emas; topshirilgan/muddati o'tgan: 409)
     const fresh = await ExamAttempt.findById(attempt._id).select(
-      'status deadline clientSeq answeredCount blockIndex',
+      'status deadline clientSeq answeredCount blockIndex terminated',
     );
     if (!fresh) throw AppError.notFound('Urinish topilmadi');
-    if (fresh.status !== 'in_progress') throw AppError.conflict('Imtihon topshirilgan');
+    if (fresh.status !== 'in_progress') {
+      throw AppError.conflict(
+        fresh.terminated ? 'Imtihon nazoratchi tomonidan to‘xtatilgan' : 'Imtihon topshirilgan',
+      );
+    }
     if (bv && (fresh.blockIndex ?? 0) !== bv.index) {
       // Blok almashgan (poyga): bu paketdagi javoblar eski blokniki, saqlanmaydi
       return {
@@ -998,12 +1085,13 @@ export const examClientService = {
       reconnect: 'reconnect',
     };
     const at = body.at ? new Date(body.at) : null;
+    const leave = body.type !== 'reconnect';
     const r = await ExamAttempt.updateOne(
       { _id: attempt._id, status: 'in_progress' },
       {
         $push: { events: { $each: [{ type: body.type, at, serverAt: now }], $slice: -MAX_EVENTS } },
         $inc: { [`counters.${key[body.type]}`]: 1 },
-        $set: { lastSeenAt: now },
+        $set: { lastSeenAt: now, ...(leave ? { lastLeaveAt: now } : {}) },
       },
     );
     return { recorded: r.modifiedCount > 0, serverNow: now };
@@ -1018,7 +1106,28 @@ export const examClientService = {
       status: attempt.status,
       deadline: attempt.deadline,
       block: blockView(attempt),
+      terminated: !!attempt.terminated,
+      warnings: pendingWarnings(attempt),
     };
+  },
+
+  /** Ogohlantirishlarni tasdiqlash (idempotent): faqat shu urinishning o'z ogohlantirishlari */
+  async ackWarnings(attempt: ExamAttemptDoc, body: AckBody) {
+    const now = clock.now();
+    const r = await ExamAttempt.updateOne(
+      { _id: attempt._id, 'warnings.id': { $in: body.ids } },
+      {
+        $set: { 'warnings.$[w].ackAt': now, lastSeenAt: now },
+        $push: {
+          events: {
+            $each: [{ type: 'warning_ack', at: null, serverAt: now }],
+            $slice: -MAX_EVENTS,
+          },
+        },
+      },
+      { arrayFilters: [{ 'w.id': { $in: body.ids }, 'w.ackAt': null }] },
+    );
+    return { acknowledged: r.modifiedCount > 0, serverNow: now };
   },
 
   /** Topshirish (idempotent): in_progress -> submitted; qayta chaqirilsa mavjud natija qaytadi */
@@ -1083,12 +1192,24 @@ function normalizeValue(o: IAttemptOrderItem, raw: string | string[] | null) {
 }
 
 // ---------- Token orqali autentifikatsiya ----------
-export async function authenticateAttempt(token: string | undefined): Promise<ExamAttemptDoc> {
+export async function authenticateAttempt(
+  token: string | undefined,
+  /** 'light': heartbeat/hodisa/tasdiq uchun katta massivlarsiz (order, saved, manual, score ham olinmaydi) */
+  mode: 'full' | 'light' = 'full',
+): Promise<ExamAttemptDoc> {
   if (!token) throw AppError.unauthorized("Avtorizatsiyadan o'tilmagan");
-  const a = await ExamAttempt.findOne({
+  // events hech bir exam-client yo'lida o'qilmaydi (faqat $push bilan yoziladi): hech qachon yuklanmaydi
+  const q = ExamAttempt.findOne({
     tokenHash: sha256(token),
     tokenExpiresAt: { $gt: clock.now() },
   });
+  if (mode === 'light') {
+    // Eng ko'p chaqiriladigan yo'llar (heartbeat/hodisa/tasdiq): Mongoose hujjatisiz (lean), katta massivlarsiz
+    const l = await q.select('-events -order -saved -manual -score -assetIds').lean();
+    if (!l) throw AppError.unauthorized("Avtorizatsiyadan o'tilmagan");
+    return { ...l, id: String(l._id) } as unknown as ExamAttemptDoc;
+  }
+  const a = await q.select('-events');
   if (!a) throw AppError.unauthorized("Avtorizatsiyadan o'tilmagan");
   return a;
 }

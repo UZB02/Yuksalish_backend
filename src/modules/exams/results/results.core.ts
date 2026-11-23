@@ -24,6 +24,8 @@ export interface ResultRow {
   total: number;
   timeSpentSec: number | null;
   warnings: number;
+  /** Nazoratchi to'xtatgan bo'lsa (shu paytgacha javoblar baholangan); aks holda null */
+  terminated: { reason: string; at: Date; byName: string } | null;
   essayPending: number;
   rank: number | null;
   /** Blok bo'yicha ballar (yagona/eski imtihonda bitta element). Topshirmagan: bo'sh */
@@ -104,6 +106,9 @@ export function buildRows(session: ExamSessionDoc, attempts: ExamAttemptDoc[]) {
           ? Math.max(0, Math.round((end.getTime() - a.startedAt.getTime()) / 1000))
           : null,
       warnings: (c.blur ?? 0) + (c.fullscreenExit ?? 0) + (c.visibilityHidden ?? 0),
+      terminated: a?.terminated
+        ? { reason: a.terminated.reason, at: a.terminated.at, byName: a.terminated.byName }
+        : null,
       essayPending: finished ? a!.score!.essayPending : 0,
       rank: null,
       blocks: finished

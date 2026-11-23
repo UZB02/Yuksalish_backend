@@ -423,6 +423,12 @@ function flags(s: ExamSessionDoc, scope: ExamScope, actor: Actor, isSuper: boole
     canReopen:
       (scope.all || isSupervisor(s, actor) || isCreator(s, actor)) && s.status === 'closed',
     canExtend: (scope.all || isSupervisor(s, actor) || isCreator(s, actor)) && s.status === 'open',
+    /** Jonli kuzatuv (E5): ma'muriyat, yaratuvchi va nazoratchilar; amallar (ogohlantirish/to'xtatish) faqat ochiq imtihonda */
+    canMonitor:
+      (scope.all || isSupervisor(s, actor) || isCreator(s, actor)) &&
+      ['scheduled', 'open'].includes(s.status),
+    canIntervene:
+      (scope.all || isSupervisor(s, actor) || isCreator(s, actor)) && s.status === 'open',
     canViewResults:
       ['open', 'closed'].includes(s.status) &&
       (isCreator(s, actor) ||
@@ -1805,7 +1811,7 @@ export const sessionsService = {
     const s = await findSession(ctx, schoolId, scope, id);
     const rows = await ExamAttempt.find({ sessionId: s._id, schoolId })
       .select(
-        'participantKey status answeredCount order.qid startedAt submittedAt deadline lastSeenAt counters blockIndex',
+        'participantKey status answeredCount order.qid startedAt submittedAt deadline lastSeenAt counters blockIndex terminated',
       )
       .lean();
     const byKey = new Map(rows.map((r) => [r.participantKey, r]));
@@ -1826,6 +1832,7 @@ export const sessionsService = {
         warnings,
         reconnects: c.reconnect ?? 0,
         allowReentry: p.allowReentry === true,
+        terminated: a?.terminated ? { reason: a.terminated.reason } : null,
       };
     });
     const jf = (s.joinFailures ?? { count: 0, lastAt: null, alertAt: null }) as {
