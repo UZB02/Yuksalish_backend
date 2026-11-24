@@ -5,7 +5,8 @@
  * `sections` (barcha bo'limlar elementlari ketma-ket) + `subjectId` dan BITTA blok (`blockId = 'main'`) qilib
  * o'qiydi. Migratsiya yo'q: hujjatlar o'zgarmaydi, faqat kod shunday talqin qiladi.
  */
-import type { ScoringMode, TimingMode } from '../../../models/ExamTemplate';
+import type { BlockContent, ScoringMode, TimingMode } from '../../../models/ExamTemplate';
+import { fileTestCount, fileTestOf, type FileTest } from '../filetest/filetest.core';
 
 export const LEGACY_BLOCK_ID = 'main';
 export const MAX_BLOCKS = 10;
@@ -65,6 +66,13 @@ export interface NBlock {
   remindedAt: Date | null;
   /** true: eski (blokisiz) hujjatdan sun'iy yasalgan blok */
   legacy: boolean;
+  /** Blok mazmuni (§22): 'bank' (odatiy, eski hujjatlarda yo'q) yoki 'file' (fayl + kalit) */
+  content: BlockContent;
+  /** Fayl va kalit (faqat content='file' da ishlatiladi; rejim almashtirilganda saqlanib qoladi) */
+  fileTest: FileTest | null;
+  /** Savollar banki mazmuni (qo'lda+qoidalar) soni: faol rejim fayl bo'lsa ham hisoblanadi (almashtirish tasdig'i uchun) */
+  bankCount: number;
+  bankTarget: number | null;
 }
 
 interface BlocksSource {
@@ -78,38 +86,19 @@ const str = (v: unknown): string => String(v);
 export function normalizeBlocks(doc: BlocksSource): NBlock[] {
   const raw = (doc.blocks ?? []) as Record<string, unknown>[];
   if (raw.length) {
-    return raw.map((b) => ({
-      blockId: str(b.blockId),
-      subjectId: b.subjectId ? str(b.subjectId) : null,
-      title: typeof b.title === 'string' ? b.title : '',
-      targetCount: Number(b.targetCount ?? 0),
-      coefficient: Number(b.coefficient ?? 1),
-      durationMin:
-        b.durationMin === null || b.durationMin === undefined ? null : Number(b.durationMin),
-      contributors: ((b.contributors as unknown[]) ?? []).map(str),
-      items: ((b.items as StoredItem[]) ?? []).map((i) => i),
-      contribQuestions: ((b.contribQuestions as Record<string, unknown>[]) ?? []).map((c) => ({
-        questionId: str(c.questionId),
-        addedBy: str(c.addedBy),
-        addedAt: (c.addedAt as Date | null) ?? null,
-      })),
-      contribRules: ((b.contribRules as Record<string, unknown>[]) ?? []).map((r) => ({
-        ruleId: str(r.ruleId),
-        topicIds: ((r.topicIds as unknown[]) ?? []).map(str),
-        allTopics: r.allTopics === true,
-        difficulty: typeof r.difficulty === 'number' ? r.difficulty : null,
-        type: typeof r.type === 'string' ? r.type : null,
-        count: Number(r.count ?? 0),
-        addedBy: str(r.addedBy),
-        addedAt: (r.addedAt as Date | null) ?? null,
-        ...(r.poolIds ? { poolIds: r.poolIds as unknown[] } : {}),
-      })),
-      status: b.status === 'ready' ? 'ready' : 'open',
-      readyBy:
-        b.status === 'ready' ? (b.readyBy === 'contributor' ? 'contributor' : 'composer') : null,
-      remindedAt: (b.remindedAt as Date | null | undefined) ?? null,
-      legacy: false,
-    }));
+    return raw.map((b) => {
+      const nb = normalizeStoredBlock(b);
+      // Fayl bloki: savollar banki maydonlari e'tiborga olinmaydi (rejim almashtirilganda ma'lumot saqlanadi, lekin ishlatilmaydi)
+      return nb.content === 'file'
+        ? {
+            ...nb,
+            bankCount: blockQuestionCount({ ...nb, content: 'bank' }),
+            items: [],
+            contribQuestions: [],
+            contribRules: [],
+          }
+        : nb;
+    });
   }
   const sections = (doc.sections ?? []) as { items?: StoredItem[] }[];
   return [
@@ -128,8 +117,51 @@ export function normalizeBlocks(doc: BlocksSource): NBlock[] {
       readyBy: 'composer',
       remindedAt: null,
       legacy: true,
+      content: 'bank',
+      fileTest: null,
+      bankCount: 0,
+      bankTarget: null,
     },
   ];
+}
+
+function normalizeStoredBlock(b: Record<string, unknown>): NBlock {
+  return {
+    blockId: str(b.blockId),
+    subjectId: b.subjectId ? str(b.subjectId) : null,
+    title: typeof b.title === 'string' ? b.title : '',
+    targetCount: Number(b.targetCount ?? 0),
+    coefficient: Number(b.coefficient ?? 1),
+    durationMin:
+      b.durationMin === null || b.durationMin === undefined ? null : Number(b.durationMin),
+    contributors: ((b.contributors as unknown[]) ?? []).map(str),
+    items: ((b.items as StoredItem[]) ?? []).map((i) => i),
+    contribQuestions: ((b.contribQuestions as Record<string, unknown>[]) ?? []).map((c) => ({
+      questionId: str(c.questionId),
+      addedBy: str(c.addedBy),
+      addedAt: (c.addedAt as Date | null) ?? null,
+    })),
+    contribRules: ((b.contribRules as Record<string, unknown>[]) ?? []).map((r) => ({
+      ruleId: str(r.ruleId),
+      topicIds: ((r.topicIds as unknown[]) ?? []).map(str),
+      allTopics: r.allTopics === true,
+      difficulty: typeof r.difficulty === 'number' ? r.difficulty : null,
+      type: typeof r.type === 'string' ? r.type : null,
+      count: Number(r.count ?? 0),
+      addedBy: str(r.addedBy),
+      addedAt: (r.addedAt as Date | null) ?? null,
+      ...(r.poolIds ? { poolIds: r.poolIds as unknown[] } : {}),
+    })),
+    status: b.status === 'ready' ? 'ready' : 'open',
+    readyBy:
+      b.status === 'ready' ? (b.readyBy === 'contributor' ? 'contributor' : 'composer') : null,
+    remindedAt: (b.remindedAt as Date | null | undefined) ?? null,
+    legacy: false,
+    content: b.content === 'file' ? 'file' : 'bank',
+    fileTest: fileTestOf(b.fileTest),
+    bankCount: 0,
+    bankTarget: typeof b.bankTarget === 'number' ? b.bankTarget : null,
+  };
 }
 
 export const scoringModeOf = (d: { scoringMode?: string | null }): ScoringMode =>
@@ -167,8 +199,13 @@ export const contribRuleOffset = (b: Pick<NBlock, 'items' | 'contribQuestions'>)
 
 /** Har ishtirokchi blokdan oladigan savollar soni: qo'lda (takrorsiz) + qoidalar */
 export function blockQuestionCount(
-  b: Pick<NBlock, 'items' | 'contribQuestions'> & { contribRules?: NBlockRule[] },
+  b: Pick<NBlock, 'items' | 'contribQuestions'> & {
+    contribRules?: NBlockRule[];
+    content?: BlockContent;
+    fileTest?: FileTest | null;
+  },
 ): number {
+  if (b.content === 'file') return fileTestCount(b.fileTest ?? null);
   const manual = new Set<string>();
   let rules = 0;
   for (const it of effectiveItems(b)) {

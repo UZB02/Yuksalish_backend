@@ -29,6 +29,9 @@ export type ScoringMode = (typeof SCORING_MODES)[number];
 export const TIMING_MODES = ['common', 'per_block'] as const;
 export type TimingMode = (typeof TIMING_MODES)[number];
 export const BLOCK_STATUSES = ['open', 'ready'] as const;
+/** Blok mazmuni: savollar banki (odatiy) yoki fayl + kalit (§22) */
+export const BLOCK_CONTENTS = ['bank', 'file'] as const;
+export type BlockContent = (typeof BLOCK_CONTENTS)[number];
 export type BlockStatus = (typeof BLOCK_STATUSES)[number];
 
 /** Blokka biriktirilgan o'qituvchi qo'shgan savol (tuzuvchi ro'yxatidan alohida: bir-birini bosib yubormaydi) */
@@ -61,6 +64,12 @@ export interface IExamBlock {
   readyBy?: 'composer' | 'contributor' | null;
   /** Ma'muriyat oxirgi marta shu fan o'qituvchilariga eslatma yuborgan vaqt (soatiga bir marta cheklash) */
   remindedAt?: Date | null;
+  /** Blok mazmuni: eski hujjatlarda yo'q (= 'bank') */
+  content?: BlockContent;
+  /** Fayl + kalit (content='file'): variantlar, fayllar va javob kaliti. Faqat serverda; mijozga kalit chiqmaydi */
+  fileTest?: Record<string, unknown> | null;
+  /** Fayl rejimiga o'tganda saqlab qo'yilgan savollar banki maqsadi (bank rejimiga qaytganda tiklanadi) */
+  bankTarget?: number | null;
 }
 
 export interface IExamTemplate {
@@ -113,6 +122,9 @@ export const blocksField = {
         status: { type: String, enum: BLOCK_STATUSES, default: 'open' },
         readyBy: { type: String, default: null },
         remindedAt: { type: Date, default: null },
+        content: { type: String, enum: BLOCK_CONTENTS, default: 'bank' },
+        fileTest: { type: Schema.Types.Mixed, default: null },
+        bankTarget: { type: Number, default: null },
       },
       { _id: false },
     ),

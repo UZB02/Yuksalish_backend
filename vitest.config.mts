@@ -17,6 +17,8 @@ export default defineConfig({
       JOBS_ENABLED: 'false',
       PUBLIC_RATE_LIMIT_PER_MIN: '5',
       RATING_DEBOUNCE_MS: '60000',
+      // Fayl+kalit sinovlari: bo'sh joy chegarasi o'chiq (alohida testda yoqiladi)
+      EXAM_FILES_MIN_FREE_MB: '0',
       CORS_ORIGINS: 'http://localhost:5173',
     },
   },

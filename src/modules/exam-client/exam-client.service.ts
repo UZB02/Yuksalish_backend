@@ -45,6 +45,9 @@ import {
   totalQuestionCount,
   type NBlock,
 } from '../exams/blocks/blocks.core';
+import { balancedVariant, orderOfVariant } from '../exams/filetest/filetest.core';
+import { insertBlockItems } from '../exams/filetest/filetest.core';
+import { ExamFile } from '../../models/ExamFile';
 import { gradeAttempt } from './grading';
 import { selectQuestions, type PoolQuestion, type StoredSection } from './selection';
 
@@ -150,6 +153,11 @@ export type AckBody = z.output<typeof ackBody>;
 
 /** Blokni yakunlash: faqat JORIY blok id si (ikki marta bosish keyingi blokni o'tkazib yubormasin) */
 export const finishBlockBody = z.object({ blockId: z.string().min(1).max(40) }).strict();
+/** Qog'oz yetkazish: o'quvchi qog'ozidagi variant */
+export const chooseVariantBody = z
+  .object({ blockId: z.string().min(1).max(40), variant: z.enum(['A', 'B', 'C', 'D']) })
+  .strict();
+export type ChooseVariantBody = z.output<typeof chooseVariantBody>;
 export type FinishBlockBody = z.output<typeof finishBlockBody>;
 
 // ---------- Himoya hisoblagichlari (DB) ----------
@@ -207,6 +215,9 @@ export function toClientQuestions(
     blockId?: string;
     type: string;
     points: number;
+    /** Fayl bloki (§22): varaqadagi savol raqami va variant harfi; matn/variant mazmuni yo'q (fayldan o'qiladi) */
+    no?: number;
+    variant?: string;
     content: ReturnType<typeof blockDto>[];
     options: { id: string; content: ReturnType<typeof blockDto>[] }[];
   }[] = [];
@@ -214,6 +225,19 @@ export function toClientQuestions(
     const q = pool.get(o.qid);
     if (!q) continue;
     const byId = new Map((q.options ?? []).map((x) => [x.id, x]));
+    if (o.variant) {
+      out.push({
+        id: o.qid,
+        ...(o.blockId ? { blockId: o.blockId } : {}),
+        type: o.type,
+        points: o.points,
+        no: o.no,
+        variant: o.variant,
+        content: [],
+        options: o.optionPerm.map((id) => ({ id, content: [] })),
+      });
+      continue;
+    }
     out.push({
       id: o.qid,
       ...(o.blockId ? { blockId: o.blockId } : {}),
@@ -237,6 +261,46 @@ function assetIdsOf(questions: ReturnType<typeof toClientQuestions>): string[] {
       for (const b of o.content) if (b.type === 'image') ids.add(b.assetId);
   }
   return [...ids];
+}
+
+/**
+ * Fayl bloki uchun variant tartib raqami (blokda shu ishtirokchigacha variant olganlar soni, 0 dan): DB da atomik
+ * hisoblagich, shuning uchun parallel boshlashda ham variantlar tekis taqsimlanadi va restartdan keyin ham.
+ */
+async function nextFileVariantIndex(sessionId: string, blockId: string): Promise<number> {
+  const before = (await ExamSession.findOneAndUpdate(
+    { _id: sessionId },
+    { $inc: { [`fileCounters.${blockId}`]: 1 } },
+    { returnDocument: 'before', projection: { fileCounters: 1 } },
+  ).lean()) as { fileCounters?: Record<string, number> } | null;
+  return before?.fileCounters?.[blockId] ?? 0;
+}
+
+/**
+ * Klientga: ko'rinadigan fayl bloklari. 'screen': variant harfi va fayl id lari; 'paper': fayl yo'q, o'quvchi
+ * variantni tanlagunicha `variant: null` va `variants` (tanlash uchun harflar). Kalit hech qachon chiqmaydi.
+ */
+function fileBlocksView(
+  a: Pick<ExamAttemptDoc, 'fileVariants'>,
+  session: ExamSessionDoc,
+  visible: ReadonlySet<string>,
+) {
+  const variants = a.fileVariants ?? {};
+  return normalizeBlocks(session)
+    .filter((b) => b.content === 'file' && b.fileTest && visible.has(b.blockId))
+    .map((b) => {
+      const ft = b.fileTest!;
+      const chosen = variants[b.blockId] ?? null;
+      const v = ft.variants.find((x) => x.letter === chosen);
+      return {
+        blockId: b.blockId,
+        delivery: ft.delivery,
+        variant: chosen,
+        variants: ft.delivery === 'paper' ? ft.variants.map((x) => x.letter) : [],
+        kind: v?.kind ?? ft.variants[0]?.kind ?? 'pdf',
+        files: ft.delivery === 'screen' ? (v?.files ?? []).map((id) => ({ id })) : [],
+      };
+    });
 }
 
 const poolOf = (s: ExamSessionDoc): Map<string, PoolQuestion> =>
@@ -794,7 +858,7 @@ export const examClientService = {
         );
       }
       const nblocks = normalizeBlocks(session);
-      const order = selectQuestions({
+      const base = selectQuestions({
         ...(nblocks[0]!.legacy
           ? { sections: session.sections as unknown as StoredSection[] }
           : {
@@ -808,6 +872,32 @@ export const examClientService = {
         shuffleOptions: session.shuffleOptions,
         seed: `${session.id}:${attempt.id}`,
       });
+      // Fayl + kalit bloklari (§22/§23): ekranda variant tekis tasodifiy beriladi, savollar kalit tartibida (aralashtirilmaydi)
+      const fileVariants: Record<string, string> = {};
+      const fileMap: Record<string, string> = {};
+      const order: IAttemptOrderItem[] = nblocks[0]!.legacy
+        ? base
+        : (
+            await Promise.all(
+              nblocks.map(async (b) => {
+                if (b.content !== 'file' || !b.fileTest?.variants.length) {
+                  return base.filter((o) => o.blockId === b.blockId);
+                }
+                // Qog'oz: variant o'quvchi tomonidan tanlanadi (chooseVariant), savollar o'shanda yaratiladi
+                if (b.fileTest.delivery === 'paper') return [];
+                const letters = b.fileTest.variants.map((v) => v.letter);
+                const letter = balancedVariant(
+                  letters,
+                  await nextFileVariantIndex(String(session.id), b.blockId),
+                  `${session.id}:${b.blockId}`,
+                );
+                const v = b.fileTest.variants.find((x) => x.letter === letter)!;
+                fileVariants[b.blockId] = letter;
+                for (const f of v.files) fileMap[f] = b.blockId;
+                return orderOfVariant(b.blockId, v);
+              }),
+            )
+          ).flat();
       const assetIds = assetIdsOf(toClientQuestions(order, pool));
       const hard = participantDeadline(session, participant, now);
       const perBlock = timingModeOf(session) === 'per_block' && !nblocks[0]!.legacy;
@@ -828,6 +918,8 @@ export const examClientService = {
             ...(perBlock ? { blockState, blockIndex: 0, hardDeadline: hard } : {}),
             order,
             assetIds,
+            fileVariants,
+            fileMap,
             lastSeenAt: now,
           },
         },
@@ -859,6 +951,12 @@ export const examClientService = {
       timingMode: timingModeOf(session),
       blocks: blocksMeta(session, current.order),
       block: bv,
+      /** Fayl bloklari (§22/§23): faqat ko'rinadigan (joriy) bloklar; kalit hech qachon chiqmaydi */
+      files: fileBlocksView(
+        current,
+        session,
+        new Set(bv ? [bv.id ?? ''] : normalizeBlocks(session).map((b) => b.blockId)),
+      ),
       questions: toClientQuestions(order, pool),
       saved: current.saved
         .filter((s) => qids.has(s.qid))
@@ -1151,6 +1249,80 @@ export const examClientService = {
     const { score, session } = await ensureScored(attempt);
     // Natija hisoblangan bo'lsa yangi hujjatni qayta o'qimaymiz: score lokal qiymat bilan to'ldiriladi
     return resultPayload(attempt, session, score);
+  },
+
+  /**
+   * Test fayli yozuvi (§22/§23): faqat shu urinishga berilgan variant fayllari. Imtihon boshlangandan keyin (urinish
+   * in_progress), blokma-blok rejimda faqat JORIY blok fayli. Topshirilgandan keyin faqat natija rejimi `score_answers`
+   * bo'lsa. Boshqa urinish/sessiya fayli: 404. Baytlar chaqiruvchida diskdan oqim bilan beriladi.
+   */
+  async file(attempt: ExamAttemptDoc, id: string) {
+    const blockId = (attempt.fileMap ?? {})[id];
+    if (!blockId) throw AppError.notFound('Fayl topilmadi');
+    if (attempt.status === 'in_progress') {
+      const bv = blockView(attempt);
+      if (bv && bv.id !== blockId) throw AppError.notFound('Fayl topilmadi');
+    } else if (attempt.status === 'submitted' || attempt.status === 'auto_submitted') {
+      const s = await ExamSession.findById(attempt.sessionId).select('resultsMode').lean();
+      if (s?.resultsMode !== 'score_answers') throw AppError.notFound('Fayl topilmadi');
+    } else {
+      throw AppError.notFound('Fayl topilmadi');
+    }
+    const doc = await ExamFile.findOne({
+      _id: id,
+      schoolId: attempt.schoolId,
+      sessionId: attempt.sessionId,
+    });
+    if (!doc) throw AppError.notFound('Fayl topilmadi');
+    return doc;
+  },
+
+  /**
+   * Qog'oz yetkazish: o'quvchi qog'ozidagi variantni tanlaydi (tasdiqdan keyin qulflanadi). Savollar tanlangan variant
+   * kaliti bo'yicha shu zahoti yaratiladi (kalit sessiya nusxasida oldindan tayyor sun'iy savollar sifatida turadi).
+   * Atomik: filtrda "variant hali tanlanmagan" sharti bor; qayta tanlash 409 (tuzatish faqat tuzuvchi/nazoratchi).
+   * Blokma-blok rejimda faqat JORIY blok uchun.
+   */
+  async chooseVariant(attempt0: ExamAttemptDoc, body: ChooseVariantBody) {
+    const now = clock.now();
+    const attempt = await syncBlocks(attempt0, now);
+    if (attempt.status !== 'in_progress')
+      throw AppError.conflict('Imtihon hali boshlanmagan yoki tugagan');
+    const bv = blockView(attempt);
+    if (bv && bv.id !== body.blockId) throw AppError.conflict('Bu blok hozir ochiq emas');
+    const session = await loadSessionWithPool(attempt.sessionId);
+    const blk = normalizeBlocks(session).find((b) => b.blockId === body.blockId);
+    if (!blk || blk.content !== 'file' || blk.fileTest?.delivery !== 'paper') {
+      throw AppError.conflict('Bu blokda variant tanlanmaydi');
+    }
+    const target = blk.fileTest.variants.find((v) => v.letter === body.variant);
+    if (!target)
+      throw AppError.validation('Variant topilmadi', [
+        { path: 'variant', message: 'Bunday variant yo‘q' },
+      ]);
+    const cur = (attempt.fileVariants ?? {})[body.blockId];
+    if (cur) {
+      throw AppError.conflict(
+        `Variant allaqachon tanlangan (${cur}). Xato bo‘lsa nazoratchiga murojaat qiling`,
+      );
+    }
+    const order = insertBlockItems(
+      attempt.order as never,
+      normalizeBlocks(session),
+      body.blockId,
+      orderOfVariant(body.blockId, target),
+    );
+    const upd = await ExamAttempt.findOneAndUpdate(
+      {
+        _id: attempt._id,
+        status: 'in_progress',
+        [`fileVariants.${body.blockId}`]: { $exists: false },
+      },
+      { $set: { order: order as never, [`fileVariants.${body.blockId}`]: body.variant } },
+      { returnDocument: 'after' },
+    );
+    if (!upd) throw AppError.conflict('Variant allaqachon tanlangan');
+    return this.view(upd, session, poolOf(session), now);
   },
 
   /** Rasm: faqat shu urinish savollarida ishlatilgan rasmlar (token bilan) */

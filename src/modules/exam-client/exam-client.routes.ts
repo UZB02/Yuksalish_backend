@@ -5,10 +5,13 @@ import { ok } from '../../core/response';
 import { examClientTokenOf } from '../../middlewares/rateLimiters';
 import { validate } from '../../middlewares/validate';
 import type { ExamAttemptDoc } from '../../models/ExamAttempt';
+import { ExamFile } from '../../models/ExamFile';
+import { serveFile } from '../exams/filetest/filetest.storage';
 import {
   ackBody,
   answersBody,
   authenticateAttempt,
+  chooseVariantBody,
   eventBody,
   examClientService,
   finishBlockBody,
@@ -153,6 +156,41 @@ examClientRouter.get(
     const a = await examClientService.asset(attemptOf(res), String(req.params.id));
     res.set({ 'Content-Type': a.contentType, 'Content-Length': String(a.data.length) });
     res.status(200).end(a.data);
+  }),
+);
+
+// Test fayli (§22/§23): faqat shu urinishga berilgan variant fayli, imtihon boshlangandan keyin; diskdan OQIM bilan
+examClientRouter.get(
+  '/files/:id',
+  requireAttempt,
+  validate({ params: z.object({ id: z.string().regex(/^[0-9a-f]{24}$/) }) }),
+  asyncHandler(async (req, res) => {
+    const doc = await examClientService.file(attemptOf(res), String(req.params.id));
+    const gone = () =>
+      res
+        .status(410)
+        .json({ success: false, error: { code: 'FILE_EXPIRED', message: 'Fayl muddati tugagan' } });
+    if (doc.state !== 'ready') return void gone();
+    // Fayl id o'zgarmas: brauzer keshi (faqat shu foydalanuvchi, Authorization bo'yicha) yuklamani kamaytiradi;
+    // kesh bo'lsa ham token tekshiriladi (ETag bilan qayta so'rash 304 beradi)
+    const r = await serveFile(doc, req.headers['if-none-match'], res);
+    if (r === 'missing') {
+      await ExamFile.updateOne(
+        { _id: doc._id },
+        { $set: { state: 'expired', expiredAt: new Date() } },
+      );
+      gone();
+    }
+  }),
+);
+
+// Qog'oz yetkazish: o'quvchi qog'ozidagi variantni tanlaydi (bir marta, keyin qulflanadi)
+examClientRouter.post(
+  '/variant',
+  requireAttempt,
+  validate({ body: chooseVariantBody }),
+  asyncHandler(async (req, res) => {
+    ok(res, await examClientService.chooseVariant(attemptOf(res), req.body));
   }),
 );
 

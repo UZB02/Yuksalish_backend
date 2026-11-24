@@ -3,12 +3,15 @@ import { connectDb, disconnectDb, ensureIndexes } from './config/db';
 import { env } from './config/env';
 import { logger } from './core/logger';
 import { startJobs } from './jobs';
+import { ensureFilesDir } from './modules/exams/filetest/filetest.storage';
 import { startTelegram, stopTelegram } from './modules/telegram';
 import { runTimetablePurge } from './modules/timetable/timetable.purge';
 
 async function main() {
   await connectDb(undefined, { autoIndex: false });
   await ensureIndexes();
+  // Test fayllari papkasi yozish uchun ochiqmi (yo'q bo'lsa aniq xato loglanadi; yuklashlar 503 beradi, API ishlayveradi)
+  await ensureFilesDir().catch(() => undefined);
   // Migratsiyalardan (ensureIndexes ichida) keyin: eskirgan jadval versiyalarini tozalash
   await runTimetablePurge();
   const app = createApp();

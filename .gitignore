@@ -11,3 +11,6 @@ logs/
 .vscode/
 .idea/
 mongo-data/
+
+# Test fayllari (EXAM_FILES_DIR standart joyi): hech qachon commit qilinmaydi
+/data/

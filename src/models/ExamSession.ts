@@ -121,6 +121,8 @@ export interface IExamSession {
   resultsMeta: unknown;
   /** "Tahrirlash uchun qaytarish" har safar +1: eslatma dedupe kalitiga kiradi (0: eski kalit formati) */
   scheduleVersion: number;
+  /** Fayl bloklari: blokka nechta ishtirokchi variant olgani (variantlarni tekis taqsimlash hisoblagichi). Eski hujjatlarda yo'q */
+  fileCounters?: Record<string, number>;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -193,6 +195,7 @@ const schema = new Schema<IExamSession>(
     resultsKept: { type: Boolean, default: false },
     resultsMeta: { type: Schema.Types.Mixed, default: null },
     scheduleVersion: { type: Number, default: 0 },
+    fileCounters: { type: Schema.Types.Mixed, default: () => ({}) },
   },
   { timestamps: true },
 );

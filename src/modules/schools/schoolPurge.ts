@@ -8,6 +8,8 @@ import { BrandingAsset } from '../../models/BrandingAsset';
 import { ClassModel } from '../../models/Class';
 import { ClassSubject } from '../../models/ClassSubject';
 import { ExamAsset } from '../../models/ExamAsset';
+import { ExamFile } from '../../models/ExamFile';
+import { removeBytes } from '../exams/filetest/filetest.storage';
 import { ExamAttempt } from '../../models/ExamAttempt';
 import { ExamEntryCode } from '../../models/ExamEntryCode';
 import { ExamCandidate } from '../../models/ExamCandidate';
@@ -63,6 +65,8 @@ export interface PurgeStep {
   model: AnyModel;
   scope: 'school' | 'users';
   filter: (ctx: PurgeCtx) => Record<string, unknown>;
+  /** O'chirishdan OLDIN bajariladi (masalan diskdagi baytlarni o'chirish); filtr xavfsizligi tekshirilgan */
+  beforeDelete?: (filter: Record<string, unknown>) => Promise<void>;
 }
 
 const bySchool = (
@@ -92,6 +96,14 @@ export const SCHOOL_PURGE_STEPS: PurgeStep[] = [
   bySchool('questions', 'Imtihon savollari', Question),
   bySchool('examTopics', 'Imtihon mavzulari', ExamTopic),
   bySchool('examAssets', 'Imtihon rasmlari', ExamAsset),
+  {
+    ...bySchool('examFiles', 'Imtihon test fayllari (yozuv va diskdagi baytlar)', ExamFile),
+    // Baytlar diskda: yozuvlar o'chishidan oldin fayllar o'chiriladi
+    beforeDelete: async (filter) => {
+      const docs = await ExamFile.find(filter).select('storageName').lean();
+      for (const d of docs) await removeBytes(d.storageName);
+    },
+  },
   bySchool('examImportSessions', 'Imtihon import sessiyalari', ExamImportSession),
   bySchool('examAttempts', 'Imtihon urinishlari (javoblar, hodisalar)', ExamAttempt),
   bySchool('examEntryCodes', 'Imtihon shaxsiy kirish kodlari', ExamEntryCode),
@@ -197,6 +209,7 @@ export async function countStep(step: PurgeStep, ctx: PurgeCtx): Promise<number>
 export async function purgeStep(step: PurgeStep, ctx: PurgeCtx): Promise<number> {
   const f = safeFilter(step, ctx);
   if (!f) return 0;
+  if (step.beforeDelete) await step.beforeDelete(f);
   const res = await step.model.deleteMany(f);
   return res.deletedCount ?? 0;
 }

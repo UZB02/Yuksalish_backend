@@ -65,6 +65,8 @@ import {
   timingModeOf,
   type NBlock,
 } from '../blocks/blocks.core';
+import { fileTestSummary, poolOfFileBlock } from '../filetest/filetest.core';
+import { assertFileBlocksReady, expiredFilesOf } from '../filetest/filetest.guard';
 import { ExamEntryCode } from '../../../models/ExamEntryCode';
 import {
   decryptEntryCode,
@@ -392,8 +394,11 @@ function blockDto(b: NBlock, r: Awaited<ReturnType<typeof refs>>) {
     status: b.status,
     readyBy: b.readyBy,
     remindedAt: b.remindedAt,
-    /** Har ishtirokchi shu blokdan oladigan savollar soni (qo'lda + qoidalar) */
+    /** Har ishtirokchi shu blokdan oladigan savollar soni (qo'lda + qoidalar; fayl blokida kalitdagi savollar) */
     count: blockQuestionCount(b),
+    /** Blok mazmuni: 'bank' yoki 'file' (fayl + kalit, §22); kalit chiqmaydi, faqat xulosa */
+    content: b.content,
+    fileTest: b.content === 'file' ? fileTestSummary(b.fileTest) : null,
     contributors: b.contributors.map((id) => ({ id, fullName: r.user.get(id) ?? '' })),
     items: itemsDto(b.items),
     contribQuestions: b.contribQuestions.map((c) => ({
@@ -554,21 +559,31 @@ async function freezePool(schoolId: string, s: ExamSessionDoc) {
   }
   const docs = await Question.find({ _id: { $in: poolIds.map(oid) }, schoolId });
   if (docs.length > MAX_POOL) throw AppError.validation('Savollar to‘plami juda katta');
-  const pool = docs.map((q) => ({
-    questionId: q._id,
-    version: q.version ?? 1,
-    topicId: q.topicId,
-    subjectId: q.subjectId,
-    type: q.type,
-    difficulty: q.difficulty,
-    points: q.points,
-    content: q.content.map((b) => ({ ...(b as unknown as object) })),
-    options: q.options.map((o) => ({
-      id: o.id,
-      content: o.content.map((b) => ({ ...(b as unknown as object) })),
+  // Fayl + kalit bloklari (§22): to'liq tekshiruv, kalit sun'iy savollarga aylanadi
+  await assertFileBlocksReady(schoolId, s);
+  const filePool = nblocks.flatMap((b) =>
+    b.content === 'file' && b.fileTest ? poolOfFileBlock(b.blockId, b.subjectId, b.fileTest) : [],
+  );
+  const pool = [
+    ...docs.map((q) => ({
+      questionId: q._id,
+      version: q.version ?? 1,
+      topicId: q.topicId,
+      subjectId: q.subjectId,
+      type: q.type,
+      difficulty: q.difficulty,
+      points: q.points,
+      content: q.content.map((b) => ({ ...(b as unknown as object) })),
+      options: q.options.map((o) => ({
+        id: o.id,
+        content: o.content.map((b) => ({ ...(b as unknown as object) })),
+      })),
+      answer: {
+        ...((q.answer as unknown as { toObject?: () => object })?.toObject?.() ?? q.answer),
+      },
     })),
-    answer: { ...((q.answer as unknown as { toObject?: () => object })?.toObject?.() ?? q.answer) },
-  }));
+    ...filePool,
+  ] as unknown[];
   if (JSON.stringify(pool).length > 12_000_000) {
     throw AppError.validation('Savollar to‘plami hajmi juda katta (rasmlar/matn ko‘p)');
   }
@@ -1500,6 +1515,16 @@ export const sessionsService = {
           contribQuestions: [],
           contribRules: [],
           status: 'open' as const,
+          // Nusxa (§23): rejim, yetkazish usuli va KALIT ko'chadi; test fayllari ko'chmaydi (ekranda: "faylni qayta yuklang").
+          // Savollar banki mazmuni yuqoridagi odatiy qoidalar bilan ko'chadi (fayl rejimida ham yashirin holda)
+          content: b.content,
+          bankTarget: b.bankTarget,
+          fileTest: b.fileTest
+            ? {
+                delivery: b.fileTest.delivery,
+                variants: b.fileTest.variants.map((v) => ({ ...v, files: [] })),
+              }
+            : null,
         }));
     if (droppedQ) {
       warnings.push(`${droppedQ} ta savol bankdan o'chirilgan yoki arxivlangan: nusxaga tushmadi`);
@@ -2059,6 +2084,12 @@ export const sessionsService = {
       throw AppError.conflict('Bekor qilingan imtihonni qayta ochib bo‘lmaydi');
     if (s.status !== 'closed')
       throw AppError.conflict('Faqat yopilgan imtihonni qayta ochish mumkin');
+    // Test fayli muddati tugagan bo'lsa (yopilgandan 14 kun keyin o'chadi): avval faylni qayta yuklash kerak (kalit saqlanadi)
+    if ((await expiredFilesOf(s)).length) {
+      throw AppError.conflict(
+        'Test fayli muddati tugagan: imtihonni qayta ochishdan oldin faylni qayta yuklang (blok sahifasida, kalit o‘zgarmaydi)',
+      );
+    }
     const now = new Date();
     if (body.newEnd.getTime() <= now.getTime()) {
       throw AppError.validation('Yangi tugash vaqti kelajakda bo‘lishi kerak', [

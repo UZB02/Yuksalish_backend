@@ -17,6 +17,9 @@ COPY --from=build --chown=node:node /app/package.json package.json
 COPY --from=build --chown=node:node /app/dist dist
 # PDF hisobotlar uchun Unicode shriftlar (DejaVu Sans, ochiq litsenziya)
 COPY --from=build --chown=node:node /app/assets assets
+# Imtihon test fayllari (EXAM_FILES_DIR) uchun papka: yangi NOMLI volume birinchi marta bo'sh holda ulanganda Docker
+# image dagi shu papkaning mazmuni VA egasini (node) nusxalaydi, shuning uchun USER node yoza oladi
+RUN mkdir -p /data/exam-files && chown node:node /data/exam-files
 EXPOSE 4000
 USER node
 CMD ["node", "dist/src/server.js"]

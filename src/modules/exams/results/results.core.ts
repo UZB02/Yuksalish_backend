@@ -30,6 +30,8 @@ export interface ResultRow {
   rank: number | null;
   /** Blok bo'yicha ballar (yagona/eski imtihonda bitta element). Topshirmagan: bo'sh */
   blocks: { blockId: string; earned: number; max: number }[];
+  /** Fayl + kalit bloklarida berilgan variant harflari (blok tartibida, "A" yoki "A/B"); fayl bloki yo'q yoki boshlamagan: null */
+  variant: string | null;
 }
 
 export interface ResultSummary {
@@ -56,6 +58,18 @@ export const blockHeadersOf = (s: ExamSessionDoc) =>
     durationMin: b.durationMin,
   }));
 
+/** Ishtirokchining fayl bloklaridagi variantlari: "A" yoki "A/C" (blok tartibida); yo'q: null */
+export function variantLabelOf(
+  blocks: { blockId: string; content: string }[],
+  variants: Record<string, string> | undefined,
+): string | null {
+  const v = variants ?? {};
+  const letters = blocks
+    .filter((b) => b.content === 'file' && v[b.blockId])
+    .map((b) => v[b.blockId]!);
+  return letters.length ? letters.join('/') : null;
+}
+
 export const poolMapOf = (s: ExamSessionDoc): Map<string, PoolQuestion> =>
   new Map((s.questionPool as unknown as PoolQuestion[]).map((q) => [String(q.questionId), q]));
 
@@ -77,7 +91,8 @@ export async function loadAttempts(session: ExamSessionDoc): Promise<ExamAttempt
 export function buildRows(session: ExamSessionDoc, attempts: ExamAttemptDoc[]) {
   const byKey = new Map(attempts.map((a) => [a.participantKey, a]));
   const pass = session.passPercent ?? null;
-  const firstBlock = normalizeBlocks(session)[0]!.blockId;
+  const nblocks = normalizeBlocks(session);
+  const firstBlock = nblocks[0]!.blockId;
   const rows: ResultRow[] = session.participants.map((p) => {
     const a = byKey.get(p.key);
     const c = (a?.counters ?? {}) as Record<string, number>;
@@ -111,6 +126,7 @@ export function buildRows(session: ExamSessionDoc, attempts: ExamAttemptDoc[]) {
         : null,
       essayPending: finished ? a!.score!.essayPending : 0,
       rank: null,
+      variant: variantLabelOf(nblocks, a?.fileVariants),
       blocks: finished
         ? (a!.score!.blocks?.length
             ? a!.score!.blocks

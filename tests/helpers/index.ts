@@ -28,6 +28,7 @@ import { AuditLog } from '../../src/models/AuditLog';
 import { ClassModel } from '../../src/models/Class';
 import { ImportSession } from '../../src/models/ImportSession';
 import { ExamAsset } from '../../src/models/ExamAsset';
+import { ExamFile } from '../../src/models/ExamFile';
 import { Photo } from '../../src/models/Photo';
 import { ExamImportSession } from '../../src/models/ExamImportSession';
 import { ExamTopic } from '../../src/models/ExamTopic';
@@ -83,6 +84,7 @@ const ALL_MODELS: { init(): Promise<unknown>; deleteMany(f: object): PromiseLike
   ExamAttempt,
   ExamJoinGuard,
   ExamAsset,
+  ExamFile,
   ExamImportSession,
   ExamTopic,
 ];

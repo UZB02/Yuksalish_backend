@@ -17,6 +17,7 @@ import {
   ruleBody,
 } from './blocks.random';
 import { addQuestionsBody, blocksService, readyBody } from './blocks.service';
+import { fileTestRouter } from '../filetest/filetest.routes';
 
 /**
  * Blokli imtihon: biriktirilgan o'qituvchi (/my-blocks) va tuzuvchi (/sessions/:id/blocks) endpointlari.
@@ -24,6 +25,7 @@ import { addQuestionsBody, blocksService, readyBody } from './blocks.service';
  * Doira servislarda: o'qituvchi faqat o'z blokini ko'radi (boshqasi 404), muddat/tayyorlik/holat qulfi.
  */
 export const blocksRouter = Router();
+blocksRouter.use(fileTestRouter);
 
 const sid = (req: { schoolId?: string }) => req.schoolId as string;
 const blockId = z.string().regex(/^[0-9a-f]{24}$/);

@@ -28,6 +28,9 @@ export interface IAttemptOrderItem {
   points: number;
   /** Variantlar tartibi (variant id lari); shuffleOptions bo'lmasa asl tartib */
   optionPerm: string[];
+  /** Fayl bloki (§22): ishtirokchiga berilgan variant harfi va savol raqami (kalit varaqasidagi tartib) */
+  variant?: string;
+  no?: number;
 }
 
 export interface ISavedAnswer {
@@ -125,6 +128,9 @@ export interface IExamAttempt {
   order: IAttemptOrderItem[];
   /** Rasm id lari (savol va variantlarda): token orqali faqat shularni olish mumkin */
   assetIds: string[];
+  /** Fayl bloklari (§22): ishtirokchiga berilgan variant `{blockId: 'A'}` va fayl id -> blok id. Eski urinishlarda bo'sh */
+  fileVariants: Record<string, string>;
+  fileMap: Record<string, string>;
   saved: ISavedAnswer[];
   clientSeq: number;
   answeredCount: number;
@@ -168,6 +174,8 @@ const schema = new Schema<IExamAttempt>(
     submittedAt: { type: Date, default: null },
     order: { type: [Schema.Types.Mixed] as never, default: [] },
     assetIds: { type: [String], default: [] },
+    fileVariants: { type: Schema.Types.Mixed, default: () => ({}) },
+    fileMap: { type: Schema.Types.Mixed, default: () => ({}) },
     saved: { type: [Schema.Types.Mixed] as never, default: [] },
     clientSeq: { type: Number, default: 0 },
     blockIndex: { type: Number, default: 0 },

@@ -23,6 +23,8 @@ import { blockQuestionCount, effectiveItems, normalizeBlocks, type NBlock } from
 import { MAX_POOL } from '../sessions/templates.service';
 import { examManualIds, rulePoolSize } from './blocks.pool';
 import { notifyAllBlocksReady, remindBlocksNow } from '../../telegram/telegram.exams';
+import { assertFileBlockReady } from '../filetest/filetest.guard';
+import { fileTestSummary } from '../filetest/filetest.core';
 
 type Actor = Ctx['actor'];
 const oid = (s: string) => new Types.ObjectId(s);
@@ -263,14 +265,27 @@ async function ensureExamTopic(ctx: Ctx, schoolId: string, subjectId: string, ex
 }
 
 /** Yozuv sharti (atomik): tuzuvchi - blok mavjud; o'qituvchi - muddat, tayyorlik va biriktirilganlik shartlari */
-export function writeGuard(ctx: Ctx, role: Role, blockId: string, now: Date) {
+export function writeGuard(
+  ctx: Ctx,
+  role: Role,
+  blockId: string,
+  now: Date,
+  /**
+   * Yozuv qaysi rejimga tegishli: savollar banki ('bank', odatiy: eski hujjatda `content` yo'q) yoki fayl+kalit
+   * ('file'). Rejim atomik shartda: bir o'qituvchi rejimni almashtirgan bo'lsa, ikkinchisining eski rejimdagi
+   * yozuvi o'tmaydi (poyga).
+   */
+  content: 'bank' | 'file' = 'bank',
+) {
+  const mode = content === 'file' ? { content: 'file' } : { content: { $ne: 'file' } };
   return role === 'composer'
-    ? { blocks: { $elemMatch: { blockId } } }
+    ? { blocks: { $elemMatch: { blockId, ...mode } } }
     : {
         $or: [{ contribDeadline: null }, { contribDeadline: { $gt: now } }],
         blocks: {
           $elemMatch: {
             blockId,
+            ...mode,
             contributors: oid(ctx.actor.id),
             $or: [{ status: { $ne: 'ready' } }, { readyBy: 'contributor' }],
           },
@@ -323,7 +338,18 @@ async function pushContrib(
       },
     },
   );
-  if (!r.matchedCount) throw AppError.forbidden('Blok hozir tahrirlash uchun yopiq');
+  if (!r.matchedCount) {
+    const fresh = await ExamSession.findById(s._id).select('blocks').lean();
+    const cur = (fresh?.blocks as { blockId: string; content?: string }[] | undefined)?.find(
+      (x) => x.blockId === b.blockId,
+    );
+    if (cur?.content === 'file') {
+      throw AppError.conflict(
+        'Blok "Fayl + kalit" rejimida: savol qo‘shish uchun avval savollar banki rejimiga o‘ting',
+      );
+    }
+    throw AppError.forbidden('Blok hozir tahrirlash uchun yopiq');
+  }
   await audit(ctx, schoolId, 'exam.block.question_add', String(s._id), null, {
     blockId: b.blockId,
     added: fresh.length,
@@ -402,6 +428,7 @@ export const blocksService = {
             targetCount: b.targetCount,
             count: blockQuestionCount(b),
             blockStatus: b.status,
+            content: b.content,
             contribDeadline: s.contribDeadline ?? null,
             locked: lock !== null,
             lockReason: lock,
@@ -445,6 +472,12 @@ export const blocksService = {
         targetCount: b.targetCount,
         count: blockQuestionCount(b),
         status: b.status,
+        /** 'file': fayl + kalit (savollar banki o'rniga fayl testi tahrirlanadi) */
+        content: b.content,
+        fileTest: b.content === 'file' ? fileTestSummary(b.fileTest) : null,
+        /** Almashtirish tasdig'i uchun: ikkala rejimda mazmun bormi */
+        hasBank: b.content === 'file' ? b.bankCount > 0 : blockQuestionCount(b) > 0,
+        hasFile: (b.fileTest?.variants ?? []).some((v) => v.key.length > 0 || v.files.length > 0),
         locked: lock !== null,
         lockReason: lock,
       },
@@ -710,6 +743,8 @@ export const blocksService = {
     if (s.status !== 'draft') throw AppError.conflict('Faqat qoralamani tahrirlash mumkin');
     const b = normalizeBlocks(s).find((x) => x.blockId === blockId && !x.legacy);
     if (!b) throw notFoundBlock();
+    // Fayl bloki: "tayyor" faqat to'liq fayl+kalit bo'lsa (aks holda rejalashtirib bo'lmaydi)
+    if (body.ready) await assertFileBlockReady(schoolId, sessionId, b);
     await ExamSession.updateOne(
       { _id: s._id, schoolId, status: 'draft' },
       {
@@ -759,6 +794,7 @@ export const blocksService = {
     if (b.status === 'ready' && b.readyBy !== 'contributor') {
       throw AppError.forbidden(LOCK_MSG.ready);
     }
+    if (body.ready) await assertFileBlockReady(schoolId, sessionId, b);
     const r = await ExamSession.updateOne(
       {
         _id: s._id,

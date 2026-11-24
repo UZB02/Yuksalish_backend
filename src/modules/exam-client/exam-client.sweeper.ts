@@ -6,6 +6,7 @@ import { notifyExamClosed } from '../telegram/telegram.exams';
 import { clock } from '../../utils/clock';
 import { commonEnd } from '../exams/sessions/timing';
 import { persistResultsMeta } from '../exams/results/results.meta';
+import { runFileSweeperThrottled } from '../exams/filetest/filetest.lifecycle';
 import { DEADLINE_GRACE_MS, ensureScored, loadLiteSession } from './exam-client.service';
 
 /** Bir yurishda hisoblanadigan urinishlar soni (sweeper yengil bo'lishi uchun) */
@@ -55,6 +56,8 @@ export async function runExamSweeper(): Promise<number> {
     }
   }
   await autoCloseSessions(now);
+  // Test fayllari umr sikli (§23): 5 daqiqada bir marta, alohida xato izolyatsiyasi bilan
+  await runFileSweeperThrottled();
   return r.modifiedCount;
 }
 

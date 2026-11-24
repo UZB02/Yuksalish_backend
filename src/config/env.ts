@@ -46,6 +46,14 @@ const schema = z.object({
     z.string().trim().max(200).optional(),
   ),
   RATING_DEBOUNCE_MS: z.coerce.number().int().min(0).default(5000),
+  // "Fayl + kalit" (§23): test fayllari (PDF/rasm) MongoDB'da EMAS, shu papkada (docker: alohida volume). Bo'sh bo'lsa: ./data/exam-files
+  EXAM_FILES_DIR: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z.string().trim().max(500).optional(),
+  ),
+  // Papka jami hajmi (MB) va diskda qolishi shart bo'lgan bo'sh joy (MB): kam bo'lsa yuklash rad etiladi
+  EXAM_FILES_MAX_TOTAL_MB: z.coerce.number().int().min(1).default(2048),
+  EXAM_FILES_MIN_FREE_MB: z.coerce.number().int().min(0).default(5120),
 });
 
 const parsed = schema.safeParse(process.env);

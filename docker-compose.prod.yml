@@ -45,6 +45,11 @@ services:
       EXAM_PIN_SECRET: ${EXAM_PIN_SECRET:-}
       # Kirish kartochkasida chop etiladigan imtihon sahifasi manzili (ixtiyoriy: bo'sh bo'lsa umumiy matn)
       EXAM_PUBLIC_URL: ${EXAM_PUBLIC_URL:-}
+      # "Fayl + kalit" test fayllari: MongoDB'da emas, shu papkada (nomli volume exam-files). Kunlik zaxiraga (mongodump) KIRMAYDI:
+      # fayllar vaqtinchalik (imtihon yopilgandan 14 kun keyin o'chadi), kalit va natijalar bazada
+      EXAM_FILES_DIR: /data/exam-files
+      EXAM_FILES_MAX_TOTAL_MB: ${EXAM_FILES_MAX_TOTAL_MB:-2048}
+      EXAM_FILES_MIN_FREE_MB: ${EXAM_FILES_MIN_FREE_MB:-5120}
       REFRESH_TOKEN_TTL_DAYS: ${REFRESH_TOKEN_TTL_DAYS:-7}
       CORS_ORIGINS: https://${ADMIN_DOMAIN:?ADMIN_DOMAIN .env da berilishi kerak}
       PUBLIC_CORS_ORIGINS: https://${PUBLIC_DOMAIN:?PUBLIC_DOMAIN .env da berilishi kerak}
@@ -59,6 +64,8 @@ services:
       SEED_SUPERADMIN_USERNAME: ${SEED_SUPERADMIN_USERNAME:-}
       SEED_SUPERADMIN_PASSWORD: ${SEED_SUPERADMIN_PASSWORD:-}
       SEED_SUPERADMIN_FULLNAME: ${SEED_SUPERADMIN_FULLNAME:-Super Admin}
+    volumes:
+      - exam-files:/data/exam-files
     healthcheck:
       # image da wget/curl yo'q (bookworm-slim) — node bilan tekshiramiz
       test:
@@ -101,5 +108,7 @@ services:
 
 volumes:
   mongo-data:
+  # Imtihon test fayllari (vaqtinchalik, zaxiraga kirmaydi)
+  exam-files:
   caddy-data:
   caddy-config:

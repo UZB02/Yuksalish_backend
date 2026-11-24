@@ -32,6 +32,18 @@ const SEEDERS: Record<string, Seeder> = {
   questions: ({ sid, tag }) => ({ schoolId: sid, subjectId: oid(), topicId: oid(), tag }),
   examTopics: ({ sid, tag }) => ({ schoolId: sid, subjectId: oid(), nameKey: `t-${tag}` }),
   examAssets: ({ sid, tag }) => ({ schoolId: sid, hash: `h-${tag}`, data: Buffer.from('x') }),
+  examFiles: ({ sid, tag }) => ({
+    schoolId: sid,
+    sessionId: oid(),
+    blockId: 'b'.repeat(24),
+    storageName: tag
+      .replace(/[^0-9a-f]/g, 'a')
+      .padEnd(32, 'a')
+      .slice(0, 32),
+    kind: 'pdf',
+    contentType: 'application/pdf',
+    state: 'ready',
+  }),
   examImportSessions: ({ sid }) => ({ schoolId: sid, userId: oid(), expiresAt: FUTURE }),
   examSessions: ({ sid, tag }) => ({
     schoolId: sid,

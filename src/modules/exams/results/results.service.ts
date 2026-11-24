@@ -306,6 +306,19 @@ export const resultsService = {
         ? { earned: a.score.earned, max: a.score.max, essayPending: a.score.essayPending }
         : null,
       blocks: await blockHeaders(s),
+      /** Fayl + kalit bloklari: har blokda berilgan variant {blockId: 'A'} (§22) */
+      variants: a.fileVariants ?? {},
+      /** Fayl + kalit bloklari (§23): qog'oz yetkazishda variantni tuzatish uchun harflar */
+      fileBlocks: normalizeBlocks(s)
+        .filter((b) => b.content === 'file' && b.fileTest)
+        .map((b) => ({
+          blockId: b.blockId,
+          title: b.title,
+          delivery: b.fileTest!.delivery,
+          letters: b.fileTest!.variants.map((v) => v.letter),
+          variant: a.fileVariants?.[b.blockId] ?? null,
+        })),
+      variant: rows.find((r) => r.key === key)?.variant ?? null,
       blockScores: rows.find((r) => r.key === key)?.blocks ?? [],
       percent: rows.find((r) => r.key === key)?.percent ?? null,
       questions,
@@ -561,6 +574,9 @@ export const resultsService = {
         { header: "O'rin", key: 'rank', width: 7, type: 'int', align: 'center' },
         { header: 'F.I.Sh.', key: 'name', width: 32 },
         { header: 'Sinf / manba', key: 'cls', width: 16 },
+        ...(rows.some((r) => r.variant)
+          ? [{ header: 'Variant', key: 'variant', width: 9, align: 'center' as const }]
+          : []),
         { header: 'Holat', key: 'status', width: 20 },
         ...(multi
           ? heads.map((h, i) => ({
@@ -599,6 +615,7 @@ export const resultsService = {
         rank: r.rank,
         name: r.fullName,
         cls: r.className ?? '',
+        variant: r.variant ?? '',
         status: r.terminated
           ? `Nazoratchi to'xtatgan: ${r.terminated.reason}`
           : (STATUS_UZ[r.status] ?? r.status),

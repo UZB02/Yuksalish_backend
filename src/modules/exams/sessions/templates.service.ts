@@ -32,6 +32,7 @@ import {
   type NBlock,
 } from '../blocks/blocks.core';
 import { cryptoShuffle } from '../blocks/blocks.pool';
+import { fileTestCount } from '../filetest/filetest.core';
 
 type Actor = Ctx['actor'];
 
@@ -636,13 +637,23 @@ export function storeBlocks(
   return input.map((b) => {
     const prev = b.blockId ? existing.find((e) => e.blockId === b.blockId) : undefined;
     const sameSubject = !!prev && prev.subjectId === b.subjectId;
+    // Mazmun rejimi (savollar banki / fayl+kalit) ustada tanlanmaydi: o'qituvchi/tuzuvchi blok sahifasida tanlaydi (§23);
+    // ustada tahrirlashda mavjud rejim va fayl testi saqlanadi
+    const content = sameSubject ? prev!.content : 'bank';
+    const keepStatus = sameSubject;
+    const fileTest = sameSubject && prev!.fileTest ? prev!.fileTest : null;
     return {
       blockId: prev?.blockId ?? newBlockId(),
       subjectId: oid(b.subjectId),
       title: cleanText(b.title || subjectNames.get(b.subjectId) || ''),
-      targetCount: b.targetCount,
+      targetCount: content === 'file' && fileTest ? fileTestCount(fileTest) : b.targetCount,
       coefficient: b.coefficient,
       durationMin: timing === 'per_block' ? (b.durationMin ?? null) : null,
+      content,
+      // Fayl testi (variantlar+kalit) tuzuvchi tahririda yo'qolmaydi; rejim "bank" ga o'tsa ham saqlanadi (qaytish uchun)
+      fileTest: fileTest as never,
+      // Fayl rejimida ustadagi maqsad yashirin bank maqsadi bo'lib saqlanadi
+      bankTarget: content === 'file' ? b.targetCount : (prev?.bankTarget ?? null),
       contributors: uniq(b.contributorIds).map(oid),
       items: storeItems(b.items),
       contribQuestions: sameSubject
@@ -664,8 +675,8 @@ export function storeBlocks(
             addedAt: r.addedAt,
           }))
         : [],
-      status: sameSubject ? prev!.status : ('open' as const),
-      readyBy: sameSubject ? (prev!.readyBy ?? null) : null,
+      status: keepStatus ? prev!.status : ('open' as const),
+      readyBy: keepStatus ? (prev!.readyBy ?? null) : null,
       remindedAt: sameSubject ? (prev!.remindedAt ?? null) : null,
     };
   });
