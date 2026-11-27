@@ -337,22 +337,6 @@ export const journalService = {
           return (g.lessonNo ?? 0) > 0 && lessonKeys.has(keyOf(g.date, g.lessonNo ?? 0));
         })
       : allGrades;
-    // Hech bir ustunga tushmagan baho yo'qolmasin: record ustuni
-    for (const g of grades) {
-      const lessonNo = g.lessonNo ?? 0;
-      addCol({
-        key: keyOf(g.date, lessonNo),
-        date: g.date,
-        weekday: isoWeekday(g.date),
-        lessonNo,
-        source: 'record',
-        cancelled: false,
-      });
-    }
-    const columns = [...colMap.values()].sort(
-      (a, b) => a.date.localeCompare(b.date) || a.lessonNo - b.lessonNo,
-    );
-
     const activeSet = new Set(active.map((s) => String(s._id)));
     const extraIds = uniq(grades.map((g) => String(g.studentId)).filter((i) => !activeSet.has(i)));
     const extra = extraIds.length
@@ -379,6 +363,25 @@ export const journalService = {
           a.id.localeCompare(b.id),
       );
     const studentIds = students.map((s) => s.id);
+    // O'chirilgan (yoki topilmagan) o'quvchining baholari jurnalda yashiriladi
+    const idSet = new Set(studentIds);
+    const visibleGrades = grades.filter((g) => idSet.has(String(g.studentId)));
+
+    // Hech bir ustunga tushmagan baho yo'qolmasin: record ustuni
+    for (const g of visibleGrades) {
+      const lessonNo = g.lessonNo ?? 0;
+      addCol({
+        key: keyOf(g.date, lessonNo),
+        date: g.date,
+        weekday: isoWeekday(g.date),
+        lessonNo,
+        source: 'record',
+        cancelled: false,
+      });
+    }
+    const columns = [...colMap.values()].sort(
+      (a, b) => a.date.localeCompare(b.date) || a.lessonNo - b.lessonNo,
+    );
 
     // Davomat (faqat ko'rsatish uchun). Qoidalar:
     // - kunlik rejim yozuvi (lessonNo 0): shu kunning barcha ustunlarida ko'rinadi;
@@ -446,7 +449,7 @@ export const journalService = {
       cells[sid] ??= {};
       return (cells[sid][key] ??= {});
     };
-    for (const g of grades) {
+    for (const g of visibleGrades) {
       const c = cellOf(String(g.studentId), keyOf(g.date, g.lessonNo ?? 0));
       c.grade = g.value;
       c.gradeId = String(g._id);

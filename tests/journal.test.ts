@@ -261,6 +261,23 @@ describe('Sinf jurnali: setka (GET /journal/subject)', () => {
     expect(res.body.data.summary.perStudent[moved.id].avg).toBe(4);
   });
 
+  it('o`chirilgan o`quvchining bahosi jurnalda yashiriladi (500 bermaydi)', async () => {
+    const gone = await makeStudent(school.id, c5.id, 'Oчirilgan Oдам');
+    await grade(s1, math, '2026-10-02', 5);
+    await grade(gone, math, '2026-10-02', 3);
+    await grade(gone, math, '2026-10-11', 2);
+    await Student.updateOne({ _id: gone.id }, { isDeleted: true });
+    const res = await get(tm, `subject?${Q(c5.id, math.id)}`);
+    expect(res.status).toBe(200);
+    const d = res.body.data;
+    expect(d.students.map((s: { id: string }) => s.id)).not.toContain(gone.id);
+    expect(d.cells[gone.id]).toBeUndefined();
+    expect(d.summary.perStudent[gone.id]).toBeUndefined();
+    expect(d.summary.classCount).toBe(1);
+    expect(d.summary.classAvg).toBe(5);
+    expect(d.columns.some((c: { key: string }) => c.key.startsWith('2026-10-11'))).toBe(false);
+  });
+
   it('ish kunlari sozlamaga ergashadi (yakshanba ham ish kuni bo`lsa)', async () => {
     const r = await request(app)
       .put('/api/v1/settings/attendance')
